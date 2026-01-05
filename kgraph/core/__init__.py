@@ -6,6 +6,9 @@ from kgraph.core.config import (
     TierConfig,
     ConfidenceConfig,
     MatchingConfig,
+    AgentConfig,
+    ProcessingConfig,
+    FieldConfig,
     load_config,
 )
 from kgraph.core.storage import StorageInterface, FilesystemStorage
@@ -16,6 +19,9 @@ __all__ = [
     "TierConfig",
     "ConfidenceConfig",
     "MatchingConfig",
+    "AgentConfig",
+    "ProcessingConfig",
+    "FieldConfig",
     "load_config",
     "StorageInterface",
     "FilesystemStorage",

@@ -2,36 +2,49 @@
 Configuration system for kgraph.
 
 Loads YAML configuration files and provides typed access to settings.
+Uses Pydantic v2 for validation and immutable config objects.
 """
 
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
+
 import yaml
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-@dataclass
-class ConfidenceConfig:
+class ConfidenceConfig(BaseModel):
     """Confidence thresholds for auto-decisions."""
 
-    auto_merge: float = 0.95  # Score above which to auto-merge
-    auto_update: float = 0.90  # Score above which to auto-update
-    auto_create: float = 0.50  # Score below which to auto-create
-    llm_min: float = 0.50  # Min score requiring LLM decision
-    llm_max: float = 0.95  # Max score requiring LLM decision
+    model_config = ConfigDict(frozen=True)
+
+    auto_merge: float = Field(default=0.95, ge=0.0, le=1.0, description="Score above which to auto-merge")
+    auto_update: float = Field(default=0.90, ge=0.0, le=1.0, description="Score above which to auto-update")
+    auto_create: float = Field(default=0.50, ge=0.0, le=1.0, description="Score below which to auto-create")
+    llm_min: float = Field(default=0.50, ge=0.0, le=1.0, description="Min score requiring LLM decision")
+    llm_max: float = Field(default=0.95, ge=0.0, le=1.0, description="Max score requiring LLM decision")
+
+    @model_validator(mode="after")
+    def validate_llm_range(self) -> "ConfidenceConfig":
+        if self.llm_min >= self.llm_max:
+            raise ValueError(f"llm_min ({self.llm_min}) must be < llm_max ({self.llm_max})")
+        return self
 
     def requires_llm(self, score: float) -> bool:
         """Check if score falls in ambiguous range requiring LLM."""
         return self.llm_min <= score < self.llm_max
 
 
-@dataclass
-class MatchingConfig:
+class MatchingConfig(BaseModel):
     """Configuration for entity matching."""
 
-    strategies: List[str] = field(default_factory=lambda: ["alias", "fuzzy_name", "email_domain"])
-    fuzzy_threshold: float = 0.85
-    generic_domains: List[str] = field(
+    model_config = ConfigDict(frozen=True)
+
+    strategies: list[str] = Field(
+        default=["alias", "fuzzy_name", "email_domain"],
+        description="Matching strategies to use",
+    )
+    fuzzy_threshold: float = Field(default=0.85, ge=0.0, le=1.0, description="Minimum fuzzy match score")
+    generic_domains: list[str] = Field(
         default_factory=lambda: [
             "gmail.com",
             "yahoo.com",
@@ -39,18 +52,32 @@ class MatchingConfig:
             "outlook.com",
             "aol.com",
             "icloud.com",
-        ]
+        ],
+        description="Email domains to ignore in matching",
     )
 
+    @field_validator("strategies")
+    @classmethod
+    def validate_strategies(cls, v: list[str]) -> list[str]:
+        valid = {"alias", "fuzzy_name", "email_domain", "semantic"}
+        invalid = set(v) - valid
+        if invalid:
+            raise ValueError(f"Invalid strategies: {invalid}. Valid: {valid}")
+        return v
 
-@dataclass
-class TierConfig:
+
+class TierConfig(BaseModel):
     """Configuration for an entity tier."""
 
+    model_config = ConfigDict(frozen=True)
+
     name: str
-    storage_type: str = "directory"  # "directory" or "jsonl"
-    criteria: Dict[str, Any] = field(default_factory=dict)
-    review_frequency: Optional[str] = None
+    storage_type: Literal["directory", "jsonl"] = Field(
+        default="directory",
+        description="Storage format: 'directory' for full entity dirs, 'jsonl' for registry",
+    )
+    criteria: dict[str, Any] = Field(default_factory=dict, description="Criteria for tier matching")
+    review_frequency: Optional[str] = Field(default=None, description="How often to review entities in this tier")
 
     def matches(self, entity_data: dict) -> bool:
         """Check if entity matches this tier's criteria."""
@@ -75,93 +102,82 @@ class TierConfig:
         return True
 
 
-@dataclass
-class FieldConfig:
+class FieldConfig(BaseModel):
     """Configuration for an entity field."""
 
-    type: str  # "string", "enum", "array", "object", "number", "boolean"
-    values: Optional[List[str]] = None  # For enum types
-    required: bool = False
-    default: Any = None
-    items: Optional[Dict[str, Any]] = None  # For array types
-    properties: Optional[Dict[str, Any]] = None  # For object types
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["string", "enum", "array", "object", "number", "boolean"] = Field(
+        default="string",
+        description="Field data type",
+    )
+    values: Optional[List[str]] = Field(default=None, description="Allowed values for enum type")
+    required: bool = Field(default=False, description="Whether field is required")
+    default: Any = Field(default=None, description="Default value")
+    items: Optional[Dict[str, Any]] = Field(default=None, description="Schema for array items")
+    properties: Optional[Dict[str, Any]] = Field(default=None, description="Schema for object properties")
+
+    @model_validator(mode="after")
+    def validate_enum_values(self) -> "FieldConfig":
+        if self.type == "enum" and not self.values:
+            raise ValueError("enum type requires 'values' list")
+        return self
 
 
-@dataclass
-class EntityTypeConfig:
+class EntityTypeConfig(BaseModel):
     """Configuration for an entity type (e.g., customer, supplier, person)."""
+
+    model_config = ConfigDict(frozen=True)
 
     name: str
     directory: str
-    tier_field: Optional[str] = None  # Field that determines tier (e.g., "tier")
-    required_fields: List[str] = field(default_factory=list)
-    fields: Dict[str, FieldConfig] = field(default_factory=dict)
-
-    @classmethod
-    def from_dict(cls, name: str, data: dict) -> "EntityTypeConfig":
-        """Create from dictionary (loaded from YAML)."""
-        fields = {}
-        for field_name, field_data in data.get("fields", {}).items():
-            if isinstance(field_data, dict):
-                fields[field_name] = FieldConfig(
-                    type=field_data.get("type", "string"),
-                    values=field_data.get("values"),
-                    required=field_data.get("required", False),
-                    default=field_data.get("default"),
-                    items=field_data.get("items"),
-                    properties=field_data.get("properties"),
-                )
-            else:
-                fields[field_name] = FieldConfig(type="string")
-
-        return cls(
-            name=name,
-            directory=data.get("directory", name + "s"),
-            tier_field=data.get("tier_field"),
-            required_fields=data.get("required_fields", []),
-            fields=fields,
-        )
+    tier_field: Optional[str] = Field(default=None, description="Field that determines tier")
+    required_fields: list[str] = Field(default_factory=list, description="Required fields for this entity type")
+    fields: dict[str, FieldConfig] = Field(default_factory=dict, description="Field schemas")
 
 
-@dataclass
-class AgentConfig:
+class AgentConfig(BaseModel):
     """Configuration for LLM agent."""
 
-    provider: str = "claude"  # "claude", "openai", "local"
-    model: Optional[str] = None
-    timeout: int = 120  # seconds
+    model_config = ConfigDict(frozen=True)
+
+    provider: Literal["claude", "openai", "local"] = Field(default="claude", description="LLM provider")
+    model: Optional[str] = Field(default=None, description="Specific model to use")
+    timeout: int = Field(default=120, gt=0, description="Timeout in seconds")
 
 
-@dataclass
-class ProcessingConfig:
+class ProcessingConfig(BaseModel):
     """Configuration for batch processing."""
 
-    batch_size: int = 500
-    objective_interval: int = 5  # Batches between objective checks
-    max_pending_questions: int = 500
+    model_config = ConfigDict(frozen=True)
+
+    batch_size: int = Field(default=500, gt=0, description="Items per batch")
+    objective_interval: int = Field(default=5, gt=0, description="Batches between objective checks")
+    max_pending_questions: int = Field(default=500, gt=0, description="Max questions in queue")
 
 
-@dataclass
-class KGraphConfig:
+class KGraphConfig(BaseModel):
     """Central configuration object for a kgraph project."""
 
-    project_name: str
-    data_path: Path
-    kg_path: Path
+    model_config = ConfigDict(frozen=True)
+
+    project_name: str = Field(description="Project name")
+    data_path: Path = Field(description="Path to data directory")
+    kg_path: Path = Field(description="Path to knowledge graph directory")
 
     # Entity configuration
-    entity_types: Dict[str, EntityTypeConfig] = field(default_factory=dict)
-    tiers: Dict[str, TierConfig] = field(default_factory=dict)
+    entity_types: dict[str, EntityTypeConfig] = Field(default_factory=dict, description="Entity type definitions")
+    tiers: dict[str, TierConfig] = Field(default_factory=dict, description="Tier definitions")
 
     # Processing configuration
-    processing: ProcessingConfig = field(default_factory=ProcessingConfig)
-    confidence: ConfidenceConfig = field(default_factory=ConfidenceConfig)
-    matching: MatchingConfig = field(default_factory=MatchingConfig)
-    agent: AgentConfig = field(default_factory=AgentConfig)
+    processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
+    confidence: ConfidenceConfig = Field(default_factory=ConfidenceConfig)
+    matching: MatchingConfig = Field(default_factory=MatchingConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
 
     # Paths
-    prompts_path: Optional[Path] = None
-    aliases_path: Optional[Path] = None
+    prompts_path: Optional[Path] = Field(default=None, description="Path to prompts directory")
+    aliases_path: Optional[Path] = Field(default=None, description="Path to entity aliases file")
 
     @classmethod
     def from_yaml(cls, path: Path) -> "KGraphConfig":
@@ -173,81 +189,47 @@ class KGraphConfig:
 
     @classmethod
     def from_dict(cls, data: dict, base_path: Optional[Path] = None) -> "KGraphConfig":
-        """Create from dictionary."""
+        """Create from dictionary with path resolution."""
         base_path = base_path or Path(".")
-
         project = data.get("project", {})
 
-        # Parse entity types
-        entity_types = {}
-        for name, et_data in data.get("entity_types", {}).items():
-            entity_types[name] = EntityTypeConfig.from_dict(name, et_data)
+        # Parse confidence config, handling llm_required list format
+        confidence_data = cls._parse_confidence(data.get("confidence", {}))
 
-        # Parse tiers
-        tiers = {}
-        for name, tier_data in data.get("tiers", {}).items():
-            tiers[name] = TierConfig(
-                name=name,
-                storage_type=tier_data.get("storage_type", "directory"),
-                criteria=tier_data.get("criteria", {}),
-                review_frequency=tier_data.get("review_frequency"),
-            )
+        # Build entity_types with name injected
+        entity_types = {
+            name: {"name": name, **et_data}
+            for name, et_data in data.get("entity_types", {}).items()
+        }
 
-        # Parse processing config
-        proc_data = data.get("processing", {})
-        processing = ProcessingConfig(
-            batch_size=proc_data.get("batch_size", 500),
-            objective_interval=proc_data.get("objective_interval", 5),
-            max_pending_questions=proc_data.get("max_pending_questions", 500),
-        )
+        # Build tiers with name injected
+        tiers = {
+            name: {"name": name, **tier_data}
+            for name, tier_data in data.get("tiers", {}).items()
+        }
 
-        # Parse confidence config
-        conf_data = data.get("confidence", {})
-        confidence = ConfidenceConfig(
-            auto_merge=conf_data.get("auto_merge", 0.95),
-            auto_update=conf_data.get("auto_update", 0.90),
-            auto_create=conf_data.get("auto_create", 0.50),
-            llm_min=conf_data.get("llm_required", [0.50, 0.95])[0]
-            if isinstance(conf_data.get("llm_required"), list)
-            else 0.50,
-            llm_max=conf_data.get("llm_required", [0.50, 0.95])[1]
-            if isinstance(conf_data.get("llm_required"), list)
-            else 0.95,
-        )
+        return cls.model_validate({
+            "project_name": project.get("name", "Knowledge Graph"),
+            "data_path": base_path / project.get("data_path", "data"),
+            "kg_path": base_path / project.get("kg_path", "knowledge_graph"),
+            "entity_types": entity_types,
+            "tiers": tiers,
+            "processing": data.get("processing", {}),
+            "confidence": confidence_data,
+            "matching": data.get("matching", {}),
+            "agent": data.get("agent", {}),
+            "prompts_path": base_path / project["prompts_path"] if project.get("prompts_path") else None,
+            "aliases_path": base_path / project["aliases_path"] if project.get("aliases_path") else None,
+        })
 
-        # Parse matching config
-        match_data = data.get("matching", {})
-        matching = MatchingConfig(
-            strategies=match_data.get("strategies", ["alias", "fuzzy_name", "email_domain"]),
-            fuzzy_threshold=match_data.get("fuzzy_threshold", 0.85),
-            generic_domains=match_data.get("generic_domains", []),
-        )
-
-        # Parse agent config
-        agent_data = data.get("agent", {})
-        agent = AgentConfig(
-            provider=agent_data.get("provider", "claude"),
-            model=agent_data.get("model"),
-            timeout=agent_data.get("timeout", 120),
-        )
-
-        return cls(
-            project_name=project.get("name", "Knowledge Graph"),
-            data_path=base_path / project.get("data_path", "data"),
-            kg_path=base_path / project.get("kg_path", "knowledge_graph"),
-            entity_types=entity_types,
-            tiers=tiers,
-            processing=processing,
-            confidence=confidence,
-            matching=matching,
-            agent=agent,
-            prompts_path=base_path / project.get("prompts_path", "prompts")
-            if project.get("prompts_path")
-            else None,
-            aliases_path=base_path / project.get("aliases_path", "data/entity_aliases.json")
-            if project.get("aliases_path")
-            else None,
-        )
+    @staticmethod
+    def _parse_confidence(data: dict) -> dict:
+        """Parse confidence config, handling llm_required list format."""
+        result = {k: v for k, v in data.items() if k != "llm_required"}
+        if "llm_required" in data and isinstance(data["llm_required"], list):
+            result["llm_min"] = data["llm_required"][0]
+            result["llm_max"] = data["llm_required"][1]
+        return result
 
     def get_tier_for_entity(self, entity_data: dict) -> Optional[str]:
         """Determine which tier an entity belongs to based on criteria."""

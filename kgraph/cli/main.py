@@ -13,11 +13,25 @@ Usage:
 
 import shutil
 from pathlib import Path
+from typing import Optional
 
 import click
+from pydantic import ValidationError
 
 from kgraph import __version__
 from kgraph.core.config import load_config, KGraphConfig
+
+
+def _load_config_or_exit(config_path: Optional[Path]) -> KGraphConfig:
+    """Load config with user-friendly Pydantic validation errors."""
+    try:
+        return load_config(config_path)
+    except ValidationError as e:
+        click.echo("Configuration errors:", err=True)
+        for error in e.errors():
+            loc = " -> ".join(str(x) for x in error["loc"])
+            click.echo(f"  {loc}: {error['msg']}", err=True)
+        raise SystemExit(1)
 
 
 @click.group()
@@ -173,7 +187,7 @@ Edit `kgraph.yaml` to customize:
 def process(ctx, config: str, batch_size: int, max_batches: int):
     """Process source data into knowledge graph."""
     config_path = Path(config) if config else None
-    cfg = load_config(config_path)
+    cfg = _load_config_or_exit(config_path)
 
     click.echo(f"Project: {cfg.project_name}")
     click.echo(f"Data path: {cfg.data_path}")
@@ -191,7 +205,7 @@ def process(ctx, config: str, batch_size: int, max_batches: int):
 def resume(ctx, config: str):
     """Resume interrupted processing."""
     config_path = Path(config) if config else None
-    cfg = load_config(config_path)
+    cfg = _load_config_or_exit(config_path)
 
     # TODO: Implement resume
     click.echo("Resume not yet implemented.")
@@ -203,7 +217,7 @@ def resume(ctx, config: str):
 def review(ctx, config: str):
     """Review pending questions from processing."""
     config_path = Path(config) if config else None
-    cfg = load_config(config_path)
+    cfg = _load_config_or_exit(config_path)
 
     # TODO: Implement review
     click.echo("Review not yet implemented.")
@@ -216,7 +230,7 @@ def review(ctx, config: str):
 def validate(ctx, config: str, strict: bool):
     """Validate knowledge graph structure."""
     config_path = Path(config) if config else None
-    cfg = load_config(config_path)
+    cfg = _load_config_or_exit(config_path)
 
     if not cfg.kg_path.exists():
         click.echo(f"Error: Knowledge graph not found at {cfg.kg_path}", err=True)
@@ -265,7 +279,7 @@ def validate(ctx, config: str, strict: bool):
 def coverage(ctx, config: str):
     """Show processing coverage statistics."""
     config_path = Path(config) if config else None
-    cfg = load_config(config_path)
+    cfg = _load_config_or_exit(config_path)
 
     # TODO: Implement coverage
     click.echo("Coverage not yet implemented.")
@@ -278,7 +292,7 @@ def coverage(ctx, config: str):
 def tree(ctx, config: str, depth: int):
     """Display knowledge graph structure."""
     config_path = Path(config) if config else None
-    cfg = load_config(config_path)
+    cfg = _load_config_or_exit(config_path)
 
     if not cfg.kg_path.exists():
         click.echo(f"Error: Knowledge graph not found at {cfg.kg_path}", err=True)

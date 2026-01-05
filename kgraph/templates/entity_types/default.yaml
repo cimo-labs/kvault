@@ -1,0 +1,63 @@
+# Default entity type schema
+# Copy and customize for your entity types
+
+name: entity
+directory: entities
+tier_field: tier
+
+required_fields:
+  - topic
+  - created
+  - last_updated
+  - sources
+  - tier
+  - status
+
+fields:
+  tier:
+    type: enum
+    values: [high, medium, low]
+    required: true
+
+  status:
+    type: enum
+    values: [active, inactive, archived]
+    default: active
+
+  priority:
+    type: number
+    default: 5
+
+  tags:
+    type: array
+    items:
+      type: string
+
+  description:
+    type: string
+
+  contacts:
+    type: array
+    items:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+
+  aliases:
+    type: array
+    items:
+      type: string
+
+  sources:
+    type: array
+    items:
+      type: string
+
+  metadata:
+    type: object
+    description: "Flexible key-value store for custom fields"

@@ -1,0 +1,70 @@
+project:
+  name: "{{PROJECT_NAME}}"
+  data_path: "./data"
+  kg_path: "./knowledge_graph"
+  prompts_path: "./prompts"
+  aliases_path: "./data/entity_aliases.json"
+
+# Define your entity types
+# Each type gets its own directory in the knowledge graph
+entity_types:
+  # Example: customers, contacts, projects, etc.
+  entity:
+    directory: "entities"
+    tier_field: "tier"  # Field that determines which tier
+    required_fields:
+      - topic
+      - created
+      - last_updated
+      - sources
+
+# Define tiers for entity prioritization
+# Entities are stored differently based on tier
+tiers:
+  high:
+    criteria:
+      priority_min: 8
+    storage_type: directory  # Full directory with _meta.json + _summary.md
+    review_frequency: weekly
+  medium:
+    criteria:
+      priority_min: 4
+      priority_max: 8
+    storage_type: directory
+    review_frequency: monthly
+  low:
+    criteria:
+      priority_max: 4
+    storage_type: jsonl  # Compact storage in _registry.jsonl
+
+# Processing configuration
+processing:
+  batch_size: 500         # Items per batch
+  objective_interval: 5   # Batches between objective checks
+  max_pending_questions: 500
+
+# Confidence thresholds for auto-decisions
+confidence:
+  auto_merge: 0.95   # Score >= this: auto-merge entities
+  auto_update: 0.90  # Score >= this: auto-update existing
+  auto_create: 0.50  # Score < this: auto-create new
+  llm_required: [0.50, 0.95]  # Range requiring LLM decision
+
+# Entity matching configuration
+matching:
+  strategies:
+    - alias         # Exact match against known aliases
+    - fuzzy_name    # Fuzzy string matching
+    - email_domain  # Match by email domain
+  fuzzy_threshold: 0.85
+  generic_domains:  # Domains to ignore in email matching
+    - gmail.com
+    - yahoo.com
+    - hotmail.com
+    - outlook.com
+
+# LLM agent configuration
+agent:
+  provider: claude  # claude, openai, or local
+  # model: claude-opus-4-5-20251101  # Optional: specific model
+  timeout: 120

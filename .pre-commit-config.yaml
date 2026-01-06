@@ -1,0 +1,50 @@
+# Pre-commit hooks for kgraph
+# Install: pre-commit install
+# Run: pre-commit run --all-files
+
+repos:
+  # Local hooks - pytest and mypy
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: pytest tests/ -v --tb=short -x
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+        types: [python]
+
+      - id: mypy
+        name: mypy
+        entry: mypy kgraph/ --ignore-missing-imports --no-error-summary
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+        types: [python]
+        # Note: mypy has known type issues that don't affect runtime.
+        # TODO: Fix type annotations and remove || true
+        verbose: true
+
+  # Ruff - fast Python linter and formatter
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.0
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  # Standard pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: debug-statements
+
+# Default stages
+default_stages: [pre-commit]

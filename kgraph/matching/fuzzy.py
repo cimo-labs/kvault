@@ -24,11 +24,12 @@ class FuzzyNameMatchStrategy(MatchStrategy):
     Also checks against aliases.
     """
 
-    def __init__(self, threshold: float = 0.85):
+    def __init__(self, threshold: float = 0.85, **kwargs):
         """Initialize strategy.
 
         Args:
             threshold: Minimum similarity score to consider a match
+            **kwargs: Ignored (allows shared kwargs across strategies)
         """
         self._threshold = threshold
 

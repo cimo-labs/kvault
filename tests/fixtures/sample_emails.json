@@ -1,0 +1,82 @@
+[
+  {
+    "id": "email_001",
+    "from": "john.smith@acmecorp.com",
+    "to": "sales@protec.com",
+    "subject": "Quote Request for Clutch Assemblies",
+    "body": "Hi,\n\nI'm John Smith from Acme Corporation. We're looking for quotes on industrial clutch assemblies for our manufacturing line.\n\nPlease send pricing for:\n- 10x Heavy-duty clutch assemblies\n- 5x Standard brake pads\n\nBest regards,\nJohn Smith\nPurchasing Manager\nAcme Corporation",
+    "date": "2025-01-15"
+  },
+  {
+    "id": "email_002",
+    "from": "jane.doe@acme-corporation.com",
+    "to": "sales@protec.com",
+    "subject": "Re: Quote Request",
+    "body": "Following up on John's request. We'd also need delivery to our Phoenix facility.\n\nJane Doe\nOperations Lead\nAcme Corporation",
+    "date": "2025-01-16"
+  },
+  {
+    "id": "email_003",
+    "from": "mike@globaltech.io",
+    "to": "support@protec.com",
+    "subject": "New Customer Inquiry",
+    "body": "Hello,\n\nMy name is Mike Johnson from GlobalTech Industries. We're a robotics company looking for friction materials for our robot joints.\n\nCan you provide information about your products?\n\nThanks,\nMike Johnson\nCTO\nGlobalTech Industries",
+    "date": "2025-01-17"
+  },
+  {
+    "id": "email_004",
+    "from": "sarah@newstartup.com",
+    "to": "info@protec.com",
+    "subject": "Partnership Opportunity",
+    "body": "Hi there,\n\nI'm Sarah Chen, founder of NewStartup Inc. We're developing electric vehicles and need reliable brake components.\n\nWould love to discuss a potential partnership.\n\nSarah Chen\nFounder & CEO\nNewStartup Inc.",
+    "date": "2025-01-18"
+  },
+  {
+    "id": "email_005",
+    "from": "buyer@existingcustomer.com",
+    "to": "orders@protec.com",
+    "subject": "Reorder - PO#12345",
+    "body": "Please process reorder for our standard parts package.\n\nExisting Customer LLC\nAccount #: 98765",
+    "date": "2025-01-19"
+  },
+  {
+    "id": "email_006",
+    "from": "contact@ambiguous-match.com",
+    "to": "sales@protec.com",
+    "subject": "Information Request",
+    "body": "Hello,\n\nWe're Ambiguous Match Co., a company that might or might not be related to another company in your database.\n\nPlease send product catalogs.\n\nThanks,\nContact Person",
+    "date": "2025-01-20"
+  },
+  {
+    "id": "email_007",
+    "from": "purchasing@acmecorp.com",
+    "to": "sales@protec.com",
+    "subject": "Urgent Order",
+    "body": "Need expedited shipping on previous quote.\n\nTom Wilson\nAcme Corp",
+    "date": "2025-01-21"
+  },
+  {
+    "id": "email_008",
+    "from": "info@globaltech.io",
+    "to": "support@protec.com",
+    "subject": "Technical Specifications",
+    "body": "Hi,\n\nCan you send technical specs for the friction materials Mike inquired about?\n\nGlobalTech Industries Engineering Team",
+    "date": "2025-01-22"
+  },
+  {
+    "id": "email_009",
+    "from": "supplier@vendor.com",
+    "to": "procurement@protec.com",
+    "subject": "Raw Materials Quote",
+    "body": "Attached is our quote for raw friction materials.\n\nVendor Supply Co.",
+    "date": "2025-01-23"
+  },
+  {
+    "id": "email_010",
+    "from": "test@example.com",
+    "to": "sales@protec.com",
+    "subject": "Test Email",
+    "body": "This is a test email with minimal information.",
+    "date": "2025-01-24"
+  }
+]

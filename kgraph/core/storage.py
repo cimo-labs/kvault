@@ -155,7 +155,7 @@ class FilesystemStorage(StorageInterface):
     For JSONL tiers, stores entries in _registry.jsonl files.
     """
 
-    def __init__(self, kg_path: Path, config: Optional["KGraphConfig"] = None):
+    def __init__(self, kg_path: Path, config: Optional[Any] = None):
         """Initialize filesystem storage.
 
         Args:

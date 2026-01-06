@@ -24,12 +24,13 @@ class AliasMatchStrategy(MatchStrategy):
     Returns score of 1.0 for exact alias matches.
     """
 
-    def __init__(self, aliases_path: Optional[Path] = None):
+    def __init__(self, aliases_path: Optional[Path] = None, **kwargs):
         """Initialize strategy.
 
         Args:
             aliases_path: Path to aliases JSON file. If None, relies on
                           aliases stored in EntityIndexEntry.
+            **kwargs: Ignored (allows shared kwargs across strategies)
         """
         self._aliases_path = aliases_path
         self._aliases_cache: Optional[Dict] = None

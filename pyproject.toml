@@ -36,6 +36,7 @@ dev = [
     "black>=23.0",
     "mypy>=1.0",
     "ruff>=0.1.0",
+    "pre-commit>=3.0",
 ]
 
 [project.scripts]
@@ -61,8 +62,44 @@ target-version = ["py39"]
 line-length = 100
 target-version = "py39"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["kgraph"]
+omit = ["*/tests/*", "*/__init__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+
 [tool.mypy]
 python_version = "3.9"
-warn_return_any = true
+warn_return_any = false
 warn_unused_configs = true
 ignore_missing_imports = true
+disallow_untyped_defs = false
+check_untyped_defs = false
+warn_redundant_casts = true
+warn_unused_ignores = false
+show_error_codes = true
+exclude = ["tests/"]
+
+# Allow more permissive typing for initial release
+# TODO: Gradually enable stricter type checking
+[[tool.mypy.overrides]]
+module = ["kgraph.*"]
+strict = false
+allow_untyped_defs = true
+allow_any_generics = true

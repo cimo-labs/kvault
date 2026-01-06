@@ -11,7 +11,7 @@ from kgraph.core.config import (
     FieldConfig,
     load_config,
 )
-from kgraph.core.storage import StorageInterface, FilesystemStorage
+from kgraph.core.storage import StorageInterface, FilesystemStorage, normalize_entity_id
 
 __all__ = [
     "KGraphConfig",
@@ -25,4 +25,5 @@ __all__ = [
     "load_config",
     "StorageInterface",
     "FilesystemStorage",
+    "normalize_entity_id",
 ]

@@ -4,7 +4,7 @@ Email domain matching strategy.
 Match entities by shared email domains in contacts.
 """
 
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from kgraph.matching.base import (
     EntityIndexEntry,
@@ -40,11 +40,12 @@ class EmailDomainMatchStrategy(MatchStrategy):
     Generic email domains (gmail, yahoo, etc.) are ignored.
     """
 
-    def __init__(self, generic_domains: Set[str] = None):
+    def __init__(self, generic_domains: Optional[Set[str]] = None, **kwargs):
         """Initialize strategy.
 
         Args:
             generic_domains: Set of domains to ignore. If None, uses defaults.
+            **kwargs: Ignored (allows shared kwargs across strategies)
         """
         self._generic_domains = generic_domains or DEFAULT_GENERIC_DOMAINS
 

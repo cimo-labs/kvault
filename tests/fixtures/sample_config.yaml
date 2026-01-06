@@ -1,0 +1,59 @@
+# Test configuration for kgraph E2E tests
+project:
+  name: "test-project"
+  data_path: "./data"
+  kg_path: "./knowledge_graph"
+
+entity_types:
+  customer:
+    directory: "customers"
+    tier_field: "tier"
+    required_fields:
+      - name
+
+tiers:
+  strategic:
+    storage_type: directory
+    criteria:
+      revenue_min: 200000
+  key:
+    storage_type: directory
+    criteria:
+      revenue_min: 50000
+      revenue_max: 200000
+  standard:
+    storage_type: directory
+    criteria:
+      revenue_min: 1
+      revenue_max: 50000
+  prospects:
+    storage_type: jsonl
+    criteria:
+      revenue: 0
+
+processing:
+  batch_size: 10
+  objective_interval: 5
+
+confidence:
+  auto_merge: 0.95
+  auto_update: 0.90
+  auto_create: 0.50
+  llm_min: 0.50
+  llm_max: 0.95
+
+matching:
+  strategies:
+    - alias
+    - fuzzy_name
+    - email_domain
+  fuzzy_threshold: 0.85
+  generic_domains:
+    - gmail.com
+    - yahoo.com
+    - hotmail.com
+    - outlook.com
+
+agent:
+  provider: claude
+  timeout: 120

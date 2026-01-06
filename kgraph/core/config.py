@@ -3,10 +3,17 @@ Configuration system for kgraph.
 
 Loads YAML configuration files and provides typed access to settings.
 Uses Pydantic v2 for validation and immutable config objects.
+
+Configuration Hierarchy (highest priority first):
+1. CLI arguments (passed to load_config)
+2. Environment variables (KGRAPH_*)
+3. YAML configuration file
+4. Pydantic field defaults
 """
 
+import os
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -267,27 +274,212 @@ class KGraphConfig(BaseModel):
         return base / entity_id
 
 
-def load_config(path: Optional[Path] = None) -> KGraphConfig:
-    """Load configuration from file or use defaults.
+def load_config(
+    path: Optional[Path] = None,
+    env_prefix: str = "KGRAPH_",
+    cli_overrides: Optional[Dict[str, Any]] = None,
+    use_env: bool = True,
+) -> KGraphConfig:
+    """Load configuration with hierarchy: defaults → YAML → env vars → CLI args.
 
-    Searches for config in this order:
+    Configuration sources (lowest to highest priority):
+    1. Pydantic field defaults
+    2. YAML configuration file
+    3. Environment variables (KGRAPH_*)
+    4. CLI argument overrides
+
+    Args:
+        path: Optional explicit path to YAML config file
+        env_prefix: Prefix for environment variables (default: "KGRAPH_")
+        cli_overrides: Optional dictionary of CLI argument overrides
+        use_env: Whether to load environment variables (default: True)
+
+    Returns:
+        Merged KGraphConfig
+
+    Examples:
+        # Basic usage
+        config = load_config()
+
+        # With CLI overrides
+        config = load_config(cli_overrides={"processing": {"batch_size": 100}})
+
+        # Environment variable: KGRAPH_PROCESSING_BATCH_SIZE=200
+        config = load_config()  # batch_size will be 200
+    """
+    # Layer 1: Find YAML file
+    yaml_path = _find_config_file(path)
+    base_path = yaml_path.parent if yaml_path else Path(".")
+
+    # Layer 2: Load YAML (or start with empty dict)
+    if yaml_path:
+        with open(yaml_path) as f:
+            config_dict = yaml.safe_load(f) or {}
+    else:
+        config_dict = {}
+
+    # Layer 3: Merge environment variables
+    if use_env:
+        env_config = _extract_env_config(env_prefix)
+        _deep_merge(config_dict, env_config)
+
+    # Layer 4: Merge CLI overrides
+    if cli_overrides:
+        _deep_merge(config_dict, cli_overrides)
+
+    # If no config was found/loaded, return defaults
+    if not config_dict:
+        return KGraphConfig(
+            project_name="Knowledge Graph",
+            data_path=Path("data"),
+            kg_path=Path("knowledge_graph"),
+        )
+
+    return KGraphConfig.from_dict(config_dict, base_path=base_path)
+
+
+def _find_config_file(path: Optional[Path] = None) -> Optional[Path]:
+    """Find configuration file.
+
+    Searches in this order:
     1. Provided path
     2. ./kgraph.yaml
     3. ./config.yaml
-    4. Default configuration
+
+    Returns:
+        Path to config file or None if not found
     """
     if path and path.exists():
-        return KGraphConfig.from_yaml(path)
+        return path
 
-    # Search for config file
     for filename in ["kgraph.yaml", "config.yaml"]:
         config_path = Path(filename)
         if config_path.exists():
-            return KGraphConfig.from_yaml(config_path)
+            return config_path
 
-    # Return default configuration
-    return KGraphConfig(
-        project_name="Knowledge Graph",
-        data_path=Path("data"),
-        kg_path=Path("knowledge_graph"),
-    )
+    return None
+
+
+def _extract_env_config(prefix: str = "KGRAPH_") -> Dict[str, Any]:
+    """Extract configuration from environment variables.
+
+    Environment variables are mapped to config paths:
+    - KGRAPH_PROCESSING_BATCH_SIZE=100 → {"processing": {"batch_size": 100}}
+    - KGRAPH_CONFIDENCE_AUTO_MERGE=0.9 → {"confidence": {"auto_merge": 0.9}}
+    - KGRAPH_MATCHING_FUZZY_THRESHOLD=0.85 → {"matching": {"fuzzy_threshold": 0.85}}
+
+    Type conversion:
+    - Numbers (int/float) are converted automatically
+    - "true"/"false" become booleans
+    - Comma-separated values become lists
+    - Everything else remains a string
+
+    Args:
+        prefix: Environment variable prefix (default: "KGRAPH_")
+
+    Returns:
+        Dictionary of extracted configuration
+    """
+    config: Dict[str, Any] = {}
+
+    for key, value in os.environ.items():
+        if not key.startswith(prefix):
+            continue
+
+        # Remove prefix and convert to lowercase
+        config_key = key[len(prefix):].lower()
+
+        # Skip empty keys
+        if not config_key:
+            continue
+
+        # Convert value
+        converted_value = _convert_env_value(value)
+
+        # Build nested path: PROCESSING_BATCH_SIZE → ["processing", "batch_size"]
+        parts = config_key.split("_")
+
+        # Special handling for known top-level sections
+        sections = {"processing", "confidence", "matching", "agent", "project"}
+
+        if parts[0] in sections and len(parts) > 1:
+            # e.g., PROCESSING_BATCH_SIZE → {"processing": {"batch_size": ...}}
+            section = parts[0]
+            field = "_".join(parts[1:])
+            if section not in config:
+                config[section] = {}
+            config[section][field] = converted_value
+        else:
+            # Top-level config (e.g., PROJECT_NAME → {"project_name": ...})
+            config[config_key] = converted_value
+
+    return config
+
+
+def _convert_env_value(value: str) -> Union[str, int, float, bool, List[str]]:
+    """Convert environment variable string to appropriate type.
+
+    Args:
+        value: Raw string value from environment
+
+    Returns:
+        Converted value (int, float, bool, list, or string)
+    """
+    # Empty string
+    if not value:
+        return value
+
+    # Boolean
+    if value.lower() in ("true", "yes", "1", "on"):
+        return True
+    if value.lower() in ("false", "no", "0", "off"):
+        return False
+
+    # List (comma-separated)
+    if "," in value:
+        return [v.strip() for v in value.split(",") if v.strip()]
+
+    # Integer
+    try:
+        return int(value)
+    except ValueError:
+        pass
+
+    # Float
+    try:
+        return float(value)
+    except ValueError:
+        pass
+
+    # String (default)
+    return value
+
+
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> None:
+    """Deep merge override into base dictionary (mutates base).
+
+    Recursively merges nested dictionaries. For non-dict values,
+    override completely replaces base.
+
+    Args:
+        base: Base dictionary to merge into (mutated)
+        override: Dictionary with values to merge
+
+    Examples:
+        >>> base = {"a": {"b": 1, "c": 2}, "d": 3}
+        >>> override = {"a": {"b": 10}, "e": 5}
+        >>> _deep_merge(base, override)
+        >>> base
+        {"a": {"b": 10, "c": 2}, "d": 3, "e": 5}
+    """
+    for key, value in override.items():
+        if (
+            key in base
+            and isinstance(base[key], dict)
+            and isinstance(value, dict)
+        ):
+            # Recursively merge nested dicts
+            _deep_merge(base[key], value)
+        else:
+            # Override or add value
+            base[key] = value

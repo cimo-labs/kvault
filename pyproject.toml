@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kgraph"
-version = "0.1.0"
+version = "0.2.0"
 description = "Config-driven knowledge graph framework for extracting structured knowledge from unstructured data"
 readme = "README.md"
 license = {text = "MIT"}
@@ -33,10 +33,16 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    "pytest-asyncio>=0.21.0",
     "black>=23.0",
     "mypy>=1.0",
     "ruff>=0.1.0",
     "pre-commit>=3.0",
+]
+# Optional: Agent SDK for full programmatic control with hooks
+# Falls back to CLI subprocess mode if not installed
+sdk = [
+    "claude-code-sdk>=0.1.0",
 ]
 
 [project.scripts]

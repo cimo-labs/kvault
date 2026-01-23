@@ -1,592 +1,506 @@
-"""
-Command-line interface for kgraph.
-
-Usage:
-    kgraph init <project-name>    Initialize a new project
-    kgraph process                Process data into knowledge graph
-    kgraph resume                 Resume interrupted processing
-    kgraph review                 Review pending questions
-    kgraph validate               Validate knowledge graph
-    kgraph coverage               Show processing coverage
-    kgraph tree                   Display knowledge graph structure
-    kgraph status                 Show pipeline status
-"""
-
 import json
-import shutil
+import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import click
-from pydantic import ValidationError
 
-from kgraph import __version__
-from kgraph.core.config import load_config, KGraphConfig
+from kgraph import (
+    EntityIndex,
+    EntityResearcher,
+    ObservabilityLogger,
+    SimpleStorage,
+    normalize_entity_id,
+)
+from kgraph.matching.domain import DEFAULT_GENERIC_DOMAINS
 
 
-def _load_config_or_exit(config_path: Optional[Path]) -> KGraphConfig:
-    """Load config with user-friendly Pydantic validation errors."""
-    try:
-        return load_config(config_path)
-    except ValidationError as e:
-        click.echo("Configuration errors:", err=True)
-        for error in e.errors():
-            loc = " -> ".join(str(x) for x in error["loc"])
-            click.echo(f"  {loc}: {error['msg']}", err=True)
-        raise SystemExit(1)
+# -------------------------
+# Helpers: extraction utils
+# -------------------------
+
+
+GENERIC_DOMAINS: Set[str] = set(DEFAULT_GENERIC_DOMAINS)
+
+
+def _iter_files(root: Path, include_ext: Set[str]) -> Iterable[Path]:
+    for p in root.rglob("*"):
+        if p.is_file() and p.suffix.lower() in include_ext:
+            yield p
+
+
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+
+
+def _domain_to_org_name(domain: str) -> str:
+    # Example: acme-corporation.com -> "Acme Corporation"
+    base = domain.split(".")[0]
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", " ", base).strip()
+    words = [w for w in cleaned.split() if w]
+    return " ".join(w.capitalize() for w in words) or domain
+
+
+def _localpart_to_person_name(local: str) -> str:
+    # john.smith -> John Smith; jdoe -> Jdoe
+    local = local.replace("_", ".").replace("-", ".")
+    parts = [p for p in local.split(".") if p]
+    if len(parts) >= 2:
+        return " ".join(p.capitalize() for p in parts[:3])
+    return local.capitalize()
+
+
+@dataclass
+class ExtractedEntity:
+    name: str
+    entity_type: str  # "org" | "person"
+    aliases: List[str]
+    contacts: List[Dict]
+    source_id: str
+
+
+def extract_entities_from_text(text: str, source_id: str) -> List[ExtractedEntity]:
+    entities: List[ExtractedEntity] = []
+
+    emails = set(EMAIL_RE.findall(text))
+    domains = set()
+    for e in emails:
+        local, domain = e.split("@", 1)
+        if domain.lower() not in GENERIC_DOMAINS:
+            domains.add(domain.lower())
+
+        # Person candidate from email
+        person_name = _localpart_to_person_name(local)
+        entities.append(
+            ExtractedEntity(
+                name=person_name,
+                entity_type="person",
+                aliases=[e, person_name],
+                contacts=[{"email": e}],
+                source_id=source_id,
+            )
+        )
+
+    # Org candidates from non-generic domains
+    for d in domains:
+        org_name = _domain_to_org_name(d)
+        entities.append(
+            ExtractedEntity(
+                name=org_name,
+                entity_type="org",
+                aliases=[d, org_name],
+                contacts=[],
+                source_id=source_id,
+            )
+        )
+
+    # Deduplicate by (name, type)
+    dedup: Dict[Tuple[str, str], ExtractedEntity] = {}
+    for ent in entities:
+        key = (ent.name.lower(), ent.entity_type)
+        if key not in dedup:
+            dedup[key] = ent
+        else:
+            # Merge aliases/contacts
+            existing = dedup[key]
+            existing_aliases = set(existing.aliases)
+            for a in ent.aliases:
+                if a not in existing_aliases:
+                    existing.aliases.append(a)
+                    existing_aliases.add(a)
+            existing.contacts.extend(ent.contacts)
+
+    return list(dedup.values())
+
+
+# -------------------------
+# CLI
+# -------------------------
 
 
 @click.group()
-@click.version_option(version=__version__)
-@click.pass_context
-def cli(ctx):
-    """kgraph - Config-driven knowledge graph framework."""
-    ctx.ensure_object(dict)
-
-
-@cli.command()
-@click.argument("project_name")
-@click.option("--template", default="default", help="Template to use (default, email, crm)")
-def init(project_name: str, template: str):
-    """Initialize a new kgraph project."""
-    project_path = Path(project_name)
-
-    if project_path.exists():
-        click.echo(f"Error: Directory '{project_name}' already exists", err=True)
-        raise SystemExit(1)
-
-    # Create project structure
-    project_path.mkdir(parents=True)
-    (project_path / "data").mkdir()
-    (project_path / "knowledge_graph").mkdir()
-    (project_path / "prompts").mkdir()
-    (project_path / "entity_types").mkdir()
-
-    # Copy templates
-    templates_dir = Path(__file__).parent.parent / "templates"
-
-    # Create config.yaml
-    config_template = templates_dir / "config.yaml"
-    if config_template.exists():
-        config_content = config_template.read_text()
-        config_content = config_content.replace("{{PROJECT_NAME}}", project_name)
-        (project_path / "kgraph.yaml").write_text(config_content)
-    else:
-        # Write default config
-        default_config = f"""project:
-  name: "{project_name}"
-  data_path: "./data"
-  kg_path: "./knowledge_graph"
-
-entity_types:
-  entity:
-    directory: "entities"
-    tier_field: "tier"
-
-tiers:
-  high:
-    criteria:
-      priority_min: 8
-    storage_type: directory
-  medium:
-    criteria:
-      priority_min: 4
-      priority_max: 8
-    storage_type: directory
-  low:
-    criteria:
-      priority_max: 4
-    storage_type: jsonl
-
-processing:
-  batch_size: 500
-  objective_interval: 5
-
-confidence:
-  auto_merge: 0.95
-  auto_update: 0.90
-  auto_create: 0.50
-  llm_required: [0.50, 0.95]
-
-matching:
-  strategies:
-    - alias
-    - fuzzy_name
-    - email_domain
-  fuzzy_threshold: 0.85
-
-agent:
-  provider: claude
-"""
-        (project_path / "kgraph.yaml").write_text(default_config)
-
-    # Create .gitignore
-    gitignore = """# kgraph
-data/
-*.db
-*.db-journal
-
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-
-# Editor
-.vscode/
-.idea/
-*.swp
-"""
-    (project_path / ".gitignore").write_text(gitignore)
-
-    # Create README
-    readme = f"""# {project_name}
-
-Knowledge graph built with [kgraph](https://github.com/eddiel/kgraph).
-
-## Quick Start
-
-```bash
-# Process data
-kgraph process
-
-# Review pending questions
-kgraph review
-
-# View knowledge graph
-kgraph tree
-```
-
-## Configuration
-
-Edit `kgraph.yaml` to customize:
-- Entity types and fields
-- Tier definitions
-- Matching strategies
-- LLM provider
-"""
-    (project_path / "README.md").write_text(readme)
-
-    click.echo(f"Created project: {project_name}/")
-    click.echo(f"  kgraph.yaml      - Configuration")
-    click.echo(f"  data/            - Source data")
-    click.echo(f"  knowledge_graph/ - Output knowledge graph")
-    click.echo(f"  prompts/         - LLM prompts")
-    click.echo(f"  entity_types/    - Entity type schemas")
-    click.echo()
-    click.echo(f"Next steps:")
-    click.echo(f"  cd {project_name}")
-    click.echo(f"  # Add your data to data/")
-    click.echo(f"  # Edit kgraph.yaml to configure entity types")
-    click.echo(f"  kgraph process")
-
-
-@cli.command()
-@click.option("--config", "-c", type=click.Path(exists=True), help="Config file path")
-@click.option("--batch-size", "-b", type=int, default=10, help="Items per extraction batch")
-@click.option("--max-batches", "-m", type=int, help="Maximum batches to process")
-@click.option("--auto-apply", is_flag=True, help="Automatically apply ready operations")
-@click.option("--no-llm", is_flag=True, help="Disable LLM for ambiguous decisions")
-@click.option("--input", "-i", "input_file", type=click.Path(exists=True), help="Input file (JSON/JSONL)")
-@click.pass_context
-def process(ctx, config: str, batch_size: int, max_batches: int, auto_apply: bool, no_llm: bool, input_file: str):
-    """Process source data into knowledge graph."""
-    config_path = Path(config) if config else None
-    cfg = _load_config_or_exit(config_path)
-
-    click.echo(f"Project: {cfg.project_name}")
-    click.echo(f"Data path: {cfg.data_path}")
-    click.echo(f"KG path: {cfg.kg_path}")
-    click.echo()
-
-    # Load input data
-    items: List[dict] = []
-
-    if input_file:
-        input_path = Path(input_file)
-        if input_path.suffix == ".jsonl":
-            with open(input_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        items.append(json.loads(line))
-        elif input_path.suffix == ".json":
-            with open(input_path) as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    items = data
-                else:
-                    items = [data]
-        else:
-            click.echo(f"Error: Unsupported input format: {input_path.suffix}", err=True)
-            raise SystemExit(1)
-
-        click.echo(f"Loaded {len(items)} items from {input_file}")
-    else:
-        # Look for data files in data_path
-        data_path = cfg.data_path
-        if data_path.exists():
-            for data_file in data_path.glob("*.jsonl"):
-                with open(data_file) as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            items.append(json.loads(line))
-            for data_file in data_path.glob("*.json"):
-                with open(data_file) as f:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        items.extend(data)
-                    else:
-                        items.append(data)
-
-        if not items:
-            click.echo("No input data found. Use --input or add files to data/", err=True)
-            raise SystemExit(1)
-
-        click.echo(f"Loaded {len(items)} items from {data_path}")
-
-    # Apply max batches limit
-    if max_batches:
-        max_items = max_batches * batch_size
-        if len(items) > max_items:
-            items = items[:max_items]
-            click.echo(f"Limited to {len(items)} items ({max_batches} batches)")
-
-    # Initialize orchestrator
-    from kgraph.pipeline import Orchestrator
-
-    orchestrator = Orchestrator(cfg, cfg.kg_path)
-
-    # Process
-    click.echo()
-    click.echo("Processing...")
-
-    result = orchestrator.process(
-        items=items,
-        source_name=input_file,
-        auto_apply=auto_apply,
-        use_llm=not no_llm,
-        batch_size=batch_size,
-    )
-
-    # Display results
-    click.echo()
-    click.echo("Results:")
-    click.echo(f"  Items processed:    {result.items_processed}")
-    click.echo(f"  Entities extracted: {result.entities_extracted}")
-    click.echo(f"  Operations staged:  {result.operations_staged}")
-    click.echo(f"  Operations applied: {result.operations_applied}")
-    click.echo(f"  Operations failed:  {result.operations_failed}")
-    click.echo(f"  Questions pending:  {result.questions_created}")
-
-    if result.errors:
-        click.echo()
-        click.echo("Errors:")
-        for error in result.errors[:5]:
-            click.echo(f"  - {error}")
-        if len(result.errors) > 5:
-            click.echo(f"  ... and {len(result.errors) - 5} more")
-
-    if result.questions_created > 0:
-        click.echo()
-        click.echo(f"Run 'kgraph review' to answer {result.questions_created} pending questions.")
-
-
-@cli.command()
-@click.option("--config", "-c", type=click.Path(exists=True), help="Config file path")
-@click.option("--session", "-s", "session_id", help="Session ID to resume")
-@click.option("--auto-apply", is_flag=True, help="Automatically apply ready operations")
-@click.pass_context
-def resume(ctx, config: str, session_id: str, auto_apply: bool):
-    """Resume interrupted processing."""
-    config_path = Path(config) if config else None
-    cfg = _load_config_or_exit(config_path)
-
-    from kgraph.pipeline import Orchestrator, SessionManager
-
-    orchestrator = Orchestrator(cfg, cfg.kg_path)
-
-    # If no session specified, show resumable sessions
-    if not session_id:
-        sessions = orchestrator.session_manager.get_resumable_sessions()
-
-        if not sessions:
-            click.echo("No resumable sessions found.")
-            return
-
-        click.echo("Resumable sessions:")
-        for s in sessions:
-            click.echo(f"  {s['session_id']}")
-            click.echo(f"    State: {s['state']}")
-            click.echo(f"    Created: {s['created_at']}")
-            click.echo(f"    Entities: {s['entities_extracted']}")
-            click.echo()
-
-        click.echo("Use --session <id> to resume a specific session.")
-        return
-
-    # Resume session
-    click.echo(f"Resuming session: {session_id}")
-
-    result = orchestrator.resume(session_id, auto_apply=auto_apply)
-
-    if not result:
-        click.echo(f"Session not found: {session_id}", err=True)
-        raise SystemExit(1)
-
-    # Display results
-    click.echo()
-    click.echo("Results:")
-    click.echo(f"  Operations applied: {result.operations_applied}")
-    click.echo(f"  Operations failed:  {result.operations_failed}")
-
-    if result.errors:
-        click.echo()
-        click.echo("Errors:")
-        for error in result.errors[:5]:
-            click.echo(f"  - {error}")
-
-
-@cli.command()
-@click.option("--config", "-c", type=click.Path(exists=True), help="Config file path")
-@click.option("--batch", "-b", "batch_id", help="Filter by batch ID")
-@click.option("--auto", is_flag=True, help="Accept suggested answers automatically")
-@click.pass_context
-def review(ctx, config: str, batch_id: str, auto: bool):
-    """Review pending questions from processing."""
-    config_path = Path(config) if config else None
-    cfg = _load_config_or_exit(config_path)
-
-    from kgraph.pipeline import Orchestrator
-
-    orchestrator = Orchestrator(cfg, cfg.kg_path)
-
-    # Count pending questions
-    pending_count = orchestrator.question_queue.count_pending(batch_id)
-
-    if pending_count == 0:
-        click.echo("No pending questions.")
-        return
-
-    click.echo(f"Pending questions: {pending_count}")
-    click.echo()
-
-    answered = 0
-    skipped = 0
-
-    while True:
-        # Get next question
-        question_data = orchestrator.review_next(batch_id)
-
-        if not question_data:
-            break
-
-        # Display question
-        click.echo("-" * 60)
-        click.echo(f"Question {answered + skipped + 1}/{pending_count}")
-        click.echo(f"Type: {question_data['type']}")
-        click.echo(f"Confidence: {question_data['confidence']:.2f}")
-        click.echo()
-        click.echo(question_data['text'])
-        click.echo()
-
-        if question_data.get('suggested'):
-            click.echo(f"Suggested: {question_data['suggested']}")
-            click.echo()
-
-        if auto and question_data.get('suggested'):
-            # Auto-accept suggestion
-            answer = question_data['suggested']
-            click.echo(f"Auto-accepting: {answer}")
-        else:
-            # Prompt for answer
-            answer = click.prompt(
-                "Your answer (or 'skip' to skip, 'quit' to exit)",
-                default=question_data.get('suggested', ''),
+def cli() -> None:
+    """kgraph CLI.
+
+    Utilities for indexing, processing corpora, and viewing logs.
+    """
+
+
+# ---- index commands ----
+
+
+@cli.group()
+def index() -> None:
+    """Index operations (rebuild, search)."""
+
+
+@index.command("rebuild")
+@click.option("--kg-root", type=click.Path(path_type=Path), required=True, help="Knowledge graph root")
+@click.option(
+    "--db",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Path to index.db (defaults to <kg-root>/.kgraph/index.db)",
+)
+def index_rebuild(kg_root: Path, db: Optional[Path]) -> None:
+    kg_root = kg_root.resolve()
+    db = db or (kg_root / ".kgraph" / "index.db")
+    db.parent.mkdir(parents=True, exist_ok=True)
+
+    index = EntityIndex(db)
+    count = index.rebuild(kg_root)
+    click.echo(f"Rebuilt index with {count} entities at {db}")
+
+
+@index.command("search")
+@click.option("--db", type=click.Path(path_type=Path), required=True, help="Path to index.db")
+@click.option("--query", "query", required=True, help="Search query")
+@click.option("--category", default=None, help="Optional category filter (e.g., people, orgs)")
+@click.option("--limit", default=10, show_default=True, type=int)
+def index_search(db: Path, query: str, category: Optional[str], limit: int) -> None:
+    index = EntityIndex(db)
+    results = index.search(query, category=category, limit=limit)
+    for r in results:
+        click.echo(json.dumps({
+            "path": r.path,
+            "name": r.name,
+            "aliases": r.aliases,
+            "category": r.category,
+            "email_domains": r.email_domains,
+            "last_updated": r.last_updated,
+        }))
+
+
+# ---- log commands ----
+
+
+@cli.group()
+def log() -> None:
+    """Observability logs (summary)."""
+
+
+@log.command("summary")
+@click.option("--db", type=click.Path(path_type=Path), required=True, help="Path to logs.db")
+@click.option("--session", default=None, help="Session ID (defaults to most recent session in this run)")
+def log_summary(db: Path, session: Optional[str]) -> None:
+    logger = ObservabilityLogger(db)
+    summary = logger.get_session_summary(session)
+    click.echo(json.dumps(summary, indent=2))
+
+
+# ---- process command ----
+
+
+@cli.command("process")
+@click.option("--corpus", type=click.Path(path_type=Path), required=True, help="Input corpus root")
+@click.option("--kg-root", type=click.Path(path_type=Path), required=True, help="Knowledge graph root")
+@click.option(
+    "--include-ext",
+    default=".txt,.md",
+    show_default=True,
+    help="Comma-separated list of file extensions to include",
+)
+@click.option("--apply/--dry-run", default=False, help="Apply changes to KG or just print plan")
+@click.option("--min-update-score", default=0.9, show_default=True, type=float, help="Min score for update action")
+@click.option("--limit-files", default=0, show_default=True, type=int, help="Process at most N files (0 = no limit)")
+def process_corpus(
+    corpus: Path,
+    kg_root: Path,
+    include_ext: str,
+    apply: bool,
+    min_update_score: float,
+    limit_files: int,
+) -> None:
+    """Process a text corpus into the knowledge graph (no web).
+
+    Extract entities (people/orgs) via simple heuristics, research/dedup against the index,
+    and create or update entities in the filesystem storage with observability logs.
+    """
+    corpus = corpus.resolve()
+    kg_root = kg_root.resolve()
+    kg_root.mkdir(parents=True, exist_ok=True)
+
+    kgraph_dir = kg_root / ".kgraph"
+    kgraph_dir.mkdir(parents=True, exist_ok=True)
+    index_db = kgraph_dir / "index.db"
+    logs_db = kgraph_dir / "logs.db"
+
+    storage = SimpleStorage(kg_root)
+    index = EntityIndex(index_db)
+    logger = ObservabilityLogger(logs_db)
+    researcher = EntityResearcher(index)
+
+    include_set = {ext.strip().lower() for ext in include_ext.split(",") if ext.strip()}
+    files = list(_iter_files(corpus, include_set))
+    if limit_files and len(files) > limit_files:
+        files = files[:limit_files]
+
+    logger.log_input([
+        {"path": str(p), "size": p.stat().st_size} for p in files
+    ], source="corpus")
+
+    planned_ops: List[Dict] = []
+
+    for f in files:
+        text = f.read_text(errors="ignore")
+        source_id = str(f.relative_to(corpus)) if f.is_relative_to(corpus) else str(f)
+        entities = extract_entities_from_text(text, source_id)
+
+        for ent in entities:
+            # Research
+            matches = researcher.research(
+                ent.name,
+                aliases=ent.aliases,
+                email=(ent.contacts[0]["email"] if ent.contacts else None),
+            )
+            action, target_path, confidence = researcher.suggest_action(
+                ent.name,
+                aliases=ent.aliases,
+                email=(ent.contacts[0]["email"] if ent.contacts else None),
             )
 
-        if answer.lower() == 'quit':
-            break
+            logger.log_research(
+                ent.name,
+                ent.name.lower(),
+                [m.__dict__ for m in matches],
+                action,
+            )
+            logger.log_decide(
+                ent.name,
+                action,
+                reasoning=(
+                    "high-confidence match" if action == "update" and confidence >= min_update_score
+                    else "no match" if action == "create" else "ambiguous"
+                ),
+                confidence=confidence,
+            )
 
-        if answer.lower() == 'skip':
-            orchestrator.question_queue.skip(question_data['question_id'])
-            skipped += 1
-            continue
+            # Determine category and entity path
+            category = "people" if ent.entity_type == "person" else "orgs"
+            entity_id = normalize_entity_id(ent.name)
+            default_path = f"{category}/{entity_id}"
+            final_path = target_path or default_path
 
-        # Submit answer
-        success = orchestrator.answer_question(question_data['question_id'], answer)
+            op = {
+                "name": ent.name,
+                "type": ent.entity_type,
+                "action": action if confidence >= min_update_score or action == "create" else "review",
+                "target_path": final_path,
+                "confidence": confidence,
+                "source": source_id,
+            }
+            planned_ops.append(op)
 
-        if success:
-            answered += 1
-            click.echo(f"Recorded answer: {answer}")
-        else:
-            click.echo("Failed to record answer", err=True)
+            if not apply:
+                continue
 
-        click.echo()
+            # Apply write/update
+            aliases = list({*ent.aliases})
+            meta_update = {
+                "sources": [source_id],
+                "aliases": aliases,
+            }
 
-    click.echo("-" * 60)
-    click.echo(f"Answered: {answered}")
-    click.echo(f"Skipped: {skipped}")
-    click.echo(f"Remaining: {orchestrator.question_queue.count_pending(batch_id)}")
+            if action == "create" or (action == "update" and not target_path):
+                summary = (
+                    f"# {ent.name}\n\n"
+                    f"Created from source: {source_id}\n\n"
+                    + (f"Emails: {', '.join([c['email'] for c in ent.contacts])}\n" if ent.contacts else "")
+                )
+                storage.create_entity(final_path, meta_update, summary)
+                logger.log_write(final_path, "create", "Created new entity")
+            elif action == "update" and target_path:
+                # Merge list fields manually to avoid overwriting
+                existing = storage.read_meta(final_path) or {}
+                merged_sources = list({*(existing.get("sources", []) or []), source_id})
+                merged_aliases = list({*(existing.get("aliases", []) or []), *aliases})
+                storage.update_entity(final_path, meta={"sources": merged_sources, "aliases": merged_aliases})
+                logger.log_write(final_path, "update", "Updated entity metadata")
+            else:
+                # review - skip write, only log
+                logger.log_decide(ent.name, "review", "Deferred for human review", confidence)
+                continue
 
-    if answered > 0:
-        click.echo()
-        click.echo("Run 'kgraph resume --auto-apply' to apply the approved operations.")
+            # Update index and propagate
+            index.add(final_path, ent.name, aliases=aliases, category=category)
+            ancestors = storage.get_ancestors(final_path)
+            logger.log_propagate(final_path, ancestors, reasoning="Updated parent summaries (placeholder)")
 
-
-@cli.command()
-@click.option("--config", "-c", type=click.Path(exists=True), help="Config file path")
-@click.option("--strict", is_flag=True, help="Strict validation mode")
-@click.pass_context
-def validate(ctx, config: str, strict: bool):
-    """Validate knowledge graph structure."""
-    config_path = Path(config) if config else None
-    cfg = _load_config_or_exit(config_path)
-
-    if not cfg.kg_path.exists():
-        click.echo(f"Error: Knowledge graph not found at {cfg.kg_path}", err=True)
-        raise SystemExit(1)
-
-    from kgraph.core.storage import FilesystemStorage
-
-    storage = FilesystemStorage(cfg.kg_path, cfg)
-
-    errors = []
-    warnings = []
-
-    # Check each entity type
-    for et_name, et_config in cfg.entity_types.items():
-        entities = storage.list_entities(et_name)
-        click.echo(f"Checking {et_name}: {len(entities)} entities")
-
-        for entity in entities:
-            entity_data = storage.read_entity(et_name, entity["id"], entity.get("tier"))
-            if entity_data:
-                # Check required fields
-                for field in et_config.required_fields:
-                    if field not in entity_data:
-                        errors.append(f"{et_name}/{entity['id']}: missing required field '{field}'")
-
-    if errors:
-        click.echo()
-        click.echo("Errors:")
-        for error in errors:
-            click.echo(f"  - {error}")
-        raise SystemExit(1)
-
-    if warnings:
-        click.echo()
-        click.echo("Warnings:")
-        for warning in warnings:
-            click.echo(f"  - {warning}")
-
-    click.echo()
-    click.echo("Validation passed!")
+    # Output plan
+    click.echo(json.dumps({
+        "session": logger.session_id,
+        "apply": apply,
+        "planned_ops": planned_ops,
+        "files_processed": len(files),
+    }, indent=2))
 
 
-@cli.command()
-@click.option("--config", "-c", type=click.Path(exists=True), help="Config file path")
-@click.pass_context
-def coverage(ctx, config: str):
-    """Show processing coverage statistics."""
-    config_path = Path(config) if config else None
-    cfg = _load_config_or_exit(config_path)
-
-    from kgraph.pipeline import Orchestrator
-
-    orchestrator = Orchestrator(cfg, cfg.kg_path)
-    status = orchestrator.get_status()
-
-    click.echo("Pipeline Status")
-    click.echo("=" * 40)
-    click.echo()
-
-    # Session info
-    session = status.get("session", {})
-    if session.get("id"):
-        click.echo("Current Session:")
-        click.echo(f"  ID:       {session['id']}")
-        click.echo(f"  State:    {session['state']}")
-        click.echo(f"  Batches:  {session['batches']}")
-        click.echo(f"  Entities: {session['entities_extracted']}")
-    else:
-        click.echo("No active session")
-    click.echo()
-
-    # Staging stats
-    staging = status.get("staging", {})
-    if staging:
-        click.echo("Staging Database:")
-        for stat, count in staging.items():
-            click.echo(f"  {stat}: {count}")
-    else:
-        click.echo("Staging: empty")
-    click.echo()
-
-    # Questions stats
-    questions = status.get("questions", {})
-    if questions:
-        click.echo("Question Queue:")
-        for stat, count in questions.items():
-            click.echo(f"  {stat}: {count}")
-    else:
-        click.echo("Question Queue: empty")
-    click.echo()
-
-    # Index size
-    click.echo(f"Research Index: {status.get('index_size', 0)} entities")
+# ---- orchestrate commands ----
 
 
-@cli.command()
-@click.option("--config", "-c", type=click.Path(exists=True), help="Config file path")
-@click.pass_context
-def status(ctx, config: str):
-    """Show pipeline status."""
-    # Delegate to coverage for now (same functionality)
-    ctx.invoke(coverage, config=config)
+@cli.group()
+def orchestrate() -> None:
+    """Headless orchestrator for agent-driven workflows."""
 
 
-@cli.command()
-@click.option("--config", "-c", type=click.Path(exists=True), help="Config file path")
-@click.option("--depth", "-d", type=int, default=3, help="Maximum depth to display")
-@click.pass_context
-def tree(ctx, config: str, depth: int):
-    """Display knowledge graph structure."""
-    config_path = Path(config) if config else None
-    cfg = _load_config_or_exit(config_path)
+@orchestrate.command("process")
+@click.option("--kg-root", type=click.Path(path_type=Path), required=True, help="Knowledge graph root")
+@click.option("--name", required=True, help="Entity name")
+@click.option("--type", "entity_type", default="person", show_default=True, help="Entity type")
+@click.option("--email", default=None, help="Email address for matching")
+@click.option("--source", default="manual", show_default=True, help="Source identifier")
+@click.option("--content", default="", help="Additional content/context")
+@click.option(
+    "--refactor-prob",
+    default=0.1,
+    show_default=True,
+    type=float,
+    help="Probability of triggering refactor step (0.0-1.0)",
+)
+def orchestrate_process(
+    kg_root: Path,
+    name: str,
+    entity_type: str,
+    email: Optional[str],
+    source: str,
+    content: str,
+    refactor_prob: float,
+) -> None:
+    """Process a single entity through the 6-step workflow.
 
-    if not cfg.kg_path.exists():
-        click.echo(f"Error: Knowledge graph not found at {cfg.kg_path}", err=True)
-        raise SystemExit(1)
+    Uses headless Claude Code to execute the mandatory workflow:
+    RESEARCH → DECIDE → WRITE → PROPAGATE → LOG → REBUILD
 
-    from kgraph.core.storage import FilesystemStorage
+    Plus stochastic refactoring with configurable probability.
+    """
+    import asyncio
 
-    storage = FilesystemStorage(cfg.kg_path, cfg)
+    from kgraph.orchestrator import HeadlessOrchestrator, OrchestratorConfig
 
-    click.echo(f"{cfg.project_name}")
-    click.echo(f"{'=' * len(cfg.project_name)}")
-    click.echo()
+    config = OrchestratorConfig(
+        kg_root=kg_root.resolve(),
+        refactor_probability=refactor_prob,
+    )
 
-    for et_name, et_config in cfg.entity_types.items():
-        click.echo(f"{et_config.directory}/")
+    orchestrator = HeadlessOrchestrator(config)
 
-        if cfg.tiers:
-            for tier_name in cfg.tiers:
-                entities = storage.list_entities(et_name, tier_name)
-                click.echo(f"  {tier_name}/ ({len(entities)} entities)")
+    result = asyncio.run(
+        orchestrator.process(
+            {
+                "name": name,
+                "type": entity_type,
+                "email": email,
+                "source": source,
+                "content": content,
+            }
+        )
+    )
 
-                if depth > 1:
-                    for entity in entities[:5]:  # Show first 5
-                        click.echo(f"    - {entity['name']}")
-                    if len(entities) > 5:
-                        click.echo(f"    ... and {len(entities) - 5} more")
-        else:
-            entities = storage.list_entities(et_name)
-            click.echo(f"  ({len(entities)} entities)")
+    click.echo(json.dumps(result, indent=2, default=str))
 
-        click.echo()
+
+@orchestrate.command("batch")
+@click.option("--kg-root", type=click.Path(path_type=Path), required=True, help="Knowledge graph root")
+@click.option(
+    "--input",
+    "input_file",
+    type=click.Path(path_type=Path, exists=True),
+    required=True,
+    help="JSONL file with items to process",
+)
+@click.option(
+    "--refactor-prob",
+    default=0.1,
+    show_default=True,
+    type=float,
+    help="Probability of triggering refactor step",
+)
+@click.option(
+    "--limit",
+    default=0,
+    show_default=True,
+    type=int,
+    help="Maximum items to process (0 = no limit)",
+)
+def orchestrate_batch(
+    kg_root: Path,
+    input_file: Path,
+    refactor_prob: float,
+    limit: int,
+) -> None:
+    """Process a batch of entities from a JSONL file.
+
+    Each line in the input file should be a JSON object with:
+    - name: Entity name (required)
+    - type: Entity type (default: "person")
+    - email: Email address (optional)
+    - source: Source identifier (default: "batch")
+    - content: Additional content (optional)
+    """
+    import asyncio
+
+    from kgraph.orchestrator import HeadlessOrchestrator, OrchestratorConfig
+
+    # Load items from JSONL
+    items = []
+    with open(input_file) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                items.append(json.loads(line))
+
+    if limit and len(items) > limit:
+        items = items[:limit]
+
+    click.echo(f"Processing {len(items)} items from {input_file}...")
+
+    config = OrchestratorConfig(
+        kg_root=kg_root.resolve(),
+        refactor_probability=refactor_prob,
+    )
+
+    orchestrator = HeadlessOrchestrator(config)
+    results = asyncio.run(orchestrator.process_batch(items))
+
+    # Output results
+    success_count = sum(1 for r in results if r.get("workflow_complete"))
+    error_count = sum(1 for r in results if r.get("error"))
+
+    click.echo(f"\nCompleted: {success_count}/{len(items)} successful, {error_count} errors")
+
+    for i, result in enumerate(results):
+        item = items[i]
+        status = "OK" if result.get("workflow_complete") else "ERROR"
+        decision = result.get("decision", result.get("error", "unknown"))
+        click.echo(f"  [{i+1}] {item.get('name', 'unknown')}: {status} - {decision}")
+
+
+@orchestrate.command("status")
+@click.option("--kg-root", type=click.Path(path_type=Path), required=True, help="Knowledge graph root")
+@click.option("--session", default=None, help="Session ID to inspect (defaults to latest)")
+def orchestrate_status(kg_root: Path, session: Optional[str]) -> None:
+    """Show status of recent orchestrator sessions."""
+    kg_root = kg_root.resolve()
+    logs_db = kg_root / ".kgraph" / "logs.db"
+
+    if not logs_db.exists():
+        click.echo("No logs.db found. Run an orchestrator process first.")
+        return
+
+    logger = ObservabilityLogger(logs_db)
+    summary = logger.get_session_summary(session)
+
+    click.echo(f"Session: {summary['session_id']}")
+    click.echo(f"Total logs: {summary['total_logs']}")
+    click.echo(f"Errors: {summary['error_count']}")
+    click.echo("\nPhase counts:")
+    for phase, count in summary.get("phase_counts", {}).items():
+        click.echo(f"  {phase}: {count}")
+    click.echo("\nAction counts:")
+    for action, count in summary.get("action_counts", {}).items():
+        click.echo(f"  {action}: {count}")
 
 
 if __name__ == "__main__":
     cli()
+

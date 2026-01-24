@@ -243,13 +243,21 @@ After completing each step, output the step marker AND a JSON block:
 ```
 
 ### 1. RESEARCH
+**First, study the Knowledge Base Structure tree above.** Understand:
+- What categories exist (people/family, people/contacts, projects, etc.)
+- Where similar entities live
+- The naming conventions used (lowercase_with_underscores)
+
+Then:
 - Analyze the input content for entities, events, and relationships
 - **Extract identifiers:** phone numbers (normalize to +1XXXXXXXXXX), email addresses, names
 - Search .kgraph/index.db for existing matches using extracted identifiers
-- Read relevant _summary.md files for context
-- Understand how this fits into the existing hierarchy
+- Read relevant _summary.md files (both the potential match AND its parent category summary)
+- Determine the correct category path for any new entities
 
-Output JSON:
+**Output format (REQUIRED):**
+```
+[RESEARCH] COMPLETE: Found X matches for [name]
 ```json
 {{
   "step": "RESEARCH",
@@ -270,24 +278,31 @@ Output JSON:
 ```
 
 ### 2. DECIDE
+**Choose the correct path based on the Knowledge Base Structure.**
+- People go under `people/family/`, `people/contacts/`, or `people/collaborators/`
+- Projects go under `projects/`
+- Use existing category patterns (look at sibling entities)
+
 **CRITICAL: Verify phone/email matches EXACTLY before claiming entity match.**
 Do NOT assume entities are the same person unless identifiers match exactly.
 
-Output JSON ACTION PLAN:
+**Output format (REQUIRED):**
+```
+[DECIDE] COMPLETE: CREATE/UPDATE/SKIP [entity] - [reasoning]
 ```json
 {{
   "step": "DECIDE",
   "actions": [
     {{
       "action_type": "create|update|delete|move|skip",
-      "path": "category/entity_name",
-      "reasoning": "why this action",
+      "path": "category/subcategory/entity_name",
+      "reasoning": "why this action and why this path",
       "confidence": 0.95,
       "identifier_verification": {{"input_phone": "+1...", "matched_phone": "+1...", "exact_match": true}},
       "content": {{"summary": "...", "meta": {{...}}}}
     }}
   ],
-  "overall_reasoning": "High-level explanation"
+  "overall_reasoning": "High-level explanation including path rationale"
 }}
 ```
 
@@ -333,7 +348,9 @@ context: how you know them
 4. Merge new aliases (combine, don't replace)
 5. Append new interactions to Interactions section
 
-Output JSON:
+**Output format (REQUIRED):**
+```
+[EXECUTE] COMPLETE: Created/updated N entities
 ```json
 {{
   "step": "EXECUTE",
@@ -345,24 +362,35 @@ Output JSON:
 ```
 
 ### 4. PROPAGATE
-For ALL affected paths:
-- Compute unique ancestors
-- Update each ancestor's _summary.md to reflect changes
-- Work from deepest to root
+**Walk UP the tree from each affected entity to the root.**
 
-Output JSON:
+Example: If you created `people/contacts/john_doe/`, propagate to:
+1. `people/contacts/_summary.md` - Add John to the contacts list
+2. `people/_summary.md` - Update people overview
+3. `_summary.md` (root) - Update executive summary
+
+For each ancestor:
+- Read the current _summary.md
+- Decide if it needs updating to reflect the new/changed entity
+- Write the updated summary (semantic synthesis, not just appending)
+
+**Output format (REQUIRED):**
+```
+[PROPAGATE] COMPLETE: Updated N ancestor summaries
 ```json
 {{
   "step": "PROPAGATE",
-  "paths_updated": ["people/_summary.md", "_summary.md"],
-  "changes": ["Added John Doe to contacts list", "Updated root summary"]
+  "paths_updated": ["people/contacts/_summary.md", "people/_summary.md", "_summary.md"],
+  "changes": ["Added John Doe to contacts list", "Updated people count", "Updated root recent activity"]
 }}
 ```
 
 ### 5. LOG
 Add entry to journal/YYYY-MM/log.md covering all changes.
 
-Output JSON:
+**Output format (REQUIRED):**
+```
+[LOG] COMPLETE: Added journal entry
 ```json
 {{
   "step": "LOG",
@@ -374,7 +402,9 @@ Output JSON:
 ### 6. REBUILD
 If any new entities were created, rebuild the index.
 
-Output JSON:
+**Output format (REQUIRED):**
+```
+[REBUILD] COMPLETE: Index rebuilt with N entities
 ```json
 {{
   "step": "REBUILD",
@@ -392,7 +422,11 @@ Output JSON:
 ```
 Source: {context.raw_input.source if context.raw_input else "unknown"}
 
-Begin with Step 1 (RESEARCH).
+---
+
+**IMPORTANT: You MUST output "[STEP] COMPLETE:" marker after EACH step, not just at the end.**
+
+Begin with Step 1 (RESEARCH). Output "[RESEARCH] COMPLETE: ..." when done, then proceed to Step 2.
 """
 
     def _build_legacy_system_prompt(
@@ -901,6 +935,58 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
                 count = int(count_match.group(1)) if count_match else None
                 self.state_machine.store_output("REBUILD", {"count": count})
                 self.state_machine.transition("REBUILD")
+
+        # Fallback: Parse created/updated paths from summary text
+        # Claude often outputs a summary instead of per-step markers
+        if context.is_hierarchy_mode and not context.created_paths:
+            # Match various patterns Claude might use:
+            # - **Entity created:** `people/contacts/foo/_summary.md`
+            # - **Entity path:** `people/contacts/foo/`
+            # - **Path:** `people/contacts/foo/`
+            # - CREATE new contact at `people/contacts/foo/`
+            # - Created `people/contacts/foo`
+            patterns = [
+                r'CREATE[:\s].*?`([^`]+)`',  # Most common: CREATE ... `path`
+                r'[Ee]ntity (?:created|path).*?`([^`]+)`',
+                r'\*\*Path:\*\*\s*`([^`]+)`',
+                r'[Cc]reated[:\s]+`([^`]+)`',
+                r'[Cc]reated.*?entity.*?`([^`]+)`',
+            ]
+            created = []
+            for pattern in patterns:
+                matches = re.findall(pattern, output)
+                created.extend(matches)
+            # Normalize: remove /_summary.md suffix
+            created = [re.sub(r'/_summary\.md$', '', p) for p in created]
+            context.created_paths = list(set(created))
+
+        if context.is_hierarchy_mode and not context.updated_paths:
+            # Match various patterns for updates
+            patterns = [
+                r'[Uu]pdated[:\s]+`([^`]+)`',
+                r'\*\*Updated:\*\*\s*`([^`]+)`',
+                r'UPDATE action.*?`([a-z_]+/[a-z_]+(?:/[a-z_]+)?)`',
+            ]
+            updated = []
+            for pattern in patterns:
+                matches = re.findall(pattern, output)
+                updated.extend(matches)
+            # Filter out paths that were created and normalize
+            updated = [re.sub(r'/_summary\.md$', '', p) for p in updated]
+            updated = [p for p in updated if p not in context.created_paths]
+            context.updated_paths = list(set(updated))
+
+        if context.is_hierarchy_mode and not context.propagated_paths:
+            # Match propagation mentions
+            patterns = [
+                r'[Pp]ropagated.*?(\d+)\s*ancestor',
+                r'[Uu]pdated\s+(\d+)\s*(?:ancestor|summar)',
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, output)
+                if match:
+                    context.propagated_paths = [f"{match.group(1)} ancestors updated"]
+                    break
 
         # Check if workflow completed
         if self.state_machine.current_state in (

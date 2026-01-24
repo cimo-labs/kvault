@@ -475,6 +475,75 @@ def orchestrate_batch(
         click.echo(f"  [{i+1}] {item.get('name', 'unknown')}: {status} - {decision}")
 
 
+@orchestrate.command("ingest")
+@click.option("--kg-root", type=click.Path(path_type=Path), required=True, help="Knowledge graph root")
+@click.option("--content", required=True, help="Raw content to process (or '-' for stdin)")
+@click.option("--source", default="manual", show_default=True, help="Source identifier")
+@click.option("--hint", multiple=True, help="Optional hints (key=value format)")
+@click.option(
+    "--refactor-prob",
+    default=0.1,
+    show_default=True,
+    type=float,
+    help="Probability of triggering refactor step (0.0-1.0)",
+)
+def orchestrate_ingest(
+    kg_root: Path,
+    content: str,
+    source: str,
+    hint: Tuple[str, ...],
+    refactor_prob: float,
+) -> None:
+    """Ingest raw content through hierarchy-based workflow.
+
+    Unlike 'process' which takes structured entity info, 'ingest' accepts
+    unstructured content and lets the agent reason about what changes
+    the knowledge hierarchy needs.
+
+    The agent can produce 0..N actions (create, update, delete, move)
+    based on its analysis of the input.
+
+    Examples:
+        kgraph orchestrate ingest --kg-root . --content "Coffee with Sarah from Anthropic"
+        kgraph orchestrate ingest --kg-root . --content - --source "email:12345" < email.txt
+        kgraph orchestrate ingest --kg-root . --content "Meeting notes" --hint "people=Mike,Bryan"
+    """
+    import asyncio
+    import sys
+
+    from kgraph.orchestrator import HeadlessOrchestrator, OrchestratorConfig
+
+    # Read from stdin if content is '-'
+    if content == "-":
+        content = sys.stdin.read()
+
+    # Parse hints into dict
+    hints: Optional[Dict[str, str]] = None
+    if hint:
+        hints = {}
+        for h in hint:
+            if "=" in h:
+                key, value = h.split("=", 1)
+                hints[key.strip()] = value.strip()
+
+    config = OrchestratorConfig(
+        kg_root=kg_root.resolve(),
+        refactor_probability=refactor_prob,
+    )
+
+    orchestrator = HeadlessOrchestrator(config)
+
+    result = asyncio.run(
+        orchestrator.ingest(
+            content=content,
+            source=source,
+            hints=hints,
+        )
+    )
+
+    click.echo(json.dumps(result, indent=2, default=str))
+
+
 @orchestrate.command("status")
 @click.option("--kg-root", type=click.Path(path_type=Path), required=True, help="Knowledge graph root")
 @click.option("--session", default=None, help="Session ID to inspect (defaults to latest)")

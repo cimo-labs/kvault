@@ -1,14 +1,14 @@
 """
 WorkflowStateMachine - Enforces mandatory 6-step workflow sequence.
 
-States:
-    READY → RESEARCH → DECIDE → WRITE → PROPAGATE → LOG → REBUILD
-                                                           ↓
-                                                   REFACTOR_CHECK
-                                                      ↓      ↓
-                                              EXEC_REFACTOR  COMPLETE
-                                                      ↓
-                                                   COMPLETE
+Supports two modes:
+1. Legacy (entity-centric): READY → RESEARCH → DECIDE → WRITE → PROPAGATE → LOG → REBUILD
+2. Hierarchy-based: READY → RESEARCH → DECIDE → EXECUTE → PROPAGATE → LOG → REBUILD
+
+In hierarchy mode:
+- EXECUTE replaces WRITE
+- EXECUTE can handle multiple actions from an ActionPlan
+- State tracks completion across multiple actions
 
 Transitions are only allowed when prerequisites are met.
 """
@@ -26,7 +26,8 @@ class WorkflowState(Enum):
     READY = auto()
     RESEARCH = auto()
     DECIDE = auto()
-    WRITE = auto()
+    WRITE = auto()      # Legacy: single entity write
+    EXECUTE = auto()    # New: multi-action execution (alias for WRITE in hierarchy mode)
     PROPAGATE = auto()
     LOG = auto()
     REBUILD = auto()
@@ -73,28 +74,59 @@ class WorkflowStateMachine:
     # Format: {from_state: {to_state: prerequisite_function}}
     TRANSITIONS: Dict[WorkflowState, Dict[WorkflowState, Prerequisite]] = {
         WorkflowState.READY: {
-            WorkflowState.RESEARCH: lambda ctx: ctx.new_info is not None,
+            # Legacy: new_info must be set
+            # Hierarchy: raw_input must be set
+            WorkflowState.RESEARCH: lambda ctx: (
+                ctx.new_info is not None or ctx.raw_input is not None
+            ),
         },
         WorkflowState.RESEARCH: {
             WorkflowState.DECIDE: lambda ctx: ctx.research_results is not None,
         },
         WorkflowState.DECIDE: {
-            # Can proceed to WRITE if decision requires it
-            WorkflowState.WRITE: lambda ctx: ctx.decision in ("create", "update", "merge"),
-            # Can skip to LOG if decision is "skip"
-            WorkflowState.LOG: lambda ctx: ctx.decision == "skip",
+            # Legacy: proceed to WRITE if decision requires it
+            WorkflowState.WRITE: lambda ctx: (
+                not ctx.is_hierarchy_mode
+                and ctx.decision in ("create", "update", "merge")
+            ),
+            # Hierarchy: proceed to EXECUTE if plan has actions
+            WorkflowState.EXECUTE: lambda ctx: (
+                ctx.is_hierarchy_mode
+                and ctx.action_plan is not None
+                and len(ctx.action_plan.actions) > 0
+            ),
+            # Can skip to LOG if decision is "skip" (legacy) or plan is empty (hierarchy)
+            WorkflowState.LOG: lambda ctx: (
+                (not ctx.is_hierarchy_mode and ctx.decision == "skip")
+                or (ctx.is_hierarchy_mode and ctx.action_plan is not None and len(ctx.action_plan.actions) == 0)
+            ),
         },
         WorkflowState.WRITE: {
+            # Legacy: proceed when entity_path is set
             WorkflowState.PROPAGATE: lambda ctx: ctx.entity_path is not None,
+        },
+        WorkflowState.EXECUTE: {
+            # Hierarchy: proceed when all planned actions are executed
+            WorkflowState.PROPAGATE: lambda ctx: (
+                ctx.action_plan is not None
+                and len(ctx.executed_actions) >= len(ctx.action_plan.actions)
+            ),
         },
         WorkflowState.PROPAGATE: {
             WorkflowState.LOG: lambda ctx: ctx.propagated_paths is not None,
         },
         WorkflowState.LOG: {
-            # REBUILD only if new entity was created
-            WorkflowState.REBUILD: lambda ctx: ctx.entity_created,
-            # Skip REBUILD if just updating
-            WorkflowState.REFACTOR_CHECK: lambda ctx: not ctx.entity_created,
+            # Legacy: REBUILD only if new entity was created
+            # Hierarchy: REBUILD if any creates happened
+            WorkflowState.REBUILD: lambda ctx: (
+                ctx.entity_created
+                or (ctx.is_hierarchy_mode and len(ctx.created_paths) > 0)
+            ),
+            # Skip REBUILD if no new entities
+            WorkflowState.REFACTOR_CHECK: lambda ctx: (
+                (not ctx.is_hierarchy_mode and not ctx.entity_created)
+                or (ctx.is_hierarchy_mode and len(ctx.created_paths) == 0)
+            ),
         },
         WorkflowState.REBUILD: {
             WorkflowState.REFACTOR_CHECK: lambda ctx: True,
@@ -113,6 +145,7 @@ class WorkflowStateMachine:
         "RESEARCH": WorkflowState.RESEARCH,
         "DECIDE": WorkflowState.DECIDE,
         "WRITE": WorkflowState.WRITE,
+        "EXECUTE": WorkflowState.EXECUTE,  # New: hierarchy mode
         "PROPAGATE": WorkflowState.PROPAGATE,
         "LOG": WorkflowState.LOG,
         "REBUILD": WorkflowState.REBUILD,
@@ -235,16 +268,62 @@ class WorkflowStateMachine:
             self.context.existing_entity_path = data.get("best_match_path")
 
         elif step == "DECIDE":
-            self.context.decision = data.get("decision")
-            self.context.decision_confidence = data.get("confidence")
-            self.context.decision_reasoning = data.get("reasoning")
-            self.context.target_path = data.get("target_path")
+            if self.context.is_hierarchy_mode:
+                # Hierarchy mode: store action plan
+                from kgraph.orchestrator.context import ActionPlan, PlannedAction
+                plan_data = data.get("action_plan") or data
+                if isinstance(plan_data, ActionPlan):
+                    self.context.action_plan = plan_data
+                elif isinstance(plan_data, dict):
+                    # Parse from dict
+                    actions = []
+                    for a in plan_data.get("actions", []):
+                        actions.append(PlannedAction(
+                            action_type=a.get("action_type", "skip"),
+                            path=a.get("path", ""),
+                            reasoning=a.get("reasoning", ""),
+                            confidence=a.get("confidence", 0.0),
+                            content=a.get("content"),
+                            target_path=a.get("target_path"),
+                        ))
+                    self.context.action_plan = ActionPlan(
+                        actions=actions,
+                        overall_reasoning=plan_data.get("overall_reasoning", ""),
+                    )
+            else:
+                # Legacy mode: store single decision
+                self.context.decision = data.get("decision")
+                self.context.decision_confidence = data.get("confidence")
+                self.context.decision_reasoning = data.get("reasoning")
+                self.context.target_path = data.get("target_path")
 
         elif step == "WRITE":
+            # Legacy mode: single entity write
             self.context.entity_path = data.get("entity_path")
             self.context.meta_written = data.get("meta")
             self.context.summary_written = data.get("summary")
             self.context.entity_created = self.context.decision == "create"
+
+        elif step == "EXECUTE":
+            # Hierarchy mode: accumulate executed actions
+            action = data.get("action")
+            if action:
+                self.context.executed_actions.append(action)
+                action_type = action.get("action_type")
+                path = action.get("path")
+                if action_type == "create" and path:
+                    self.context.created_paths.append(path)
+                elif action_type == "update" and path:
+                    self.context.updated_paths.append(path)
+
+            # Check if all actions are complete, set propagation roots
+            if (
+                self.context.action_plan
+                and len(self.context.executed_actions) >= len(self.context.action_plan.actions)
+            ):
+                self.context.propagation_roots = list(set(
+                    self.context.created_paths + self.context.updated_paths
+                ))
 
         elif step == "PROPAGATE":
             self.context.propagated_paths = data.get("paths", [])
@@ -299,6 +378,20 @@ class WorkflowStateMachine:
             if isinstance(output, dict) and output.get("entity_path"):
                 return ValidationResult(True, "OK", output)
             return ValidationResult(False, "Write must return dict with 'entity_path' key")
+
+        elif step == "EXECUTE":
+            # Execute must return action info (single action from plan)
+            if isinstance(output, dict) and output.get("action"):
+                action = output["action"]
+                if isinstance(action, dict) and action.get("action_type") and action.get("path"):
+                    return ValidationResult(True, "OK", output)
+            # Also accept action directly (not wrapped)
+            if isinstance(output, dict) and output.get("action_type") and output.get("path"):
+                return ValidationResult(True, "OK", {"action": output})
+            return ValidationResult(
+                False,
+                "Execute must return dict with 'action' key containing action_type and path",
+            )
 
         elif step == "PROPAGATE":
             # Propagate should return list of updated paths

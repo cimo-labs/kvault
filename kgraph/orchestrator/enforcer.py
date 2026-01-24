@@ -60,6 +60,8 @@ class WorkflowEnforcer:
         self.kg_root = kg_root or ""
         self.pending_tool_use_id: Optional[str] = None
         self._step_outputs: Dict[str, Any] = {}
+        # Hierarchy mode: track which planned actions have been executed
+        self._completed_action_indices: set[int] = set()
 
     def _tool_to_step(self, tool_name: str, tool_input: Dict[str, Any]) -> Optional[str]:
         """Map tool execution to workflow step.
@@ -71,6 +73,8 @@ class WorkflowEnforcer:
         Returns:
             Step name if tool maps to a step, None otherwise
         """
+        is_hierarchy_mode = self.sm.context.is_hierarchy_mode
+
         # Grep/Read against index.db → RESEARCH
         if tool_name in ("Grep", "Read"):
             path = tool_input.get("path", "") or tool_input.get("file_path", "")
@@ -83,37 +87,21 @@ class WorkflowEnforcer:
             if "index.db" in command and ("sqlite3" in command or "SELECT" in command):
                 return "RESEARCH"
 
-        # Write to _meta.json or _summary.md → WRITE
-        if tool_name == "Write":
-            file_path = tool_input.get("file_path", "")
-            if "_meta.json" in file_path or "_summary.md" in file_path:
-                # Check if this is the entity write (not propagate)
-                # Propagate writes to ancestor paths (shorter than entity path)
-                if self.sm.context.entity_path:
-                    entity_parts = self.sm.context.entity_path.split("/")
-                    file_parts = file_path.replace(self.kg_root, "").strip("/").split("/")
-                    # If writing to a path with fewer parts, it's propagation
-                    if len(file_parts) < len(entity_parts):
-                        return "PROPAGATE"
-                return "WRITE"
-
-        # Edit to _summary.md → could be WRITE or PROPAGATE
-        if tool_name == "Edit":
-            file_path = tool_input.get("file_path", "")
-            if "_summary.md" in file_path:
-                # If entity_path is set and this is an ancestor, it's PROPAGATE
-                if self.sm.context.entity_path:
-                    entity_parts = self.sm.context.entity_path.split("/")
-                    file_parts = file_path.replace(self.kg_root, "").strip("/").split("/")
-                    if len(file_parts) < len(entity_parts):
-                        return "PROPAGATE"
-                return "WRITE"
-
-        # Write to journal/*/log.md → LOG
+        # Write/Edit to entity files
         if tool_name in ("Write", "Edit"):
             file_path = tool_input.get("file_path", "")
+
+            # Journal writes → LOG (same in both modes)
             if "journal/" in file_path and "log.md" in file_path:
                 return "LOG"
+
+            if "_meta.json" in file_path or "_summary.md" in file_path:
+                if is_hierarchy_mode:
+                    # Hierarchy mode: check if write is part of planned actions or propagation
+                    return self._classify_write_hierarchy_mode(file_path)
+                else:
+                    # Legacy mode: check if this is entity write or propagation
+                    return self._classify_write_legacy_mode(file_path)
 
         # Bash with rebuild_index.py → REBUILD
         if tool_name == "Bash":
@@ -122,6 +110,69 @@ class WorkflowEnforcer:
                 return "REBUILD"
 
         return None
+
+    def _classify_write_hierarchy_mode(self, file_path: str) -> Optional[str]:
+        """Classify a write operation in hierarchy mode.
+
+        Args:
+            file_path: Path being written to
+
+        Returns:
+            Step name: EXECUTE if matching planned action, PROPAGATE if ancestor
+        """
+        # Normalize path for comparison
+        normalized_path = file_path.replace(self.kg_root, "").strip("/")
+        entity_path = re.sub(r"/_?(meta\.json|summary\.md)$", "", normalized_path)
+
+        # Check if this path matches a planned action
+        if self.sm.context.action_plan:
+            for idx, action in enumerate(self.sm.context.action_plan.actions):
+                if idx not in self._completed_action_indices:
+                    # Normalize action path for comparison
+                    action_path = action.path.strip("/")
+                    if entity_path == action_path or normalized_path.startswith(action_path):
+                        return "EXECUTE"
+
+        # Check if this is propagation (ancestor of any affected path)
+        propagation_roots = self.sm.context.propagation_roots
+        if propagation_roots:
+            for root in propagation_roots:
+                root_normalized = root.strip("/")
+                # If the file path is a prefix of the root path, it's an ancestor
+                if root_normalized.startswith(entity_path) and entity_path != root_normalized:
+                    return "PROPAGATE"
+
+        # If no action plan yet, or writing to an ancestor, assume PROPAGATE
+        # This handles cases where propagation happens after EXECUTE
+        created_updated = self.sm.context.created_paths + self.sm.context.updated_paths
+        if created_updated:
+            for affected_path in created_updated:
+                affected_normalized = affected_path.strip("/")
+                if affected_normalized.startswith(entity_path) and entity_path != affected_normalized:
+                    return "PROPAGATE"
+
+        # Default to EXECUTE if in DECIDE state (writing planned action)
+        if self.sm.current_state == WorkflowState.DECIDE:
+            return "EXECUTE"
+
+        return "PROPAGATE"
+
+    def _classify_write_legacy_mode(self, file_path: str) -> Optional[str]:
+        """Classify a write operation in legacy mode.
+
+        Args:
+            file_path: Path being written to
+
+        Returns:
+            Step name: WRITE if entity write, PROPAGATE if ancestor
+        """
+        if self.sm.context.entity_path:
+            entity_parts = self.sm.context.entity_path.split("/")
+            file_parts = file_path.replace(self.kg_root, "").strip("/").split("/")
+            # If writing to a path with fewer parts, it's propagation
+            if len(file_parts) < len(entity_parts):
+                return "PROPAGATE"
+        return "WRITE"
 
     def _get_expected_states_for_step(self, step: str) -> list[WorkflowState]:
         """Get valid current states from which a step can be executed.
@@ -135,9 +186,10 @@ class WorkflowEnforcer:
         step_prerequisites = {
             "RESEARCH": [WorkflowState.READY],
             "DECIDE": [WorkflowState.RESEARCH],
-            "WRITE": [WorkflowState.DECIDE],
-            "PROPAGATE": [WorkflowState.WRITE],
-            "LOG": [WorkflowState.PROPAGATE, WorkflowState.DECIDE],  # Can skip WRITE if decision=skip
+            "WRITE": [WorkflowState.DECIDE],  # Legacy mode only
+            "EXECUTE": [WorkflowState.DECIDE, WorkflowState.EXECUTE],  # Hierarchy: can stay in EXECUTE for multiple actions
+            "PROPAGATE": [WorkflowState.WRITE, WorkflowState.EXECUTE],  # From either mode
+            "LOG": [WorkflowState.PROPAGATE, WorkflowState.DECIDE],  # Can skip WRITE/EXECUTE if no actions
             "REBUILD": [WorkflowState.LOG],
             "REFACTOR_CHECK": [WorkflowState.REBUILD, WorkflowState.LOG],
             "EXEC_REFACTOR": [WorkflowState.REFACTOR_CHECK],
@@ -176,9 +228,15 @@ class WorkflowEnforcer:
             if target_state and not self.sm.can_transition_to(target_state):
                 # Log the blocked attempt
                 if self.logger:
+                    # Get entity name based on mode
+                    if self.sm.context.is_hierarchy_mode:
+                        entity_name = self.sm.context.raw_input.source if self.sm.context.raw_input else "unknown"
+                    else:
+                        entity_name = self.sm.context.new_info.get("name", "unknown") if self.sm.context.new_info else "unknown"
+
                     self.logger.log_error(
                         error_type="workflow_violation",
-                        entity=self.sm.context.new_info.get("name", "unknown"),
+                        entity=entity_name,
                         details={
                             "tool": tool_name,
                             "attempted_step": expected_step,
@@ -310,6 +368,33 @@ class WorkflowEnforcer:
             entity_path = entity_path.replace(self.kg_root, "").strip("/")
             return {"entity_path": entity_path}
 
+        elif step == "EXECUTE":
+            # Hierarchy mode: extract action info from write
+            file_path = tool_input.get("file_path", "")
+            entity_path = re.sub(r"/_?(meta\.json|summary\.md)$", "", file_path)
+            entity_path = entity_path.replace(self.kg_root, "").strip("/")
+
+            # Find matching planned action
+            action_data = {
+                "action_type": "update",  # Default
+                "path": entity_path,
+            }
+
+            if self.sm.context.action_plan:
+                for idx, action in enumerate(self.sm.context.action_plan.actions):
+                    action_path = action.path.strip("/")
+                    if entity_path == action_path or entity_path.startswith(action_path):
+                        if idx not in self._completed_action_indices:
+                            action_data = {
+                                "action_type": action.action_type,
+                                "path": action.path,
+                                "reasoning": action.reasoning,
+                            }
+                            self._completed_action_indices.add(idx)
+                            break
+
+            return {"action": action_data}
+
         elif step == "PROPAGATE":
             # Track propagated path
             file_path = tool_input.get("file_path", "")
@@ -340,7 +425,11 @@ class WorkflowEnforcer:
         if not self.logger:
             return
 
-        entity_name = self.sm.context.new_info.get("name", "unknown")
+        # Get entity name based on mode
+        if self.sm.context.is_hierarchy_mode:
+            entity_name = self.sm.context.raw_input.source if self.sm.context.raw_input else "unknown"
+        else:
+            entity_name = self.sm.context.new_info.get("name", "unknown") if self.sm.context.new_info else "unknown"
 
         if step == "RESEARCH":
             matches = data.get("matches", [])
@@ -366,6 +455,14 @@ class WorkflowEnforcer:
                 diff_summary=f"Wrote entity for {entity_name}",
             )
 
+        elif step == "EXECUTE":
+            action = data.get("action", {})
+            self.logger.log_write(
+                path=action.get("path", ""),
+                change_type=action.get("action_type", "update"),
+                diff_summary=f"Executed action: {action.get('reasoning', 'No reasoning')}",
+            )
+
         elif step == "PROPAGATE":
             self.logger.log_propagate(
                 from_path=self.sm.context.entity_path or "",
@@ -379,6 +476,28 @@ class WorkflowEnforcer:
         Returns:
             Dict with current state, history, and context summary
         """
+        ctx = self.sm.context
+
+        # Build mode-appropriate context summary
+        if ctx.is_hierarchy_mode:
+            context_summary = {
+                "mode": "hierarchy",
+                "source": ctx.raw_input.source if ctx.raw_input else None,
+                "planned_actions": len(ctx.action_plan.actions) if ctx.action_plan else 0,
+                "executed_actions": len(ctx.executed_actions),
+                "created_paths": ctx.created_paths,
+                "updated_paths": ctx.updated_paths,
+                "propagated_count": len(ctx.propagated_paths or []),
+            }
+        else:
+            context_summary = {
+                "mode": "legacy",
+                "entity": ctx.new_info.get("name") if ctx.new_info else None,
+                "decision": ctx.decision,
+                "entity_path": ctx.entity_path,
+                "propagated_count": len(ctx.propagated_paths or []),
+            }
+
         return {
             "current_state": self.sm.current_state.name,
             "step_name": self.sm.get_current_step_name(),
@@ -386,10 +505,5 @@ class WorkflowEnforcer:
             "is_error": self.sm.is_error(),
             "history": self.sm.get_history(),
             "valid_transitions": [s.name for s in self.sm.get_valid_transitions()],
-            "context": {
-                "entity": self.sm.context.new_info.get("name"),
-                "decision": self.sm.context.decision,
-                "entity_path": self.sm.context.entity_path,
-                "propagated_count": len(self.sm.context.propagated_paths or []),
-            },
+            "context": context_summary,
         }

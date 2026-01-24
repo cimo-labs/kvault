@@ -68,7 +68,7 @@ class TestOrchestratorConfig:
         config = OrchestratorConfig(kg_root=tmp_path)
         assert config.refactor_probability == 0.1
         assert config.last_k_updates == 10
-        assert config.permission_mode == "acceptEdits"
+        assert config.permission_mode == "bypassPermissions"
         assert "Read" in config.allowed_tools
 
     def test_custom_values(self, tmp_path):
@@ -673,3 +673,200 @@ class TestE2EEnforcement:
         # PROPAGATE requires WRITE to be complete
         assert not sm.can_transition_to(WorkflowState.PROPAGATE)
         assert sm.can_transition_to(WorkflowState.WRITE)  # But WRITE is valid
+
+
+# -------------------------
+# Hierarchy Mode Tests
+# -------------------------
+
+
+class TestHierarchyModeContext:
+    """Tests for hierarchy-based WorkflowContext."""
+
+    def test_is_hierarchy_mode_with_raw_input(self):
+        """Context is in hierarchy mode when raw_input is set."""
+        from kgraph.orchestrator.context import HierarchyInput
+
+        raw_input = HierarchyInput(content="Test content", source="test:manual")
+        ctx = WorkflowContext(raw_input=raw_input)
+
+        assert ctx.is_hierarchy_mode is True
+        assert ctx.raw_input.content == "Test content"
+        assert ctx.raw_input.source == "test:manual"
+
+    def test_is_legacy_mode_with_new_info(self):
+        """Context is in legacy mode when new_info is set (not raw_input)."""
+        ctx = WorkflowContext(new_info={"name": "Alice", "type": "person"})
+
+        assert ctx.is_hierarchy_mode is False
+
+    def test_action_plan_storage(self):
+        """Can store and retrieve action plan."""
+        from kgraph.orchestrator.context import HierarchyInput, ActionPlan, PlannedAction
+
+        raw_input = HierarchyInput(content="Coffee with Bob", source="manual")
+        ctx = WorkflowContext(raw_input=raw_input)
+
+        plan = ActionPlan(
+            actions=[
+                PlannedAction(
+                    action_type="create",
+                    path="people/bob",
+                    reasoning="New contact",
+                    confidence=0.95,
+                )
+            ],
+            overall_reasoning="New person mentioned",
+        )
+        ctx.action_plan = plan
+
+        assert len(ctx.action_plan.actions) == 1
+        assert ctx.action_plan.actions[0].path == "people/bob"
+        assert ctx.action_plan.has_creates is True
+
+    def test_to_dict_hierarchy_mode(self):
+        """to_dict works for hierarchy mode context."""
+        from kgraph.orchestrator.context import HierarchyInput, ActionPlan, PlannedAction
+
+        raw_input = HierarchyInput(content="Test", source="test")
+        ctx = WorkflowContext(raw_input=raw_input)
+        ctx.action_plan = ActionPlan(
+            actions=[PlannedAction(action_type="create", path="test", reasoning="Test", confidence=0.9)],
+            overall_reasoning="Test",
+        )
+
+        result = ctx.to_dict()
+
+        assert result["is_hierarchy_mode"] is True
+        assert result["action_plan"]["actions"][0]["path"] == "test"
+
+
+class TestHierarchyModeStateMachine:
+    """Tests for hierarchy mode state machine transitions."""
+
+    def test_execute_state_exists(self):
+        """EXECUTE state exists in WorkflowState."""
+        assert hasattr(WorkflowState, "EXECUTE")
+        assert WorkflowState.EXECUTE.value is not None
+
+    def test_can_transition_to_execute_in_hierarchy_mode(self):
+        """Can transition to EXECUTE in hierarchy mode after DECIDE."""
+        from kgraph.orchestrator.context import HierarchyInput, ActionPlan, PlannedAction
+
+        raw_input = HierarchyInput(content="Test", source="test")
+        ctx = WorkflowContext(raw_input=raw_input)
+        sm = WorkflowStateMachine(ctx)
+
+        # Progress through RESEARCH
+        sm.store_output("RESEARCH", {"matches": []})
+        sm.transition("RESEARCH")
+
+        # Set action plan in DECIDE
+        ctx.action_plan = ActionPlan(
+            actions=[PlannedAction(action_type="create", path="test/entity", reasoning="Test", confidence=0.9)],
+            overall_reasoning="Test plan",
+        )
+        sm.store_output("DECIDE", {"action_plan": ctx.action_plan})
+        sm.transition("DECIDE")
+
+        # Should be able to transition to EXECUTE
+        assert sm.can_transition_to(WorkflowState.EXECUTE)
+        assert not sm.can_transition_to(WorkflowState.WRITE)  # Not in legacy mode
+
+    def test_can_skip_to_log_with_empty_plan(self):
+        """Can skip to LOG if action plan is empty."""
+        from kgraph.orchestrator.context import HierarchyInput, ActionPlan
+
+        raw_input = HierarchyInput(content="Noise", source="test")
+        ctx = WorkflowContext(raw_input=raw_input)
+        sm = WorkflowStateMachine(ctx)
+
+        # Progress through RESEARCH
+        sm.store_output("RESEARCH", {"matches": []})
+        sm.transition("RESEARCH")
+
+        # Set empty action plan
+        ctx.action_plan = ActionPlan(actions=[], overall_reasoning="Nothing to do")
+        sm.store_output("DECIDE", {"action_plan": ctx.action_plan})
+        sm.transition("DECIDE")
+
+        # Should be able to transition to LOG (skip EXECUTE)
+        assert sm.can_transition_to(WorkflowState.LOG)
+        assert not sm.can_transition_to(WorkflowState.EXECUTE)
+
+    def test_execute_to_propagate_after_all_actions(self):
+        """Can transition to PROPAGATE after all actions executed."""
+        from kgraph.orchestrator.context import HierarchyInput, ActionPlan, PlannedAction
+
+        raw_input = HierarchyInput(content="Test", source="test")
+        ctx = WorkflowContext(raw_input=raw_input)
+        sm = WorkflowStateMachine(ctx)
+
+        # Setup
+        sm.store_output("RESEARCH", {"matches": []})
+        sm.transition("RESEARCH")
+
+        ctx.action_plan = ActionPlan(
+            actions=[PlannedAction(action_type="create", path="people/test", reasoning="Test", confidence=0.9)],
+            overall_reasoning="Test",
+        )
+        sm.store_output("DECIDE", {"action_plan": ctx.action_plan})
+        sm.transition("DECIDE")
+        sm.transition("EXECUTE")
+
+        # Execute the action
+        sm.store_output("EXECUTE", {"action": {"action_type": "create", "path": "people/test"}})
+
+        # Should now be able to go to PROPAGATE
+        assert sm.can_transition_to(WorkflowState.PROPAGATE)
+
+
+class TestHierarchyModeEnforcer:
+    """Tests for hierarchy mode enforcer."""
+
+    @pytest.fixture
+    def hierarchy_context(self):
+        """Create hierarchy mode context."""
+        from kgraph.orchestrator.context import HierarchyInput
+
+        raw_input = HierarchyInput(content="Test", source="test:manual")
+        return WorkflowContext(raw_input=raw_input)
+
+    @pytest.fixture
+    def hierarchy_enforcer(self, hierarchy_context):
+        """Create enforcer in hierarchy mode."""
+        sm = WorkflowStateMachine(hierarchy_context)
+        return WorkflowEnforcer(sm, kg_root="/test/kb")
+
+    def test_classify_write_as_execute(self, hierarchy_enforcer, hierarchy_context):
+        """Writes to planned action paths are classified as EXECUTE."""
+        from kgraph.orchestrator.context import ActionPlan, PlannedAction
+
+        hierarchy_context.action_plan = ActionPlan(
+            actions=[PlannedAction(action_type="create", path="people/bob", reasoning="Test", confidence=0.9)],
+            overall_reasoning="Test",
+        )
+
+        result = hierarchy_enforcer._classify_write_hierarchy_mode("/test/kb/people/bob/_summary.md")
+        assert result == "EXECUTE"
+
+    def test_classify_ancestor_write_as_propagate(self, hierarchy_enforcer, hierarchy_context):
+        """Writes to ancestor paths are classified as PROPAGATE."""
+        from kgraph.orchestrator.context import ActionPlan, PlannedAction
+
+        hierarchy_context.action_plan = ActionPlan(
+            actions=[PlannedAction(action_type="create", path="people/bob", reasoning="Test", confidence=0.9)],
+            overall_reasoning="Test",
+        )
+        hierarchy_context.propagation_roots = ["people/bob"]
+
+        result = hierarchy_enforcer._classify_write_hierarchy_mode("/test/kb/people/_summary.md")
+        assert result == "PROPAGATE"
+
+    def test_workflow_status_hierarchy_mode(self, hierarchy_enforcer, hierarchy_context):
+        """Workflow status shows hierarchy mode info."""
+        status = hierarchy_enforcer.get_workflow_status()
+
+        assert status["context"]["mode"] == "hierarchy"
+        assert "planned_actions" in status["context"]
+        assert "executed_actions" in status["context"]

@@ -26,7 +26,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from kgraph import EntityIndex, EntityResearcher, ObservabilityLogger, SimpleStorage
-from kgraph.orchestrator.context import OrchestratorConfig, WorkflowContext
+from kgraph.orchestrator.context import (
+    OrchestratorConfig,
+    WorkflowContext,
+    HierarchyInput,
+    ActionPlan,
+    PlannedAction,
+)
 from kgraph.orchestrator.enforcer import WorkflowEnforcer
 from kgraph.orchestrator.state_machine import WorkflowStateMachine, WorkflowState
 
@@ -113,6 +119,67 @@ class HeadlessOrchestrator:
         except Exception:
             return []
 
+    def _load_root_summary(self) -> str:
+        """Load root _summary.md content.
+
+        Returns:
+            Root summary content, or empty string if not found.
+        """
+        root_summary_path = self.kg_root / "_summary.md"
+        if root_summary_path.exists():
+            try:
+                return root_summary_path.read_text()
+            except Exception:
+                return ""
+        return ""
+
+    def _build_hierarchy_tree(self, max_depth: int = 3) -> str:
+        """Build a tree representation of the KB hierarchy.
+
+        Args:
+            max_depth: Maximum depth to traverse
+
+        Returns:
+            Tree string showing directory structure with _summary.md presence
+        """
+        lines = []
+
+        def _walk(path: Path, prefix: str = "", depth: int = 0):
+            if depth > max_depth:
+                return
+
+            # Skip hidden directories and files
+            if path.name.startswith("."):
+                return
+
+            # Get subdirectories only
+            try:
+                subdirs = sorted([
+                    p for p in path.iterdir()
+                    if p.is_dir() and not p.name.startswith(".")
+                ])
+            except PermissionError:
+                return
+
+            for i, subdir in enumerate(subdirs):
+                is_last = i == len(subdirs) - 1
+                connector = "└── " if is_last else "├── "
+                extension = "    " if is_last else "│   "
+
+                # Check if directory has _summary.md
+                has_summary = (subdir / "_summary.md").exists()
+                marker = " ✓" if has_summary else ""
+
+                lines.append(f"{prefix}{connector}{subdir.name}/{marker}")
+                _walk(subdir, prefix + extension, depth + 1)
+
+        # Start from kg_root
+        has_root_summary = (self.kg_root / "_summary.md").exists()
+        lines.append(f"./{' ✓' if has_root_summary else ''}")
+        _walk(self.kg_root, "", 0)
+
+        return "\n".join(lines)
+
     def _build_system_prompt(self, context: WorkflowContext) -> str:
         """Build system prompt with context and workflow instructions.
 
@@ -130,6 +197,112 @@ class HeadlessOrchestrator:
             ]
         )
 
+        if context.is_hierarchy_mode:
+            return self._build_hierarchy_system_prompt(context, last_updates_summary)
+        else:
+            return self._build_legacy_system_prompt(context, last_updates_summary)
+
+    def _build_hierarchy_system_prompt(
+        self, context: WorkflowContext, last_updates_summary: str
+    ) -> str:
+        """Build system prompt for hierarchy-based processing.
+
+        Args:
+            context: WorkflowContext with raw_input
+            last_updates_summary: Formatted recent updates
+
+        Returns:
+            System prompt for hierarchy reasoning
+        """
+        return f"""You are a knowledge graph curator. You receive raw information and reason about what changes the knowledge hierarchy needs.
+
+## Knowledge Base Structure
+```
+{context.hierarchy_tree}
+```
+
+## Root Summary (Executive View)
+{context.root_summary[:2000] if context.root_summary else "(No root summary)"}
+
+## Instructions
+{self.meta_context[:3000]}
+
+## Recent Activity
+{last_updates_summary if last_updates_summary else "(No recent updates)"}
+
+## MANDATORY WORKFLOW - Execute ALL steps in order
+
+After completing each step, output: "[STEP_NAME] COMPLETE: [summary]"
+
+### 1. RESEARCH
+- Analyze the input content for entities, events, and relationships
+- Search .kgraph/index.db for existing matches
+- Read relevant _summary.md files for context
+- Understand how this fits into the existing hierarchy
+
+### 2. DECIDE
+Output an ACTION PLAN as JSON:
+```json
+{{
+  "actions": [
+    {{
+      "action_type": "create|update|delete|move|skip",
+      "path": "category/entity_name",
+      "reasoning": "why this action",
+      "confidence": 0.95,
+      "content": {{"summary": "...", "meta": {{...}}}}
+    }}
+  ],
+  "overall_reasoning": "High-level explanation"
+}}
+```
+
+Possible outcomes:
+- Empty plan: Input doesn't warrant any changes
+- Single action: Traditional single-entity processing
+- Multiple actions: Input affects multiple nodes
+
+### 3. EXECUTE
+For each action in the plan:
+- Write/update the entity files
+- Output "ACTION N COMPLETE: [path]" for each
+
+### 4. PROPAGATE
+For ALL affected paths:
+- Compute unique ancestors
+- Update each ancestor's _summary.md to reflect changes
+- Work from deepest to root
+
+### 5. LOG
+Add entry to journal/YYYY-MM/log.md covering all changes.
+
+### 6. REBUILD
+If any new entities were created, rebuild the index.
+
+## Knowledge Graph Root
+{self.kg_root}
+
+## Input to Process
+```
+{context.raw_input.content if context.raw_input else ""}
+```
+Source: {context.raw_input.source if context.raw_input else "unknown"}
+
+Begin with Step 1 (RESEARCH).
+"""
+
+    def _build_legacy_system_prompt(
+        self, context: WorkflowContext, last_updates_summary: str
+    ) -> str:
+        """Build system prompt for legacy entity-centric processing.
+
+        Args:
+            context: WorkflowContext with new_info
+            last_updates_summary: Formatted recent updates
+
+        Returns:
+            Legacy system prompt
+        """
         return f"""You are a knowledge graph curator following a mandatory 6-step workflow.
 
 ## Meta Context
@@ -180,7 +353,7 @@ After completing each step, output: "[STEP_NAME] COMPLETE: [summary]"
 
 ## Current Input to Process
 ```json
-{json.dumps(context.new_info, indent=2)}
+{json.dumps(context.new_info, indent=2) if context.new_info else "{}"}
 ```
 
 Begin with Step 1 (RESEARCH).
@@ -195,20 +368,40 @@ Begin with Step 1 (RESEARCH).
         Returns:
             Workflow initiation prompt
         """
-        return f"""Process the following information into the knowledge graph.
+        if context.is_hierarchy_mode:
+            return f"""Process the following raw information into the knowledge hierarchy.
+
+## Raw Input
+{context.raw_input.content if context.raw_input else ""}
+
+Source: {context.raw_input.source if context.raw_input else "unknown"}
+
+## Execute Mandatory Workflow
+
+Start with Step 1 (RESEARCH):
+- Analyze the input for entities, events, and relationships
+- Search the index for related existing entities
+- Read relevant _summary.md files
+
+Then proceed through all remaining steps.
+Output "[STEP] COMPLETE: summary" after each step.
+For EXECUTE, output "ACTION N COMPLETE: [path]" for each action.
+"""
+        else:
+            return f"""Process the following information into the knowledge graph.
 
 ## Information to Process
-- Name: {context.new_info.get('name', 'Unknown')}
-- Type: {context.new_info.get('type', 'unknown')}
-- Email: {context.new_info.get('email', 'N/A')}
-- Source: {context.new_info.get('source', 'manual')}
-- Content: {context.new_info.get('content', 'No additional content')}
+- Name: {context.new_info.get('name', 'Unknown') if context.new_info else 'Unknown'}
+- Type: {context.new_info.get('type', 'unknown') if context.new_info else 'unknown'}
+- Email: {context.new_info.get('email', 'N/A') if context.new_info else 'N/A'}
+- Source: {context.new_info.get('source', 'manual') if context.new_info else 'manual'}
+- Content: {context.new_info.get('content', 'No additional content') if context.new_info else 'No additional content'}
 
 ## Execute Mandatory Workflow
 
 Start with Step 1 (RESEARCH):
 - Search the index for existing entities matching this name or email
-- Query: sqlite3 {self.kg_root}/.kgraph/index.db "SELECT * FROM entities WHERE name LIKE '%{context.new_info.get('name', '')}%' OR aliases LIKE '%{context.new_info.get('name', '')}%'"
+- Query: sqlite3 {self.kg_root}/.kgraph/index.db "SELECT * FROM entities WHERE name LIKE '%{context.new_info.get('name', '') if context.new_info else ''}%' OR aliases LIKE '%{context.new_info.get('name', '') if context.new_info else ''}%'"
 
 Then proceed through all remaining steps in order.
 Output "[STEP] COMPLETE: summary" after each step.
@@ -241,7 +434,7 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
 """
 
     async def process(self, new_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Process new information through the 6-step workflow.
+        """Process new information through the 6-step workflow (legacy entity-centric mode).
 
         Args:
             new_info: Dictionary containing information to add to the knowledge graph
@@ -255,13 +448,63 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
             - propagated_paths: Paths of updated ancestors
             - refactored: Whether refactoring was performed
         """
-        # Initialize context
+        # Initialize context (legacy mode)
         context = WorkflowContext(
             new_info=new_info,
             meta_context=self.meta_context,
             last_k_updates=self._load_last_k_updates(self.config.last_k_updates),
             refactor_probability=self.config.refactor_probability,
         )
+
+        return await self._execute_workflow(context, new_info)
+
+    async def ingest(self, content: str, source: str, hints: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Process raw content through hierarchy-based workflow.
+
+        This is the new API that accepts unstructured input and lets the agent
+        reason about what changes the hierarchy needs.
+
+        Args:
+            content: Raw content to process (any format)
+            source: Source identifier (e.g., 'imessage:2024-01-15', 'manual')
+            hints: Optional extraction hints
+
+        Returns:
+            Dictionary with processing results including:
+            - session_id: Observability session ID
+            - action_plan: The plan produced by DECIDE
+            - executed_actions: Actions that were executed
+            - created_paths: Paths where new entities were created
+            - updated_paths: Paths where entities were updated
+            - propagated_paths: Paths of updated ancestors
+        """
+        # Create hierarchy input
+        raw_input = HierarchyInput(content=content, source=source, hints=hints)
+
+        # Initialize context (hierarchy mode)
+        context = WorkflowContext(
+            raw_input=raw_input,
+            meta_context=self.meta_context,
+            root_summary=self._load_root_summary(),
+            hierarchy_tree=self._build_hierarchy_tree(),
+            last_k_updates=self._load_last_k_updates(self.config.last_k_updates),
+            refactor_probability=self.config.refactor_probability,
+        )
+
+        return await self._execute_workflow(context, {"content": content, "source": source})
+
+    async def _execute_workflow(
+        self, context: WorkflowContext, input_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute the workflow with the given context.
+
+        Args:
+            context: Initialized WorkflowContext
+            input_data: Input data for logging
+
+        Returns:
+            Processing results dictionary
+        """
 
         # Initialize state machine and enforcer
         self.state_machine = WorkflowStateMachine(context)
@@ -274,7 +517,7 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
         # Start new observability session
         session_id = self.logger.new_session()
         context.session_id = session_id
-        self.logger.log_input([new_info], source="orchestrator")
+        self.logger.log_input([input_data], source="orchestrator")
 
         try:
             # Execute workflow
@@ -290,27 +533,21 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
                 await self._execute_refactor(context)
 
         except Exception as e:
+            entity_name = (
+                input_data.get("name")
+                if not context.is_hierarchy_mode
+                else "hierarchy_ingest"
+            )
             self.logger.log_error(
                 error_type=type(e).__name__,
-                entity=new_info.get("name"),
+                entity=entity_name,
                 details={"message": str(e), "traceback": str(e.__traceback__)},
                 resolution="failed",
             )
             self.state_machine.force_transition(WorkflowState.ERROR, str(e))
             raise
 
-        return {
-            "session_id": session_id,
-            "decision": context.decision,
-            "entity_path": context.entity_path,
-            "entity_created": context.entity_created,
-            "propagated_paths": context.propagated_paths,
-            "index_rebuilt": context.index_rebuilt,
-            "refactored": context.should_refactor,
-            "refactor_results": context.refactor_results,
-            "workflow_complete": self.state_machine.is_complete(),
-            "workflow_history": self.state_machine.get_history(),
-        }
+        return context.to_dict()
 
     async def _execute_with_sdk(self, context: WorkflowContext) -> None:
         """Execute workflow using Claude Agent SDK.
@@ -334,15 +571,24 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
 
         full_prompt = f"{system_prompt}\n\n---\n\n{workflow_prompt}"
 
-        # Run claude -p
+        # Build command with permission flags for headless execution
+        cmd = [
+            "claude",
+            "-p",
+            full_prompt,
+            "--output-format",
+            "text",
+        ]
+
+        # Add permission flags for headless file writes
+        if self.config.dangerously_skip_permissions:
+            cmd.append("--dangerously-skip-permissions")
+        elif self.config.permission_mode:
+            cmd.extend(["--permission-mode", self.config.permission_mode])
+
+        # Run claude -p with permissions
         result = subprocess.run(
-            [
-                "claude",
-                "-p",
-                full_prompt,
-                "--output-format",
-                "text",
-            ],
+            cmd,
             cwd=str(self.kg_root),
             capture_output=True,
             text=True,
@@ -455,14 +701,22 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
         """
         refactor_prompt = self._build_refactor_prompt(context)
 
+        # Build command with permission flags
+        cmd = [
+            "claude",
+            "-p",
+            refactor_prompt,
+            "--output-format",
+            "text",
+        ]
+
+        if self.config.dangerously_skip_permissions:
+            cmd.append("--dangerously-skip-permissions")
+        elif self.config.permission_mode:
+            cmd.extend(["--permission-mode", self.config.permission_mode])
+
         result = subprocess.run(
-            [
-                "claude",
-                "-p",
-                refactor_prompt,
-                "--output-format",
-                "text",
-            ],
+            cmd,
             cwd=str(self.kg_root),
             capture_output=True,
             text=True,

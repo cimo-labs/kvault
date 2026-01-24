@@ -232,24 +232,58 @@ class HeadlessOrchestrator:
 
 ## MANDATORY WORKFLOW - Execute ALL steps in order
 
-After completing each step, output: "[STEP_NAME] COMPLETE: [summary]"
+**CRITICAL: Output structured JSON for each step for observability.**
+
+After completing each step, output the step marker AND a JSON block:
+```
+[STEP_NAME] COMPLETE: <brief summary>
+```json
+{{ "step": "STEP_NAME", ... step-specific fields ... }}
+```
+```
 
 ### 1. RESEARCH
 - Analyze the input content for entities, events, and relationships
-- Search .kgraph/index.db for existing matches
+- **Extract identifiers:** phone numbers (normalize to +1XXXXXXXXXX), email addresses, names
+- Search .kgraph/index.db for existing matches using extracted identifiers
 - Read relevant _summary.md files for context
 - Understand how this fits into the existing hierarchy
 
-### 2. DECIDE
-Output an ACTION PLAN as JSON:
+Output JSON:
 ```json
 {{
+  "step": "RESEARCH",
+  "identifiers_extracted": {{
+    "names": ["John Doe"],
+    "phones": ["+14155551234"],
+    "emails": ["john@example.com"]
+  }},
+  "index_matches": [{{
+    "path": "people/contacts/john_doe",
+    "name": "John Doe",
+    "matched_on": "phone:+14155551234",
+    "confidence": 0.99
+  }}],
+  "files_read": ["people/contacts/john_doe/_summary.md"],
+  "analysis": "Found exact phone match for John Doe"
+}}
+```
+
+### 2. DECIDE
+**CRITICAL: Verify phone/email matches EXACTLY before claiming entity match.**
+Do NOT assume entities are the same person unless identifiers match exactly.
+
+Output JSON ACTION PLAN:
+```json
+{{
+  "step": "DECIDE",
   "actions": [
     {{
       "action_type": "create|update|delete|move|skip",
       "path": "category/entity_name",
       "reasoning": "why this action",
       "confidence": 0.95,
+      "identifier_verification": {{"input_phone": "+1...", "matched_phone": "+1...", "exact_match": true}},
       "content": {{"summary": "...", "meta": {{...}}}}
     }}
   ],
@@ -257,15 +291,58 @@ Output an ACTION PLAN as JSON:
 }}
 ```
 
-Possible outcomes:
-- Empty plan: Input doesn't warrant any changes
-- Single action: Traditional single-entity processing
-- Multiple actions: Input affects multiple nodes
+**NEVER delete or merge entities without exact identifier match.**
 
 ### 3. EXECUTE
 For each action in the plan:
-- Write/update the entity files
+- Write entity files using YAML frontmatter format (NO separate _meta.json files)
 - Output "ACTION N COMPLETE: [path]" for each
+
+**Entity File Format** (`_summary.md` with YAML frontmatter):
+```markdown
+---
+created: YYYY-MM-DD
+updated: YYYY-MM-DD
+source: {{source_id}}
+aliases: [names, emails, phones for matching]
+phone: +1XXXXXXXXXX (if available)
+email: user@example.com (if available)
+relationship_type: family|friend|colleague|contact
+context: how you know them
+---
+
+# Entity Name
+
+**Relationship:** {{relationship_type}}
+**Context:** {{context}}
+
+## Background
+{{content}}
+
+## Interactions
+- YYYY-MM-DD: {{event}}
+
+## Follow-ups
+- [ ] {{action items}}
+```
+
+**For UPDATE actions:**
+1. Read existing `_summary.md` and parse existing frontmatter
+2. Preserve existing frontmatter fields (don't overwrite)
+3. Update `updated` field to today's date
+4. Merge new aliases (combine, don't replace)
+5. Append new interactions to Interactions section
+
+Output JSON:
+```json
+{{
+  "step": "EXECUTE",
+  "actions_completed": [
+    {{"action": "create", "path": "people/john_doe", "success": true}},
+    {{"action": "update", "path": "people/jane_doe", "success": true}}
+  ]
+}}
+```
 
 ### 4. PROPAGATE
 For ALL affected paths:
@@ -273,11 +350,38 @@ For ALL affected paths:
 - Update each ancestor's _summary.md to reflect changes
 - Work from deepest to root
 
+Output JSON:
+```json
+{{
+  "step": "PROPAGATE",
+  "paths_updated": ["people/_summary.md", "_summary.md"],
+  "changes": ["Added John Doe to contacts list", "Updated root summary"]
+}}
+```
+
 ### 5. LOG
 Add entry to journal/YYYY-MM/log.md covering all changes.
 
+Output JSON:
+```json
+{{
+  "step": "LOG",
+  "journal_path": "journal/2026-01/log.md",
+  "entry_summary": "Brief description of what was logged"
+}}
+```
+
 ### 6. REBUILD
 If any new entities were created, rebuild the index.
+
+Output JSON:
+```json
+{{
+  "step": "REBUILD",
+  "rebuilt": true,
+  "entity_count": 27
+}}
+```
 
 ## Knowledge Graph Root
 {self.kg_root}
@@ -330,10 +434,11 @@ After completing each step, output: "[STEP_NAME] COMPLETE: [summary]"
 - State your decision with confidence and reasoning
 
 ### 3. WRITE
-- Create or update entity files:
-  - _meta.json: created, last_updated, sources, aliases
-  - _summary.md: Freeform markdown content
-- Follow the entity format conventions
+- Create or update entity files using YAML frontmatter (NO separate _meta.json)
+- Entity file format: `_summary.md` with frontmatter containing:
+  - created, updated, source, aliases (required)
+  - phone, email, relationship_type, context (optional)
+- For updates: preserve existing frontmatter, update `updated` field, merge aliases
 
 ### 4. PROPAGATE
 - Update ALL ancestor _summary.md files
@@ -427,7 +532,7 @@ Review the knowledge graph for cleanup opportunities:
 3. Identify missing cross-references
 4. Find inconsistent naming patterns
 
-Focus on entities related to: {context.new_info.get('name', 'recent additions')}
+Focus on entities related to: {context.new_info.get('name', 'recent additions') if context.new_info else 'recent additions'}
 
 List opportunities found (if any) and execute the most impactful one.
 Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportunities found"
@@ -559,6 +664,30 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
         # For now, fall back to CLI since SDK API may vary
         await self._execute_with_cli(context)
 
+    def _find_claude_binary(self) -> str:
+        """Find the correct claude binary path.
+
+        Prefers ~/.claude/local/claude (newer) over /usr/local/bin/claude (older).
+
+        Returns:
+            Path to claude binary
+        """
+        import os
+        import shutil
+
+        # Check for newer claude in user's home directory first
+        home_claude = Path.home() / ".claude" / "local" / "claude"
+        if home_claude.exists():
+            return str(home_claude)
+
+        # Fall back to PATH lookup
+        claude_path = shutil.which("claude")
+        if claude_path:
+            return claude_path
+
+        # Default to just "claude" and hope for the best
+        return "claude"
+
     async def _execute_with_cli(self, context: WorkflowContext) -> None:
         """Execute workflow using Claude CLI subprocess.
 
@@ -571,9 +700,12 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
 
         full_prompt = f"{system_prompt}\n\n---\n\n{workflow_prompt}"
 
+        # Find the correct claude binary
+        claude_bin = self._find_claude_binary()
+
         # Build command with permission flags for headless execution
         cmd = [
-            "claude",
+            claude_bin,
             "-p",
             full_prompt,
             "--output-format",
@@ -597,19 +729,48 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
 
         output = result.stdout + result.stderr
 
-        # Parse step completions from output
-        self._parse_step_completions(output, context)
-
-        # Log the raw output for debugging
+        # Log the FULL raw output (no truncation) for debugging
         if self.logger:
             self.logger.log(
-                "input",  # Using input phase for raw output storage
+                "cli_raw",
                 {
                     "type": "cli_output",
-                    "output": output[:5000],  # Truncate if too long
+                    "output": output,  # Full output, no truncation
+                    "output_length": len(output),
                     "return_code": result.returncode,
                 },
             )
+
+        # Parse step completions from output (also logs each step)
+        self._parse_step_completions(output, context)
+
+    def _extract_step_json(self, text: str, step_name: str) -> Optional[Dict[str, Any]]:
+        """Extract JSON block following a step completion marker.
+
+        Args:
+            text: Text to search (usually the details after COMPLETE:)
+            step_name: Name of the step (for logging)
+
+        Returns:
+            Parsed JSON dict or None if not found/invalid
+        """
+        import re
+
+        # Look for JSON block in the text
+        json_pattern = r'```json\s*(\{.*?\})\s*```'
+        json_match = re.search(json_pattern, text, re.DOTALL)
+
+        if json_match:
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError as e:
+                if self.logger:
+                    self.logger.log(
+                        f"step_{step_name.lower()}_json_error",
+                        {"step": step_name, "error": str(e), "raw": json_match.group(1)[:500]},
+                    )
+                return None
+        return None
 
     def _parse_step_completions(self, output: str, context: WorkflowContext) -> None:
         """Parse step completion markers from Claude output.
@@ -618,6 +779,8 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
         - "RESEARCH COMPLETE: Found 2 matches"
         - "[DECIDE] COMPLETE: CREATE - no existing match"
 
+        Extracts structured JSON from each step for observability.
+
         Args:
             output: Raw output from Claude
             context: WorkflowContext to update
@@ -625,6 +788,7 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
         import re
 
         # Pattern: [STEP] COMPLETE: summary or STEP COMPLETE: summary
+        # Capture everything until the next step marker
         pattern = r"\[?(\w+)\]?\s*COMPLETE:\s*(.+?)(?=\n\[?\w+\]?\s*COMPLETE:|\Z)"
         matches = re.findall(pattern, output, re.IGNORECASE | re.DOTALL)
 
@@ -632,25 +796,67 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
             step_name = step_name.upper()
             details = details.strip()
 
+            # Try to extract structured JSON from this step's output
+            step_json = self._extract_step_json(details, step_name)
+
+            # Log each step with both raw details and parsed JSON
+            if self.logger:
+                self.logger.log(
+                    f"step_{step_name.lower()}",
+                    {
+                        "step": step_name,
+                        "details": details[:2000],
+                        "details_length": len(details),
+                        "structured_output": step_json,  # Parsed JSON if available
+                    },
+                )
+
             # Extract relevant info based on step
             if step_name == "RESEARCH":
-                # Store that research was done
-                self.state_machine.store_output("RESEARCH", {"matches": []})
+                research_data = step_json or {"matches": []}
+                self.state_machine.store_output("RESEARCH", research_data)
                 self.state_machine.transition("RESEARCH")
 
             elif step_name == "DECIDE":
-                # Extract decision
-                decision = None
-                for action in ["create", "update", "skip", "merge"]:
-                    if action.lower() in details.lower():
-                        decision = action
-                        break
-                if decision:
+                if context.is_hierarchy_mode:
+                    # Extract JSON ActionPlan from full output
+                    json_pattern = r'```json\s*(\{.*?\})\s*```'
+                    json_match = re.search(json_pattern, output, re.DOTALL)
+                    if json_match:
+                        try:
+                            plan_dict = json.loads(json_match.group(1))
+                            context.action_plan = ActionPlan(
+                                actions=[
+                                    PlannedAction(**a)
+                                    for a in plan_dict.get("actions", [])
+                                ],
+                                overall_reasoning=plan_dict.get("overall_reasoning", ""),
+                            )
+                        except (json.JSONDecodeError, TypeError) as e:
+                            context.action_plan = ActionPlan(
+                                actions=[], overall_reasoning=f"Parse error: {e}"
+                            )
+                    else:
+                        context.action_plan = ActionPlan(
+                            actions=[], overall_reasoning="No JSON found in output"
+                        )
                     self.state_machine.store_output(
-                        "DECIDE",
-                        {"decision": decision, "reasoning": details},
+                        "DECIDE", {"action_plan": context.action_plan}
                     )
                     self.state_machine.transition("DECIDE")
+                else:
+                    # Legacy mode: keyword-based decision
+                    decision = None
+                    for action in ["create", "update", "skip", "merge"]:
+                        if action.lower() in details.lower():
+                            decision = action
+                            break
+                    if decision:
+                        self.state_machine.store_output(
+                            "DECIDE",
+                            {"decision": decision, "reasoning": details},
+                        )
+                        self.state_machine.transition("DECIDE")
 
             elif step_name == "WRITE":
                 # Extract entity path

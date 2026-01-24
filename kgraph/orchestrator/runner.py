@@ -814,6 +814,12 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
         elif self.config.permission_mode:
             cmd.extend(["--permission-mode", self.config.permission_mode])
 
+        # Verbose mode: show progress
+        if self.config.verbose:
+            content_preview = context.raw_input.content[:50] if context.raw_input else "entity"
+            print(f"[ORCHESTRATOR] Starting workflow for: {content_preview}...")
+            print(f"[ORCHESTRATOR] Timeout: {self.config.timeout_seconds}s")
+
         # Run claude -p with permissions
         result = subprocess.run(
             cmd,
@@ -824,6 +830,11 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
         )
 
         output = result.stdout + result.stderr
+
+        # Verbose mode: show completion
+        if self.config.verbose:
+            print(f"[ORCHESTRATOR] Claude finished (exit code: {result.returncode})")
+            print(f"[ORCHESTRATOR] Output length: {len(output)} chars")
 
         # Log the FULL raw output (no truncation) for debugging
         if self.logger:
@@ -891,6 +902,12 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
         for step_name, details in matches:
             step_name = step_name.upper()
             details = details.strip()
+
+            # Verbose mode: print step completions as they're parsed
+            if self.config.verbose:
+                # Extract first line of details for summary
+                summary_line = details.split('\n')[0][:80]
+                print(f"[{step_name}] COMPLETE: {summary_line}")
 
             # Try to extract structured JSON from this step's output
             step_json = self._extract_step_json(details, step_name)
@@ -1007,19 +1024,28 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
             # - **Path:** `people/contacts/foo/`
             # - CREATE new contact at `people/contacts/foo/`
             # - Created `people/contacts/foo`
+            # - mkdir -p projects/directional_surrogacy
+            # - "path": "projects/foo"
+            # - already exists at `projects/foo/`
             patterns = [
                 r'CREATE[:\s].*?`([^`]+)`',  # Most common: CREATE ... `path`
                 r'[Ee]ntity (?:created|path).*?`([^`]+)`',
                 r'\*\*Path:\*\*\s*`([^`]+)`',
                 r'[Cc]reated[:\s]+`([^`]+)`',
                 r'[Cc]reated.*?entity.*?`([^`]+)`',
+                r'mkdir -p\s+[^\s]*?([a-z_]+/[a-z_]+(?:/[a-z_]+)?)',  # mkdir commands
+                r'"path":\s*"([a-z_]+/[a-z_]+(?:/[a-z_]+)?)"',  # JSON path field
+                r'(?:exists|created).*?at\s+`([^`]+)`',  # "exists at" or "created at"
+                r'new entity at\s+`([^`]+)`',  # "new entity at"
             ]
             created = []
             for pattern in patterns:
                 matches = re.findall(pattern, output)
                 created.extend(matches)
-            # Normalize: remove /_summary.md suffix
-            created = [re.sub(r'/_summary\.md$', '', p) for p in created]
+            # Normalize: remove /_summary.md suffix and trailing slashes
+            created = [re.sub(r'/_summary\.md$', '', p).rstrip('/') for p in created]
+            # Filter to valid-looking paths (category/entity or category/subcategory/entity)
+            created = [p for p in created if re.match(r'^[a-z_]+/[a-z_]+(?:/[a-z_]+)?$', p)]
             context.created_paths = list(set(created))
 
         if context.is_hierarchy_mode and not context.updated_paths:

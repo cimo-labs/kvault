@@ -487,12 +487,19 @@ def orchestrate_batch(
     type=float,
     help="Probability of triggering refactor step (0.0-1.0)",
 )
+@click.option(
+    "--verbose", "-v",
+    is_flag=True,
+    default=False,
+    help="Print step completions as they happen",
+)
 def orchestrate_ingest(
     kg_root: Path,
     content: str,
     source: str,
     hint: Tuple[str, ...],
     refactor_prob: float,
+    verbose: bool,
 ) -> None:
     """Ingest raw content through hierarchy-based workflow.
 
@@ -529,6 +536,7 @@ def orchestrate_ingest(
     config = OrchestratorConfig(
         kg_root=kg_root.resolve(),
         refactor_probability=refactor_prob,
+        verbose=verbose,
     )
 
     orchestrator = HeadlessOrchestrator(config)

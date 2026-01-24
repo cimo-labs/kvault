@@ -100,7 +100,10 @@ class OrchestratorConfig:
     last_k_updates: int = 10  # Number of recent updates to load
     refactor_probability: float = 0.1  # Bernoulli(p) for refactor step
     max_retries: int = 3  # Retries per step
-    timeout_seconds: int = 300  # Per-step timeout (5 minutes)
+    timeout_seconds: int = 600  # Per-step timeout (10 minutes)
+
+    # Verbose mode - print step completions as they happen
+    verbose: bool = False
 
     # Permission mode for Claude CLI
     permission_mode: str = "bypassPermissions"  # Required for headless file writes

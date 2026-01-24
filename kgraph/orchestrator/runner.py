@@ -248,11 +248,18 @@ After completing each step, output the step marker AND a JSON block:
 - Where similar entities live
 - The naming conventions used (lowercase_with_underscores)
 
+**Detect the intent of this request:**
+- **ADD/UPDATE:** New information about a person/project/event
+- **CORRECT:** "Actually, X is wrong" or "X should be Y" → find and fix incorrect info
+- **DELETE:** "Remove X" or "X doesn't exist" or "I don't know X" → delete entity
+- **RESTRUCTURE:** "Move X to Y" or "X is actually family, not contact" → move entity
+
 Then:
 - Analyze the input content for entities, events, and relationships
 - **Extract identifiers:** phone numbers (normalize to +1XXXXXXXXXX), email addresses, names
 - Search .kgraph/index.db for existing matches using extracted identifiers
 - Read relevant _summary.md files (both the potential match AND its parent category summary)
+- For DELETE/MOVE: verify entity exists and note its current path
 - Determine the correct category path for any new entities
 
 **Output format (REQUIRED):**
@@ -261,6 +268,7 @@ Then:
 ```json
 {{
   "step": "RESEARCH",
+  "intent": "add|update|correct|delete|restructure",
   "identifiers_extracted": {{
     "names": ["John Doe"],
     "phones": ["+14155551234"],
@@ -278,7 +286,16 @@ Then:
 ```
 
 ### 2. DECIDE
-**Choose the correct path based on the Knowledge Base Structure.**
+**Choose the correct action and path based on the Knowledge Base Structure.**
+
+**Action types:**
+- **create:** New entity that doesn't exist → choose correct category path
+- **update:** Add info to existing entity → use matched path from RESEARCH
+- **delete:** Remove entity (user says "remove X", "I don't know X", "X is wrong") → requires exact match
+- **move:** Restructure (user says "move X to Y", "X is family not contact") → requires source and target paths
+- **skip:** Input doesn't warrant any KB changes
+
+**Path selection:**
 - People go under `people/family/`, `people/contacts/`, or `people/collaborators/`
 - Projects go under `projects/`
 - Use existing category patterns (look at sibling entities)
@@ -288,7 +305,7 @@ Do NOT assume entities are the same person unless identifiers match exactly.
 
 **Output format (REQUIRED):**
 ```
-[DECIDE] COMPLETE: CREATE/UPDATE/SKIP [entity] - [reasoning]
+[DECIDE] COMPLETE: CREATE/UPDATE/DELETE/MOVE/SKIP [entity] - [reasoning]
 ```json
 {{
   "step": "DECIDE",
@@ -296,6 +313,7 @@ Do NOT assume entities are the same person unless identifiers match exactly.
     {{
       "action_type": "create|update|delete|move|skip",
       "path": "category/subcategory/entity_name",
+      "target_path": "new/path (for move only)",
       "reasoning": "why this action and why this path",
       "confidence": 0.95,
       "identifier_verification": {{"input_phone": "+1...", "matched_phone": "+1...", "exact_match": true}},
@@ -306,12 +324,14 @@ Do NOT assume entities are the same person unless identifiers match exactly.
 }}
 ```
 
-**NEVER delete or merge entities without exact identifier match.**
+**NEVER delete or move entities without exact identifier match or explicit user confirmation.**
 
 ### 3. EXECUTE
-For each action in the plan:
-- Write entity files using YAML frontmatter format (NO separate _meta.json files)
-- Output "ACTION N COMPLETE: [path]" for each
+For each action in the plan, execute the appropriate operation:
+
+**For CREATE actions:**
+- Create directory: `mkdir -p <kg_root>/<path>`
+- Write `_summary.md` with YAML frontmatter (NO separate _meta.json files)
 
 **Entity File Format** (`_summary.md` with YAML frontmatter):
 ```markdown
@@ -320,7 +340,7 @@ created: YYYY-MM-DD
 updated: YYYY-MM-DD
 source: {{source_id}}
 aliases: [names, emails, phones for matching]
-phone: +1XXXXXXXXXX (if available)
+phone: '+1XXXXXXXXXX' (if available, MUST be quoted)
 email: user@example.com (if available)
 relationship_type: family|friend|colleague|contact
 context: how you know them
@@ -348,30 +368,53 @@ context: how you know them
 4. Merge new aliases (combine, don't replace)
 5. Append new interactions to Interactions section
 
+**For DELETE actions:**
+1. Verify the entity exists at the specified path
+2. Remove the entire entity directory: `rm -rf <kg_root>/<path>`
+3. Note: PROPAGATE step will clean up references in ancestor summaries
+
+**For MOVE actions:**
+1. Verify source entity exists
+2. Create target directory if needed: `mkdir -p <kg_root>/<target_path>`
+3. Move all files: `mv <kg_root>/<source_path>/* <kg_root>/<target_path>/`
+4. Remove empty source directory: `rmdir <kg_root>/<source_path>`
+5. Update frontmatter with new path context if category changed
+6. Note: PROPAGATE step will update both old and new ancestor summaries
+
 **Output format (REQUIRED):**
 ```
-[EXECUTE] COMPLETE: Created/updated N entities
+[EXECUTE] COMPLETE: Executed N actions
 ```json
 {{
   "step": "EXECUTE",
   "actions_completed": [
     {{"action": "create", "path": "people/john_doe", "success": true}},
-    {{"action": "update", "path": "people/jane_doe", "success": true}}
+    {{"action": "delete", "path": "people/test_user", "success": true}},
+    {{"action": "move", "source": "people/contacts/alice", "target": "people/family/alice", "success": true}}
   ]
 }}
 ```
 
 ### 4. PROPAGATE
-**Walk UP the tree from each affected entity to the root.**
+**Walk UP the tree from each affected path to the root.**
 
-Example: If you created `people/contacts/john_doe/`, propagate to:
-1. `people/contacts/_summary.md` - Add John to the contacts list
-2. `people/_summary.md` - Update people overview
-3. `_summary.md` (root) - Update executive summary
+**For CREATE/UPDATE actions:**
+- Walk from entity to root, updating each ancestor summary
+- Example: `people/contacts/john_doe/` → update `people/contacts/_summary.md` → `people/_summary.md` → `_summary.md`
+
+**For DELETE actions:**
+- Walk from deleted entity's parent to root
+- REMOVE references to the deleted entity from all ancestor summaries
+- Update counts and lists to reflect removal
+
+**For MOVE actions:**
+- Walk BOTH the old path's ancestors AND the new path's ancestors
+- REMOVE entity from old location summaries
+- ADD entity to new location summaries
 
 For each ancestor:
 - Read the current _summary.md
-- Decide if it needs updating to reflect the new/changed entity
+- Decide if it needs updating to reflect the change
 - Write the updated summary (semantic synthesis, not just appending)
 
 **Output format (REQUIRED):**
@@ -388,6 +431,12 @@ For each ancestor:
 ### 5. LOG
 Add entry to journal/YYYY-MM/log.md covering all changes.
 
+**Log all action types:**
+- CREATE: "Created new entity at [path]"
+- UPDATE: "Updated [path] with new information"
+- DELETE: "Removed entity at [path] - [reason]"
+- MOVE: "Moved [source] to [target] - [reason]"
+
 **Output format (REQUIRED):**
 ```
 [LOG] COMPLETE: Added journal entry
@@ -400,7 +449,12 @@ Add entry to journal/YYYY-MM/log.md covering all changes.
 ```
 
 ### 6. REBUILD
-If any new entities were created, rebuild the index.
+Rebuild the index if the entity set changed (creates OR deletes).
+
+**Rebuild required when:**
+- Any new entities were created
+- Any entities were deleted
+- Any entities were moved
 
 **Output format (REQUIRED):**
 ```
@@ -975,6 +1029,34 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
             updated = [re.sub(r'/_summary\.md$', '', p) for p in updated]
             updated = [p for p in updated if p not in context.created_paths]
             context.updated_paths = list(set(updated))
+
+        if context.is_hierarchy_mode and not context.deleted_paths:
+            # Match various patterns for deletions
+            patterns = [
+                r'DELETE[:\s].*?`([^`]+)`',
+                r'[Dd]eleted[:\s]+`([^`]+)`',
+                r'[Rr]emoved[:\s]+`([^`]+)`',
+                r'\*\*Deleted:\*\*\s*`([^`]+)`',
+            ]
+            deleted = []
+            for pattern in patterns:
+                matches = re.findall(pattern, output)
+                deleted.extend(matches)
+            deleted = [re.sub(r'/_summary\.md$', '', p) for p in deleted]
+            context.deleted_paths = list(set(deleted))
+
+        if context.is_hierarchy_mode and not context.moved_paths:
+            # Match move patterns: "Moved `source` to `target`" or "MOVE ... `source` → `target`"
+            patterns = [
+                r'[Mm]oved\s+`([^`]+)`\s+to\s+`([^`]+)`',
+                r'MOVE[:\s].*?`([^`]+)`.*?(?:to|→)\s*`([^`]+)`',
+            ]
+            for pattern in patterns:
+                matches = re.findall(pattern, output)
+                for source, target in matches:
+                    source = re.sub(r'/_summary\.md$', '', source)
+                    target = re.sub(r'/_summary\.md$', '', target)
+                    context.moved_paths.append({"source": source, "target": target})
 
         if context.is_hierarchy_mode and not context.propagated_paths:
             # Match propagation mentions

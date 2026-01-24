@@ -230,6 +230,12 @@ class WorkflowContext:
     updated_paths: List[str] = field(default_factory=list)
     """New: Paths where existing entities were updated."""
 
+    deleted_paths: List[str] = field(default_factory=list)
+    """New: Paths where entities were deleted."""
+
+    moved_paths: List[Dict[str, str]] = field(default_factory=list)
+    """New: Move operations with 'source' and 'target' keys."""
+
     # -------------------------
     # Step 4: PROPAGATE outputs
     # -------------------------
@@ -311,6 +317,8 @@ class WorkflowContext:
                 "executed_actions": self.executed_actions,
                 "created_paths": self.created_paths,
                 "updated_paths": self.updated_paths,
+                "deleted_paths": self.deleted_paths,
+                "moved_paths": self.moved_paths,
             })
         else:
             # Legacy entity-centric output

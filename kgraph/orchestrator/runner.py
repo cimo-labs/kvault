@@ -819,26 +819,45 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
 
             elif step_name == "DECIDE":
                 if context.is_hierarchy_mode:
-                    # Extract JSON ActionPlan from full output
-                    json_pattern = r'```json\s*(\{.*?\})\s*```'
-                    json_match = re.search(json_pattern, output, re.DOTALL)
-                    if json_match:
+                    # Use step_json already extracted from details, or try full output as fallback
+                    plan_dict = step_json
+                    if not plan_dict:
+                        # Fallback: search full output for JSON
+                        json_pattern = r'```json\s*(\{.*?\})\s*```'
+                        json_match = re.search(json_pattern, output, re.DOTALL)
+                        if json_match:
+                            try:
+                                plan_dict = json.loads(json_match.group(1))
+                            except json.JSONDecodeError:
+                                plan_dict = None
+
+                    if plan_dict:
                         try:
-                            plan_dict = json.loads(json_match.group(1))
+                            # Handle both "actions" list and direct action dict
+                            actions_list = plan_dict.get("actions", [])
+                            if not actions_list and plan_dict.get("action_type"):
+                                # Single action as direct dict
+                                actions_list = [plan_dict]
+
                             context.action_plan = ActionPlan(
                                 actions=[
-                                    PlannedAction(**a)
-                                    for a in plan_dict.get("actions", [])
+                                    PlannedAction(
+                                        action_type=a.get("action_type", a.get("action", "skip")),
+                                        path=a.get("path", ""),
+                                        reasoning=a.get("reasoning", ""),
+                                        confidence=float(a.get("confidence", 1.0)),
+                                    )
+                                    for a in actions_list
                                 ],
-                                overall_reasoning=plan_dict.get("overall_reasoning", ""),
+                                overall_reasoning=plan_dict.get("overall_reasoning", plan_dict.get("reasoning", "")),
                             )
-                        except (json.JSONDecodeError, TypeError) as e:
+                        except (TypeError, ValueError) as e:
                             context.action_plan = ActionPlan(
                                 actions=[], overall_reasoning=f"Parse error: {e}"
                             )
                     else:
                         context.action_plan = ActionPlan(
-                            actions=[], overall_reasoning="No JSON found in output"
+                            actions=[], overall_reasoning="No JSON found in DECIDE output"
                         )
                     self.state_machine.store_output(
                         "DECIDE", {"action_plan": context.action_plan}

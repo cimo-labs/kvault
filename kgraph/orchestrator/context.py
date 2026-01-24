@@ -54,10 +54,10 @@ class PlannedAction:
     path: str
     """Target hierarchy path (e.g., 'people/contacts/john_doe')."""
 
-    reasoning: str
+    reasoning: str = ""
     """Explanation of why this action is needed."""
 
-    confidence: float
+    confidence: float = 1.0
     """Confidence score (0.0-1.0)."""
 
     content: Optional[Dict[str, Any]] = None

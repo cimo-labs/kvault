@@ -1040,30 +1040,39 @@ Report: "REFACTOR COMPLETE: [actions taken]" or "REFACTOR COMPLETE: No opportuni
 
         if context.is_hierarchy_mode and not context.deleted_paths:
             # Match various patterns for deletions
+            # Claude outputs: "Removed directory `path`", "Deleted `path`", etc.
             patterns = [
                 r'DELETE[:\s].*?`([^`]+)`',
-                r'[Dd]eleted[:\s]+`([^`]+)`',
-                r'[Rr]emoved[:\s]+`([^`]+)`',
+                r'[Dd]eleted.*?`([^`]+)`',
+                r'[Rr]emoved.*?`([^`]+)`',
                 r'\*\*Deleted:\*\*\s*`([^`]+)`',
             ]
             deleted = []
             for pattern in patterns:
                 matches = re.findall(pattern, output)
                 deleted.extend(matches)
-            deleted = [re.sub(r'/_summary\.md$', '', p) for p in deleted]
+            # Normalize: remove /_summary.md suffix and trailing slashes
+            deleted = [re.sub(r'/_summary\.md$', '', p).rstrip('/') for p in deleted]
+            # Filter out summary files (we want entity paths, not summary paths)
+            deleted = [p for p in deleted if not p.endswith('_summary.md')]
             context.deleted_paths = list(set(deleted))
 
         if context.is_hierarchy_mode and not context.moved_paths:
-            # Match move patterns: "Moved `source` to `target`" or "MOVE ... `source` → `target`"
+            # Match move patterns:
+            # - "Moved entity X from `source` to `target`"
+            # - "Moved `source` to `target`"
+            # - "MOVE ... `source` → `target`"
             patterns = [
+                r'[Mm]oved.*?from\s+`([^`]+)`\s+to\s+`([^`]+)`',
                 r'[Mm]oved\s+`([^`]+)`\s+to\s+`([^`]+)`',
                 r'MOVE[:\s].*?`([^`]+)`.*?(?:to|→)\s*`([^`]+)`',
             ]
             for pattern in patterns:
                 matches = re.findall(pattern, output)
                 for source, target in matches:
-                    source = re.sub(r'/_summary\.md$', '', source)
-                    target = re.sub(r'/_summary\.md$', '', target)
+                    # Normalize: remove /_summary.md suffix and trailing slashes
+                    source = re.sub(r'/_summary\.md$', '', source).rstrip('/')
+                    target = re.sub(r'/_summary\.md$', '', target).rstrip('/')
                     context.moved_paths.append({"source": source, "target": target})
 
         if context.is_hierarchy_mode and not context.propagated_paths:

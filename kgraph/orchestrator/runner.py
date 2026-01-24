@@ -291,7 +291,9 @@ Then:
 **Action types:**
 - **create:** New entity that doesn't exist → choose correct category path
 - **update:** Add info to existing entity → use matched path from RESEARCH
-- **delete:** Remove entity (user says "remove X", "I don't know X", "X is wrong") → requires exact match
+  - For CORRECTIONS: read existing content, identify the incorrect info, replace it with correct info
+  - User says "X is wrong" about a field → update that field, preserve everything else
+- **delete:** Remove entity (user says "remove X", "I don't know X", "X doesn't exist") → requires exact match
 - **move:** Restructure (user says "move X to Y", "X is family not contact") → requires source and target paths
 - **skip:** Input doesn't warrant any KB changes
 
@@ -363,10 +365,16 @@ context: how you know them
 
 **For UPDATE actions:**
 1. Read existing `_summary.md` and parse existing frontmatter
-2. Preserve existing frontmatter fields (don't overwrite)
+2. Preserve existing frontmatter fields (don't overwrite unless correcting)
 3. Update `updated` field to today's date
 4. Merge new aliases (combine, don't replace)
 5. Append new interactions to Interactions section
+
+**For CORRECTION updates:**
+1. Read existing content carefully
+2. Identify the specific incorrect information
+3. Replace ONLY the incorrect parts, preserve everything else
+4. Add a note in Interactions: "YYYY-MM-DD: Corrected [field] from [old] to [new]"
 
 **For DELETE actions:**
 1. Verify the entity exists at the specified path

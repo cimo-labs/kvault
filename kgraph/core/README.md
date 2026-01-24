@@ -1,62 +1,92 @@
 # Core Module
 
-Foundation layer for configuration and storage.
+Foundation layer for storage, indexing, and observability.
 
 ## Components
 
-### KGraphConfig (`config.py`)
+### EntityIndex (`index.py`)
 
-Pydantic v2 configuration model with validation:
-
-```python
-from kgraph.core import KGraphConfig
-
-# Load from YAML
-config = KGraphConfig.from_yaml("kgraph.yaml")
-
-# Access configuration
-print(config.project.name)
-print(config.confidence.auto_merge)  # 0.95
-print(config.matching.strategies)    # ['alias', 'fuzzy_name', 'email_domain']
-```
-
-**Configuration Sections:**
-- `project` - Name, paths
-- `entity_types` - Entity type definitions
-- `tiers` - Tier storage configuration
-- `confidence` - Auto-decision thresholds
-- `matching` - Matching strategies and thresholds
-- `processing` - Batch size, intervals
-
-### FilesystemStorage (`storage.py`)
-
-Tiered filesystem storage for entities:
+SQLite-backed entity index with full-text search:
 
 ```python
-from kgraph.core import FilesystemStorage
+from kgraph.core import EntityIndex
 
-storage = FilesystemStorage(config.kg_path, config)
+index = EntityIndex(Path(".kgraph/index.db"))
 
-# Write entity
-storage.write_entity("customer", "acme_corp", {
-    "name": "Acme Corporation",
-    "tier": "strategic",
-    "contacts": [{"name": "John", "email": "john@acme.com"}]
-}, tier="strategic")
+# Add entity
+index.add("people/alice", "Alice Smith",
+          aliases=["Alice", "alice@example.com", "+14155551234"],
+          category="people")
 
-# Read entity
-entity = storage.read_entity("customer", "acme_corp", tier="strategic")
+# Search
+results = index.search("Alice")
 
-# List entities
-customers = storage.list_entities("customer", tier="strategic")
+# Find by alias (exact match)
+entry = index.find_by_alias("alice@example.com")
+entry = index.find_by_alias("+14155551234")  # Phone lookup
 
-# Check existence
-exists = storage.entity_exists("customer", "acme_corp", tier="strategic")
+# Rebuild from filesystem
+count = index.rebuild(Path("knowledge_graph"))
 ```
 
-**Storage Types:**
-- `directory` - Full directory with `_meta.json` and `_summary.md`
-- `jsonl` - Compact JSONL registry for high-volume tiers
+### SimpleStorage (`storage.py`)
+
+Filesystem storage for entities:
+
+```python
+from kgraph.core import SimpleStorage
+
+storage = SimpleStorage(Path("knowledge_graph"))
+
+# Create entity
+storage.create_entity("people/alice", {
+    "created": "2026-01-05",
+    "last_updated": "2026-01-05",
+    "sources": ["manual"],
+    "aliases": ["Alice"]
+}, summary="# Alice\n\nDescription here.")
+
+# Read
+meta = storage.read_meta("people/alice")
+summary = storage.read_summary("people/alice")
+
+# Navigate hierarchy
+ancestors = storage.get_ancestors("people/collaborators/alice")
+# Returns: ["people/collaborators", "people"]
+```
+
+### Frontmatter Utilities (`frontmatter.py`)
+
+YAML frontmatter parsing for markdown files:
+
+```python
+from kgraph.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
+
+# Parse
+content = open("_summary.md").read()
+meta, body = parse_frontmatter(content)  # Returns (dict, str)
+
+# Build
+frontmatter = build_frontmatter({"created": "2026-01-23", "aliases": ["Alice"]})
+
+# Merge (for updates)
+merged = merge_frontmatter(existing_meta, new_meta)
+```
+
+### ObservabilityLogger (`observability.py`)
+
+Phase-based logging for debugging:
+
+```python
+from kgraph.core import ObservabilityLogger
+
+logger = ObservabilityLogger(Path(".kgraph/logs.db"))
+
+logger.log_research("Alice", "alice", matches, "create")
+logger.log_decide("Alice", "create", "No match found", confidence=0.95)
+logger.log_write("people/alice", "create", "Created entity")
+logger.log_propagate("people/alice", ["people"])
+```
 
 ### normalize_entity_id (`storage.py`)
 
@@ -67,31 +97,49 @@ from kgraph.core import normalize_entity_id
 
 normalize_entity_id("Acme Corporation")  # "acme_corporation"
 normalize_entity_id("R&L Carriers")      # "rl_carriers"
-normalize_entity_id("Universal Robots A/S")  # "universal_robots_as"
 ```
 
 ## File Structure
 
 ```
 core/
-├── __init__.py    # Exports: KGraphConfig, FilesystemStorage, normalize_entity_id
-├── config.py      # Pydantic configuration models
-└── storage.py     # Storage interface and filesystem implementation
+├── __init__.py       # Exports
+├── index.py          # EntityIndex with SQLite FTS
+├── storage.py        # SimpleStorage filesystem operations
+├── frontmatter.py    # YAML frontmatter parsing
+├── observability.py  # Phase-based logging
+└── README.md
 ```
 
 ## Entity Storage Format
 
-### Directory Tier
+### Preferred: YAML Frontmatter
+
+Single `_summary.md` file with embedded metadata:
+
+```markdown
+---
+created: 2026-01-23
+updated: 2026-01-23
+source: imessage:abc123
+aliases: [Alice, alice@example.com, +14155551234]
+phone: +14155551234
+email: alice@example.com
+---
+
+# Alice Smith
+
+Entity content here.
+```
+
+### Legacy: Separate _meta.json
+
+Still supported for backward compatibility:
 
 ```
-customers/strategic/acme_corp/
-├── _meta.json     # Machine-readable metadata
-└── _summary.md    # Human-readable summary
+people/alice/
+├── _meta.json     # {"created": "...", "aliases": [...]}
+└── _summary.md    # Markdown content
 ```
 
-### JSONL Tier
-
-```
-customers/prospects/
-└── _registry.jsonl   # One JSON object per line
-```
+The index rebuilder (`index.rebuild()`) parses frontmatter first, falls back to `_meta.json`.

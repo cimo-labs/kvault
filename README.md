@@ -1,16 +1,27 @@
 # kgraph
 
-Config-driven knowledge graph framework for extracting structured knowledge from unstructured data.
+Agent-first knowledge graph framework. Build knowledge graphs from unstructured data using intelligent agents.
 
-## What It Does
+## Philosophy
 
-kgraph helps you build knowledge graphs from messy data sources like emails, documents, or CRM exports. It uses LLM-powered entity extraction with fuzzy deduplication to create clean, structured knowledge bases.
+**The agent IS the pipeline.** Claude (or another LLM) does extraction, research, decisions, and propagation. kgraph provides tools, not workflows.
 
-**Key Features:**
-- **Config-driven**: Define entity types, tiers, and matching rules in YAML
-- **Fuzzy deduplication**: Multiple matching strategies (alias, fuzzy name, email domain)
-- **Human-in-the-loop**: Surface ambiguous cases for review
-- **Incremental processing**: Checkpoint-based batch processing
+```
+┌─────────────────────────────────────────────────────────────┐
+│  EntityIndex    MatchStrategies    ObservabilityLogger      │
+│  (fast lookup)  (fuzzy, alias)     (debug & improve)        │
+│                                                             │
+│  SimpleStorage  (YAML frontmatter in _summary.md preferred) │
+└─────────────────────────────────────────────────────────────┘
+
+Agent (Claude) does:
+  - Read input
+  - Research (using EntityIndex + MatchStrategies)
+  - Decide (using its reasoning)
+  - Write (using SimpleStorage)
+  - Propagate (update parent summaries)
+  - Log (using ObservabilityLogger)
+```
 
 ## Installation
 
@@ -28,216 +39,229 @@ pip install -e .
 
 ## Quick Start
 
-### 1. Initialize a project
+```python
+from pathlib import Path
+from kgraph import (
+    EntityIndex,
+    SimpleStorage,
+    ObservabilityLogger,
+    EntityResearcher
+)
 
-```bash
-kgraph init my-knowledge-base
-cd my-knowledge-base
+# Initialize
+kg_root = Path("my_knowledge_base")
+index = EntityIndex(kg_root / ".kgraph" / "index.db")
+storage = SimpleStorage(kg_root)
+logger = ObservabilityLogger(kg_root / ".kgraph" / "logs.db")
+researcher = EntityResearcher(index)
+
+# 1. Research - find existing entities
+matches = researcher.research("Alice Smith", email="alice@anthropic.com")
+action, target, confidence = researcher.suggest_action("Alice Smith")
+logger.log_research("Alice Smith", "alice smith",
+                    [m.__dict__ for m in matches], action)
+
+# 2. Decide - agent determines what to do
+if action == "create":
+    entity_path = "people/collaborators/alice_smith"
+    logger.log_decide("Alice Smith", "create",
+                      "No existing match found", confidence)
+
+# 3. Write - create/update the entity
+storage.create_entity(entity_path, {
+    "created": "2026-01-05",
+    "last_updated": "2026-01-05",
+    "sources": ["email:123"],
+    "aliases": ["Alice", "alice@anthropic.com"]
+}, summary="# Alice Smith\n\nResearch scientist at Anthropic.")
+logger.log_write(entity_path, "create", "Created new entity")
+
+# 4. Update index
+index.add(entity_path, "Alice Smith",
+          ["Alice", "alice@anthropic.com"], "people")
+
+# 5. Propagate - update parent summaries
+ancestors = storage.get_ancestors(entity_path)
+logger.log_propagate(entity_path, ancestors)
 ```
 
-This creates:
-```
-my-knowledge-base/
-├── kgraph.yaml           # Configuration
-├── data/                 # Source data goes here
-├── knowledge_graph/      # Output knowledge graph
-├── prompts/              # LLM prompts
-└── entity_types/         # Entity type schemas
-```
+## Core Components
 
-### 2. Configure your entity types
+### EntityIndex
 
-Edit `kgraph.yaml` to define your entities:
+SQLite-backed entity index with full-text search for fast lookups.
 
-```yaml
-entity_types:
-  person:
-    directory: "people"
-    tier_field: "importance"
-    required_fields: [name, email]
+```python
+from kgraph import EntityIndex
 
-  project:
-    directory: "projects"
-    tier_field: "priority"
+index = EntityIndex(Path("index.db"))
 
-tiers:
-  critical:
-    criteria:
-      priority_min: 8
-    storage_type: directory
-  normal:
-    criteria:
-      priority_min: 4
-      priority_max: 8
-    storage_type: directory
-  backlog:
-    criteria:
-      priority_max: 4
-    storage_type: jsonl
+# Add entity
+index.add("people/alice", "Alice Smith",
+          aliases=["Alice", "alice@example.com"],
+          category="people")
+
+# Search
+results = index.search("Alice")
+
+# Find by alias
+entry = index.find_by_alias("alice@example.com")
+
+# Find by email domain
+entries = index.find_by_email_domain("example.com")
+
+# Rebuild from filesystem
+count = index.rebuild(Path("knowledge_graph"))
 ```
 
-### 3. Process your data
+### SimpleStorage
 
-```bash
-# Process data into knowledge graph
-kgraph process
+Filesystem storage with minimal 4-field schema.
 
-# Resume interrupted processing
-kgraph resume
+```python
+from kgraph import SimpleStorage
 
-# Review pending questions
-kgraph review
+storage = SimpleStorage(Path("knowledge_graph"))
+
+# Create entity
+storage.create_entity("people/alice", {
+    "created": "2026-01-05",
+    "last_updated": "2026-01-05",
+    "sources": ["manual"],
+    "aliases": ["Alice"]
+}, summary="# Alice\n\nDescription here.")
+
+# Update entity
+storage.update_entity("people/alice",
+                      meta={"sources": ["manual", "email:123"]},
+                      summary="# Alice\n\nUpdated description.")
+
+# Read
+meta = storage.read_meta("people/alice")
+summary = storage.read_summary("people/alice")
+
+# Navigate hierarchy
+ancestors = storage.get_ancestors("people/collaborators/alice")
+# Returns: ["people/collaborators", "people"]
 ```
 
-### 4. Explore your knowledge graph
+### ObservabilityLogger
 
-```bash
-# View structure
-kgraph tree
+Phase-based logging for debugging and system improvement.
 
-# Validate integrity
-kgraph validate --strict
+```python
+from kgraph import ObservabilityLogger
+
+logger = ObservabilityLogger(Path("logs.db"))
+
+# Log phases
+logger.log_input([{"name": "Alice"}], source="email")
+logger.log_research("Alice", "alice", matches, "create")
+logger.log_decide("Alice", "create", "No match found", confidence=0.95)
+logger.log_write("people/alice", "create", "Created entity")
+logger.log_propagate("people/alice", ["people"])
+logger.log_error("validation_failed", entity="Alice",
+                 details={"field": "email"})
+
+# Query logs
+errors = logger.get_errors()
+decisions = logger.get_decisions(action="create")
+low_conf = logger.get_low_confidence(threshold=0.7)
+summary = logger.get_session_summary()
 ```
 
-## Configuration Reference
+### EntityResearcher
 
-### Entity Types
+Research existing entities before creating new ones.
 
-```yaml
-entity_types:
-  customer:
-    directory: "customers"      # Where to store entities
-    tier_field: "tier"          # Field that determines tier
-    required_fields:            # Required fields for validation
-      - name
-      - status
-```
+```python
+from kgraph import EntityResearcher, EntityIndex
 
-### Tiers
+index = EntityIndex(Path("index.db"))
+researcher = EntityResearcher(index)
 
-Tiers determine storage strategy and review frequency:
+# Find matches
+matches = researcher.research("Alice Smith", email="alice@example.com")
 
-```yaml
-tiers:
-  strategic:
-    criteria:
-      revenue_min: 200000
-    storage_type: directory     # Full directory with _meta.json
-    review_frequency: quarterly
-  prospect:
-    criteria:
-      revenue: 0
-    storage_type: jsonl         # Compact JSONL registry
+# Get suggestion
+action, path, confidence = researcher.suggest_action("Alice Smith")
+# Returns: ("create", None, 0.95)  or  ("update", "people/alice", 0.90)
+
+# Quick checks
+exists = researcher.exists("Alice Smith", threshold=0.9)
+best = researcher.best_match("Alice Smith")
 ```
 
 ### Matching Strategies
 
-```yaml
-matching:
-  strategies:
-    - alias         # Exact match against known aliases (score: 1.0)
-    - fuzzy_name    # Fuzzy string matching (score: 0.85-0.99)
-    - email_domain  # Match by email domain (score: 0.85-0.95)
-  fuzzy_threshold: 0.85
-  generic_domains:
-    - gmail.com
-    - yahoo.com
-```
-
-### Confidence Thresholds
-
-```yaml
-confidence:
-  auto_merge: 0.95    # Score >= this: auto-merge
-  auto_update: 0.90   # Score >= this: auto-update
-  auto_create: 0.50   # Score < this: auto-create new
-  llm_required: [0.50, 0.95]  # Range requiring LLM decision
-```
-
-## Architecture
-
-```
-Data Source
-    ↓
-[Batch Processing]
-    ↓
-[LLM Extraction]  →  Extracts entities, relationships, signals
-    ↓
-[Research Phase]  →  Finds existing entity matches
-    ↓
-[Reconciliation]  →  Decides MERGE / UPDATE / CREATE
-    ↓
-[Entity Writer]   →  Writes to knowledge graph
-    ↓
-Knowledge Graph (filesystem)
-```
-
-## Python API
+Pluggable strategies for entity deduplication.
 
 ```python
-from kgraph import load_config, FilesystemStorage
-from kgraph.matching import load_strategies
+from kgraph import (
+    AliasMatchStrategy,
+    FuzzyNameMatchStrategy,
+    EmailDomainMatchStrategy
+)
 
-# Load configuration
-config = load_config("kgraph.yaml")
+# Alias matching - exact match (score: 1.0)
+alias_strategy = AliasMatchStrategy()
 
-# Initialize storage
-storage = FilesystemStorage(config.kg_path, config)
+# Fuzzy name matching (score: 0.85-0.99)
+fuzzy_strategy = FuzzyNameMatchStrategy(threshold=0.85)
 
-# List entities
-customers = storage.list_entities("customer", tier="strategic")
-
-# Read entity
-entity = storage.read_entity("customer", "acme_corp", tier="strategic")
-
-# Write entity
-storage.write_entity("customer", "new_corp", {
-    "name": "New Corp",
-    "tier": "strategic",
-    "industry": "technology",
-    "contacts": [{"name": "John", "email": "john@newcorp.com"}]
-}, tier="strategic")
-
-# Load matching strategies
-strategies = load_strategies(config.matching.strategies)
+# Email domain matching (score: 0.85-0.95)
+domain_strategy = EmailDomainMatchStrategy()
 ```
 
-## Extending
+## Storage Format
 
-### Custom Matching Strategy
+### YAML Frontmatter (Preferred)
 
-```python
-from kgraph.matching import MatchStrategy, register_strategy, MatchCandidate
+Entities are stored as a single `_summary.md` file with YAML frontmatter:
 
-@register_strategy("semantic")
-class SemanticMatchStrategy(MatchStrategy):
-    @property
-    def name(self):
-        return "semantic"
+```markdown
+---
+created: 2026-01-05
+updated: 2026-01-05
+source: email:123
+aliases: [Alice, alice@anthropic.com, +14155551234]
+phone: +14155551234
+email: alice@anthropic.com
+relationship_type: colleague
+context: Met at NeurIPS 2024
+---
 
-    @property
-    def score_range(self):
-        return (0.7, 0.95)
+# Alice Smith
 
-    def find_matches(self, entity, index, threshold=0.0):
-        # Your embedding-based matching logic
-        ...
+Research scientist at Anthropic working on causal discovery.
+
+## Background
+Collaborator on interpretability project.
+
+## Interactions
+- 2026-01-05: Initial contact logged
+
+## Notes
+- Interested in causal representation learning
 ```
 
-### Custom Storage Backend
+**Required fields:** `created`, `updated`, `source`, `aliases`
+**Optional fields:** `phone`, `email`, `relationship_type`, `context`, `related_to`, `last_interaction`, `status`
 
-```python
-from kgraph.core.storage import StorageInterface
+### Legacy Format (_meta.json)
 
-class PostgresStorage(StorageInterface):
-    def write_entity(self, entity_type, entity_id, data, tier=None):
-        # Write to PostgreSQL
-        ...
+Separate `_meta.json` files are still supported for backward compatibility:
 
-    def read_entity(self, entity_type, entity_id, tier=None):
-        # Read from PostgreSQL
-        ...
+```json
+{
+  "created": "2026-01-05",
+  "last_updated": "2026-01-05",
+  "sources": ["email:123"],
+  "aliases": ["Alice", "alice@anthropic.com"]
+}
 ```
+
+**Note:** New entities should use YAML frontmatter. The index rebuilder supports both formats.
 
 ## Development
 
@@ -254,6 +278,37 @@ black kgraph/
 # Type check
 mypy kgraph/
 ```
+
+## CLI Usage
+
+Install in development mode and use the `kgraph` CLI to process a corpus, manage the index, and view logs.
+
+```
+pip install -e .[dev]
+
+# 1) Dry-run a corpus (no writes)
+kgraph process --corpus /path/to/corpus --kg-root /path/to/kg --dry-run
+
+# 2) Apply changes (create/update entities, update index/logs)
+kgraph process --corpus /path/to/corpus --kg-root /path/to/kg --apply
+
+# Options
+#   --include-ext ".txt,.md"     File extensions to include
+#   --min-update-score 0.9        Threshold for auto-update vs review
+#   --limit-files 100             Process at most N files
+
+# 3) Rebuild and search the index
+kgraph index rebuild --kg-root /path/to/kg
+kgraph index search --db /path/to/kg/.kgraph/index.db --query "Acme"
+
+# 4) Session summary (observability)
+kgraph log summary --db /path/to/kg/.kgraph/logs.db
+```
+
+Notes:
+- The corpus processor uses heuristics to discover people and orgs from emails in `.txt/.md` files. It researches/deduplicates against the local index, writes entities with YAML frontmatter, and logs actions.
+- All writes require `--apply`. Without it, the command prints a JSON plan and does not modify the filesystem.
+- Entities are stored under `people/<id>/` and `orgs/<id>/`. The index and logs live under `<kg-root>/.kgraph/`.
 
 ## License
 

@@ -7,14 +7,14 @@ Main Python package for the knowledge graph framework.
 ```
 kgraph/
 ├── __init__.py          # Package exports
-├── cli/                 # Command-line interface
+├── cli/                 # Command-line interface (implemented)
 ├── core/                # Configuration and storage
 ├── matching/            # Entity matching strategies
-├── pipeline/            # Processing pipeline
-│   ├── agents/          # LLM-powered agents
-│   ├── apply/           # Execution layer
-│   ├── audit/           # Audit logging
-│   └── staging/         # Staging database
+├── pipeline/            # Processing pipeline (planned)
+│   ├── agents/          # LLM-powered agents (planned)
+│   ├── apply/           # Execution layer (planned)
+│   ├── audit/           # Audit logging (planned)
+│   └── staging/         # Staging database (planned)
 └── templates/           # Default templates
 ```
 
@@ -70,6 +70,27 @@ from kgraph.pipeline import (
 - **pydantic**: Configuration validation
 - **pyyaml**: YAML configuration files
 - **click**: CLI framework
+
+## CLI Quick Start
+
+```
+# Dry-run a corpus
+kgraph process --corpus /path/to/corpus --kg-root /path/to/kg --dry-run
+
+# Apply changes
+kgraph process --corpus /path/to/corpus --kg-root /path/to/kg --apply
+
+# Rebuild/search index
+kgraph index rebuild --kg-root /path/to/kg
+kgraph index search --db /path/to/kg/.kgraph/index.db --query "Acme"
+
+# Logs summary
+kgraph log summary --db /path/to/kg/.kgraph/logs.db
+```
+
+Notes:
+- The current CLI is web-free and uses heuristic extraction from `.txt/.md` files to seed people and orgs.
+- All writes require `--apply`; otherwise commands produce a JSON plan only.
 
 ## Development
 

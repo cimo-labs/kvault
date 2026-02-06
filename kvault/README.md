@@ -1,48 +1,46 @@
 # kvault Package
 
-Main Python package for the knowledge graph framework.
+Main Python package for the personal knowledge base framework.
 
 ## Module Structure
 
 ```
 kvault/
 ├── __init__.py          # Package exports
-├── cli/                 # Command-line interface (implemented)
-├── core/                # Configuration and storage
-├── matching/            # Entity matching strategies
-├── pipeline/            # Processing pipeline (planned)
-│   ├── agents/          # LLM-powered agents (planned)
-│   ├── apply/           # Execution layer (planned)
-│   ├── audit/           # Audit logging (planned)
-│   └── staging/         # Staging database (planned)
-└── templates/           # Default templates
+├── cli/                 # Command-line interface
+├── core/                # Storage, indexing, frontmatter, observability, research
+├── matching/            # Entity matching strategies (alias, fuzzy, email domain)
+├── mcp/                 # MCP server (20 tools for Claude Code, Codex, etc.)
+├── orchestrator/        # Headless workflow runner (6-step pipeline)
+└── templates/           # Default templates for new KBs
 ```
 
 ## Package Exports
 
 ```python
-# Core configuration and storage (from kvault)
+# Core
 from kvault import (
-    KGraphConfig,
-    load_config,
-    FilesystemStorage,
+    EntityIndex,
+    IndexEntry,
+    SimpleStorage,
+    normalize_entity_id,
+    ObservabilityLogger,
+    LogEntry,
+    EntityResearcher,
 )
 
-# Matching strategies (from kvault.matching)
-from kvault.matching import (
-    load_strategies,
+# Matching strategies
+from kvault import (
+    MatchStrategy,
     MatchCandidate,
     EntityIndexEntry,
-)
-
-# Storage utilities (from kvault.core.storage)
-from kvault.core.storage import normalize_entity_id
-
-# Pipeline components (from kvault.pipeline)
-from kvault.pipeline import (
-    Orchestrator,
-    StagingDatabase,
-    QuestionQueue,
+    AliasMatchStrategy,
+    FuzzyNameMatchStrategy,
+    EmailDomainMatchStrategy,
+    register_strategy,
+    get_strategy,
+    list_strategies,
+    load_strategies,
 )
 ```
 
@@ -50,57 +48,51 @@ from kvault.pipeline import (
 
 ```
 ┌─────────────────────────────────────────────┐
-│                CLI Layer                     │
-│  kvault process | resume | review | tree    │
+│              MCP Server (Preferred)          │
+│  20 tools: kvault_init, kvault_search, ...  │
+│  kvault-mcp entry point                     │
 └─────────────────────────────────────────────┘
                       │
 ┌─────────────────────────────────────────────┐
-│             Pipeline Layer                   │
-│  Orchestrator → Agents → Staging → Apply    │
+│          Orchestrator Layer                  │
+│  HeadlessOrchestrator → 6-step workflow     │
 └─────────────────────────────────────────────┘
                       │
 ┌─────────────────────────────────────────────┐
 │              Core Layer                      │
-│  Configuration │ Storage │ Matching         │
+│  SimpleStorage │ EntityIndex │ Matching     │
+│  Frontmatter   │ Research    │ Observability│
 └─────────────────────────────────────────────┘
 ```
 
 ## Key Dependencies
 
 - **pydantic**: Configuration validation
-- **pyyaml**: YAML configuration files
+- **pyyaml**: YAML frontmatter parsing
 - **click**: CLI framework
+- **mcp**: MCP server protocol (optional, Python 3.10+)
 
 ## CLI Quick Start
 
+```bash
+# Create a new knowledge base
+kvault init my_kb --name "Your Name"
+
+# Validate integrity
+kvault check --kb-root my_kb
+
+# Index operations
+kvault index rebuild --kg-root my_kb
+kvault index search --db my_kb/.kvault/index.db --query "Acme"
+
+# Observability
+kvault log summary --db my_kb/.kvault/logs.db
 ```
-# Dry-run a corpus
-kvault process --corpus /path/to/corpus --kg-root /path/to/kg --dry-run
-
-# Apply changes
-kvault process --corpus /path/to/corpus --kg-root /path/to/kg --apply
-
-# Rebuild/search index
-kvault index rebuild --kg-root /path/to/kg
-kvault index search --db /path/to/kg/.kvault/index.db --query "Acme"
-
-# Logs summary
-kvault log summary --db /path/to/kg/.kvault/logs.db
-```
-
-Notes:
-- The current CLI is web-free and uses heuristic extraction from `.txt/.md` files to seed people and orgs.
-- All writes require `--apply`; otherwise commands produce a JSON plan only.
 
 ## Development
 
 ```bash
-# Install in development mode
 pip install -e ".[dev]"
-
-# Run tests
 pytest tests/
-
-# Type check
 mypy kvault/
 ```

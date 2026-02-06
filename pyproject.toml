@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "knowledgevault"
 version = "0.3.0"
-description = "Config-driven knowledge graph framework for extracting structured knowledge from unstructured data"
+description = "Personal knowledge base that runs inside Claude Code — structured, searchable, zero extra cost"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 authors = [
     {name = "Eddie Landesberg"}
 ]
-keywords = ["knowledge-graph", "entity-extraction", "llm", "data-processing", "claude-code", "mcp", "personal-knowledge-base"]
+keywords = ["knowledge-graph", "entity-extraction", "llm", "data-processing", "claude-code", "mcp", "mcp-server", "personal-knowledge-base", "pkm", "llm-memory", "agent-memory", "openai-codex"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -57,13 +57,14 @@ kvault-mcp = "kvault.mcp.server:main"
 Homepage = "https://github.com/cimo-labs/kvault"
 Documentation = "https://github.com/cimo-labs/kvault#readme"
 Repository = "https://github.com/cimo-labs/kvault"
+Issues = "https://github.com/cimo-labs/kvault/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["kvault*"]
 
 [tool.setuptools.package-data]
-kvault = ["templates/**/*"]
+kvault = ["templates/**/*", "py.typed"]
 
 [tool.black]
 line-length = 100

@@ -1,8 +1,8 @@
-# kvault - Agent-First Knowledge Graph Framework
+# kvault - Personal Knowledge Base for Claude Code
 
 ## Overview
 
-kvault is a Python framework for building and maintaining knowledge graphs with AI agent integration. It provides entity storage, indexing, matching strategies, and an orchestrator for automated knowledge curation.
+kvault is a personal knowledge base that runs inside Claude Code (or OpenAI Codex). It provides entity storage, indexing, matching strategies, and 20 MCP tools for structured, searchable agent memory.
 
 ## Quick Start
 
@@ -93,10 +93,6 @@ The orchestrator enforces this workflow for all knowledge graph updates:
 kvault index rebuild --kg-root .
 kvault index search --db .kvault/index.db --query "term"
 
-# Orchestrator (DEPRECATED - use MCP server instead)
-kvault orchestrate ingest --kg-root . --content "..." --source "manual"
-kvault orchestrate process --kg-root . --name "Entity" --type "person"
-
 # Observability
 kvault log summary --db .kvault/logs.db
 
@@ -106,12 +102,12 @@ kvault-mcp  # Start MCP server for Claude Code
 
 ## MCP Server (Preferred)
 
-The MCP server provides direct tool access for Claude Code, replacing the CLI orchestrator.
+The MCP server provides direct tool access for any MCP-compatible AI tool (Claude Code, Codex, Cursor, VS Code + Copilot, etc.).
 
 ### Installation
 
 ```bash
-pip install kvault[mcp]
+pip install knowledgevault[mcp]
 ```
 
 ### Configuration (.claude/settings.json)
@@ -127,14 +123,15 @@ pip install kvault[mcp]
 }
 ```
 
-### Tools (18 total)
+### Tools (20 total)
 
 **Initialization:** `kvault_init`, `kvault_status`
 **Index:** `kvault_search`, `kvault_find_by_alias`, `kvault_find_by_email_domain`, `kvault_rebuild_index`
 **Entity:** `kvault_read_entity`, `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
-**Summary:** `kvault_read_summary`, `kvault_write_summary`, `kvault_get_parent_summaries`
+**Summary:** `kvault_read_summary`, `kvault_write_summary`, `kvault_get_parent_summaries`, `kvault_propagate_all`
 **Research:** `kvault_research`
 **Workflow:** `kvault_log_phase`, `kvault_write_journal`, `kvault_validate_transition`
+**Validation:** `kvault_validate_kb`
 
 ### Key Differences from CLI Orchestrator
 

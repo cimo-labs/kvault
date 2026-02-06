@@ -1,4 +1,4 @@
-"""End-to-end tests for kgraph CLI.
+"""End-to-end tests for kvault CLI.
 
 Covers processing a small corpus, writing entities, updating the index,
 and querying logs. Focuses on realistic flows over isolated units.
@@ -9,8 +9,8 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from kgraph.cli.main import cli
-from kgraph.core.index import EntityIndex
+from kvault.cli.main import cli
+from kvault.core.index import EntityIndex
 
 
 def _write(p: Path, content: str) -> Path:
@@ -75,7 +75,7 @@ def test_process_dry_run_and_apply(tmp_path: Path) -> None:
     assert (kg_root / "orgs" / "globaltech" / "_meta.json").exists()
 
     # Index contains alias lookup for the person email
-    index_db = kg_root / ".kgraph" / "index.db"
+    index_db = kg_root / ".kvault" / "index.db"
     index = EntityIndex(index_db)
     entry = index.find_by_alias("john.smith@acmecorp.com")
     assert entry is not None
@@ -88,7 +88,7 @@ def test_process_dry_run_and_apply(tmp_path: Path) -> None:
             "log",
             "summary",
             "--db",
-            str(kg_root / ".kgraph" / "logs.db"),
+            str(kg_root / ".kvault" / "logs.db"),
             "--session",
             session_id,
         ],

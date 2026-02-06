@@ -1,4 +1,4 @@
-"""Tests for kgraph.orchestrator module.
+"""Tests for kvault.orchestrator module.
 
 Testing Philosophy (following CJE patterns):
 1. E2E Focus - Test complete workflows, not isolated functions
@@ -17,9 +17,9 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from kgraph.orchestrator.context import OrchestratorConfig, WorkflowContext
-from kgraph.orchestrator.state_machine import WorkflowStateMachine, WorkflowState
-from kgraph.orchestrator.enforcer import WorkflowEnforcer
+from kvault.orchestrator.context import OrchestratorConfig, WorkflowContext
+from kvault.orchestrator.state_machine import WorkflowStateMachine, WorkflowState
+from kvault.orchestrator.enforcer import WorkflowEnforcer
 
 
 # -------------------------
@@ -220,7 +220,7 @@ class TestWorkflowEnforcer:
 
     def test_tool_to_step_mapping_research(self, enforcer):
         """Maps grep on index.db to RESEARCH step."""
-        step = enforcer._tool_to_step("Grep", {"path": "/test/kg/.kgraph/index.db"})
+        step = enforcer._tool_to_step("Grep", {"path": "/test/kg/.kvault/index.db"})
         assert step == "RESEARCH"
 
     def test_tool_to_step_mapping_write(self, enforcer):
@@ -248,7 +248,7 @@ class TestWorkflowEnforcer:
         """Allows tool execution when prerequisites are met."""
         # RESEARCH is valid from READY state
         result = await enforcer.pre_tool_gate(
-            {"tool_name": "Grep", "tool_input": {"path": "/test/kg/.kgraph/index.db"}},
+            {"tool_name": "Grep", "tool_input": {"path": "/test/kg/.kvault/index.db"}},
             "test-id",
             None,
         )
@@ -328,11 +328,11 @@ REBUILD COMPLETE: Indexed 5 entities
     @pytest.mark.asyncio
     async def test_process_parses_step_completions(self, tmp_kg_path, mock_subprocess):
         """Can parse step completion markers from CLI output."""
-        from kgraph.orchestrator.runner import HeadlessOrchestrator
-        from kgraph.orchestrator.context import OrchestratorConfig
+        from kvault.orchestrator.runner import HeadlessOrchestrator
+        from kvault.orchestrator.context import OrchestratorConfig
 
         # Create minimal KG structure
-        (tmp_kg_path / ".kgraph").mkdir()
+        (tmp_kg_path / ".kvault").mkdir()
         (tmp_kg_path / "people").mkdir()
         (tmp_kg_path / "journal" / "2024-01").mkdir(parents=True)
 
@@ -424,9 +424,9 @@ class TestE2EWorkflows:
         kg_root = tmp_path / "knowledge_graph"
         kg_root.mkdir()
 
-        # Create .kgraph directory
-        kgraph_dir = kg_root / ".kgraph"
-        kgraph_dir.mkdir()
+        # Create .kvault directory
+        kvault_dir = kg_root / ".kvault"
+        kvault_dir.mkdir()
 
         # Create people category
         people_dir = kg_root / "people"
@@ -463,15 +463,15 @@ class TestE2EWorkflows:
         # 4. Propagates to ancestors
         # 5. Logs the action
 
-        from kgraph import EntityIndex, ObservabilityLogger, SimpleStorage
+        from kvault import EntityIndex, ObservabilityLogger, SimpleStorage
 
         kg_root = kg_with_entities
-        kgraph_dir = kg_root / ".kgraph"
+        kvault_dir = kg_root / ".kvault"
 
         # Initialize infrastructure (as user would)
-        index = EntityIndex(kgraph_dir / "index.db")
+        index = EntityIndex(kvault_dir / "index.db")
         index.rebuild(kg_root)  # Build index from existing entities
-        logger = ObservabilityLogger(kgraph_dir / "logs.db")
+        logger = ObservabilityLogger(kvault_dir / "logs.db")
         storage = SimpleStorage(kg_root)
 
         # Simulate the workflow steps
@@ -540,10 +540,10 @@ class TestE2EWorkflows:
 
     def test_e2e_update_existing_entity_workflow(self, kg_with_entities):
         """Test complete workflow: Update entity when match found."""
-        from kgraph import EntityIndex, SimpleStorage
+        from kvault import EntityIndex, SimpleStorage
 
         kg_root = kg_with_entities
-        index = EntityIndex(kg_root / ".kgraph" / "index.db")
+        index = EntityIndex(kg_root / ".kvault" / "index.db")
         index.rebuild(kg_root)
         storage = SimpleStorage(kg_root)
 
@@ -685,7 +685,7 @@ class TestHierarchyModeContext:
 
     def test_is_hierarchy_mode_with_raw_input(self):
         """Context is in hierarchy mode when raw_input is set."""
-        from kgraph.orchestrator.context import HierarchyInput
+        from kvault.orchestrator.context import HierarchyInput
 
         raw_input = HierarchyInput(content="Test content", source="test:manual")
         ctx = WorkflowContext(raw_input=raw_input)
@@ -702,7 +702,7 @@ class TestHierarchyModeContext:
 
     def test_action_plan_storage(self):
         """Can store and retrieve action plan."""
-        from kgraph.orchestrator.context import HierarchyInput, ActionPlan, PlannedAction
+        from kvault.orchestrator.context import HierarchyInput, ActionPlan, PlannedAction
 
         raw_input = HierarchyInput(content="Coffee with Bob", source="manual")
         ctx = WorkflowContext(raw_input=raw_input)
@@ -726,7 +726,7 @@ class TestHierarchyModeContext:
 
     def test_to_dict_hierarchy_mode(self):
         """to_dict works for hierarchy mode context."""
-        from kgraph.orchestrator.context import HierarchyInput, ActionPlan, PlannedAction
+        from kvault.orchestrator.context import HierarchyInput, ActionPlan, PlannedAction
 
         raw_input = HierarchyInput(content="Test", source="test")
         ctx = WorkflowContext(raw_input=raw_input)
@@ -751,7 +751,7 @@ class TestHierarchyModeStateMachine:
 
     def test_can_transition_to_execute_in_hierarchy_mode(self):
         """Can transition to EXECUTE in hierarchy mode after DECIDE."""
-        from kgraph.orchestrator.context import HierarchyInput, ActionPlan, PlannedAction
+        from kvault.orchestrator.context import HierarchyInput, ActionPlan, PlannedAction
 
         raw_input = HierarchyInput(content="Test", source="test")
         ctx = WorkflowContext(raw_input=raw_input)
@@ -775,7 +775,7 @@ class TestHierarchyModeStateMachine:
 
     def test_can_skip_to_log_with_empty_plan(self):
         """Can skip to LOG if action plan is empty."""
-        from kgraph.orchestrator.context import HierarchyInput, ActionPlan
+        from kvault.orchestrator.context import HierarchyInput, ActionPlan
 
         raw_input = HierarchyInput(content="Noise", source="test")
         ctx = WorkflowContext(raw_input=raw_input)
@@ -796,7 +796,7 @@ class TestHierarchyModeStateMachine:
 
     def test_execute_to_propagate_after_all_actions(self):
         """Can transition to PROPAGATE after all actions executed."""
-        from kgraph.orchestrator.context import HierarchyInput, ActionPlan, PlannedAction
+        from kvault.orchestrator.context import HierarchyInput, ActionPlan, PlannedAction
 
         raw_input = HierarchyInput(content="Test", source="test")
         ctx = WorkflowContext(raw_input=raw_input)
@@ -827,7 +827,7 @@ class TestHierarchyModeEnforcer:
     @pytest.fixture
     def hierarchy_context(self):
         """Create hierarchy mode context."""
-        from kgraph.orchestrator.context import HierarchyInput
+        from kvault.orchestrator.context import HierarchyInput
 
         raw_input = HierarchyInput(content="Test", source="test:manual")
         return WorkflowContext(raw_input=raw_input)
@@ -840,7 +840,7 @@ class TestHierarchyModeEnforcer:
 
     def test_classify_write_as_execute(self, hierarchy_enforcer, hierarchy_context):
         """Writes to planned action paths are classified as EXECUTE."""
-        from kgraph.orchestrator.context import ActionPlan, PlannedAction
+        from kvault.orchestrator.context import ActionPlan, PlannedAction
 
         hierarchy_context.action_plan = ActionPlan(
             actions=[PlannedAction(action_type="create", path="people/bob", reasoning="Test", confidence=0.9)],
@@ -852,7 +852,7 @@ class TestHierarchyModeEnforcer:
 
     def test_classify_ancestor_write_as_propagate(self, hierarchy_enforcer, hierarchy_context):
         """Writes to ancestor paths are classified as PROPAGATE."""
-        from kgraph.orchestrator.context import ActionPlan, PlannedAction
+        from kvault.orchestrator.context import ActionPlan, PlannedAction
 
         hierarchy_context.action_plan = ActionPlan(
             actions=[PlannedAction(action_type="create", path="people/bob", reasoning="Test", confidence=0.9)],

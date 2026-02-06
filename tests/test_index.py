@@ -4,7 +4,7 @@ import json
 import pytest
 from pathlib import Path
 
-from kgraph.core.index import EntityIndex, IndexEntry
+from kvault.core.index import EntityIndex, IndexEntry
 
 
 class TestEntityIndex:
@@ -153,7 +153,7 @@ class TestEntityIndex:
         # Create knowledge graph structure
         kg_root = tmp_path / "kg"
 
-        # Create entity with _meta.json
+        # Create entity with _meta.json and _summary.md (rebuild scans for _summary.md)
         entity_dir = kg_root / "people" / "alice_smith"
         entity_dir.mkdir(parents=True)
         meta = {
@@ -161,6 +161,7 @@ class TestEntityIndex:
             "aliases": ["Alice", "alice@example.com"],
         }
         (entity_dir / "_meta.json").write_text(json.dumps(meta))
+        (entity_dir / "_summary.md").write_text("# Alice Smith\n")
 
         # Create index and rebuild
         index = EntityIndex(tmp_path / "test.db")

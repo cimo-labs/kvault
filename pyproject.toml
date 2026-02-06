@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kgraph"
-version = "0.2.0"
+name = "kvault"
+version = "0.3.0"
 description = "Config-driven knowledge graph framework for extracting structured knowledge from unstructured data"
 readme = "README.md"
 license = {text = "MIT"}
@@ -12,7 +12,7 @@ requires-python = ">=3.9"
 authors = [
     {name = "Eddie Landesberg"}
 ]
-keywords = ["knowledge-graph", "entity-extraction", "llm", "data-processing"]
+keywords = ["knowledge-graph", "entity-extraction", "llm", "data-processing", "claude-code", "mcp", "personal-knowledge-base"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -44,21 +44,26 @@ dev = [
 sdk = [
     "claude-code-sdk>=0.1.0",
 ]
+# MCP server for Claude Code integration (requires Python 3.10+)
+mcp = [
+    "mcp>=1.0.0; python_version >= '3.10'",
+]
 
 [project.scripts]
-kgraph = "kgraph.cli.main:cli"
+kvault = "kvault.cli.main:cli"
+kvault-mcp = "kvault.mcp.server:main"
 
 [project.urls]
-Homepage = "https://github.com/eddiel/kgraph"
-Documentation = "https://github.com/eddiel/kgraph#readme"
-Repository = "https://github.com/eddiel/kgraph"
+Homepage = "https://github.com/cimo-labs/kvault"
+Documentation = "https://github.com/cimo-labs/kvault#readme"
+Repository = "https://github.com/cimo-labs/kvault"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["kgraph*"]
+include = ["kvault*"]
 
 [tool.setuptools.package-data]
-kgraph = ["templates/**/*"]
+kvault = ["templates/**/*"]
 
 [tool.black]
 line-length = 100
@@ -79,7 +84,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["kgraph"]
+source = ["kvault"]
 omit = ["*/tests/*", "*/__init__.py"]
 
 [tool.coverage.report]
@@ -105,7 +110,7 @@ exclude = ["tests/"]
 # Allow more permissive typing for initial release
 # TODO: Gradually enable stricter type checking
 [[tool.mypy.overrides]]
-module = ["kgraph.*"]
+module = ["kvault.*"]
 strict = false
 allow_untyped_defs = true
 allow_any_generics = true

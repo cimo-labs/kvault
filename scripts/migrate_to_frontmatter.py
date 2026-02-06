@@ -20,10 +20,10 @@ import json
 import sys
 from pathlib import Path
 
-# Add kgraph to path for imports
+# Add kvault to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from kgraph.core.frontmatter import build_frontmatter
+from kvault.core.frontmatter import build_frontmatter
 
 
 def migrate_entity(entity_dir: Path, dry_run: bool = True) -> bool:

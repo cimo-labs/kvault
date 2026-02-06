@@ -4,8 +4,8 @@ import json
 import pytest
 from pathlib import Path
 
-from kgraph.core.index import EntityIndex
-from kgraph.core.research import EntityResearcher
+from kvault.core.index import EntityIndex
+from kvault.core.research import EntityResearcher
 
 
 class TestEntityResearcher:

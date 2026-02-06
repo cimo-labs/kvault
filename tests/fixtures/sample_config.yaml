@@ -1,4 +1,4 @@
-# Test configuration for kgraph E2E tests
+# Test configuration for kvault E2E tests
 project:
   name: "test-project"
   data_path: "./data"

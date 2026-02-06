@@ -1,4 +1,4 @@
-# Pre-commit hooks for kgraph
+# Pre-commit hooks for kvault
 # Install: pre-commit install
 # Run: pre-commit run --all-files
 
@@ -17,7 +17,7 @@ repos:
 
       - id: mypy
         name: mypy
-        entry: mypy kgraph/ --ignore-missing-imports --no-error-summary
+        entry: mypy kvault/ --ignore-missing-imports --no-error-summary
         language: system
         pass_filenames: false
         always_run: true

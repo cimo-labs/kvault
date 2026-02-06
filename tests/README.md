@@ -1,6 +1,6 @@
 # Tests
 
-Pytest test suite for kgraph.
+Pytest test suite for kvault.
 
 ## Structure
 
@@ -24,7 +24,7 @@ tests/
 pytest tests/ -v
 
 # Run with coverage
-pytest tests/ --cov=kgraph --cov-report=term-missing
+pytest tests/ --cov=kvault --cov-report=term-missing
 
 # Run E2E tests only
 pytest tests/test_e2e_pipeline.py -v
@@ -105,7 +105,7 @@ def orchestrator_with_mock() -> Orchestrator:
 Tests use `MockExtractionAgent` to avoid Claude CLI dependency:
 
 ```python
-from kgraph.pipeline.agents.extraction import MockExtractionAgent
+from kvault.pipeline.agents.extraction import MockExtractionAgent
 
 agent = MockExtractionAgent(config, mock_entities=[
     {"name": "Test Corp", "entity_type": "customer", "confidence": 0.9}
@@ -138,6 +138,6 @@ Minimal test configuration with:
 Target: >70% coverage of pipeline module
 
 ```bash
-pytest tests/ --cov=kgraph --cov-report=html
+pytest tests/ --cov=kvault --cov-report=html
 open htmlcov/index.html
 ```

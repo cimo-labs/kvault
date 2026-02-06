@@ -1,1 +1,1 @@
-"""Test fixtures for kgraph."""
+"""Test fixtures for kvault."""

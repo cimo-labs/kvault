@@ -1,11 +1,11 @@
-# kgraph Architecture
+# kvault Architecture
 
-> **Canonical Reference** - This document is the single source of truth for kgraph's design.
+> **Canonical Reference** - This document is the single source of truth for kvault's design.
 > Last updated: 2026-01-05
 
 ## Overview
 
-kgraph is a config-driven knowledge graph framework that transforms unstructured data (emails, documents) into structured knowledge using LLM-powered entity extraction with fuzzy deduplication.
+kvault is a config-driven knowledge graph framework that transforms unstructured data (emails, documents) into structured knowledge using LLM-powered entity extraction with fuzzy deduplication.
 
 ### Goals
 
@@ -23,7 +23,7 @@ kgraph is a config-driven knowledge graph framework that transforms unstructured
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              USER INTERFACE                                  │
 │                                                                              │
-│  $ kgraph process    $ kgraph resume    $ kgraph review    $ kgraph tree    │
+│  $ kvault process    $ kvault resume    $ kvault review    $ kvault tree    │
 └─────────────────────────────────────────┬───────────────────────────────────┘
                                           │
                                           ▼
@@ -88,7 +88,7 @@ kgraph is a config-driven knowledge graph framework that transforms unstructured
 
 ## Component Descriptions
 
-### Core Layer (`kgraph/core/`)
+### Core Layer (`kvault/core/`)
 
 | Component | File | Purpose |
 |-----------|------|---------|
@@ -96,7 +96,7 @@ kgraph is a config-driven knowledge graph framework that transforms unstructured
 | **ConfidenceConfig** | `config.py` | Thresholds for auto-decisions |
 | **FilesystemStorage** | `storage.py` | Tiered entity storage (directory + JSONL) |
 
-### Matching Layer (`kgraph/matching/`)
+### Matching Layer (`kvault/matching/`)
 
 | Component | File | Score Range | Purpose |
 |-----------|------|-------------|---------|
@@ -104,7 +104,7 @@ kgraph is a config-driven knowledge graph framework that transforms unstructured
 | **FuzzyNameMatchStrategy** | `fuzzy.py` | 0.85-0.99 | SequenceMatcher string similarity |
 | **EmailDomainMatchStrategy** | `domain.py` | 0.85-0.95 | Shared corporate email domains |
 
-### Pipeline Layer (`kgraph/pipeline/`)
+### Pipeline Layer (`kvault/pipeline/`)
 
 | Component | File | Purpose |
 |-----------|------|---------|
@@ -245,7 +245,7 @@ Knowledge Graph (filesystem)
 
 ## Configuration Reference
 
-### kgraph.yaml Structure
+### kvault.yaml Structure
 
 ```yaml
 project:
@@ -408,7 +408,7 @@ CREATE TABLE question_queue (
 ### Custom Matching Strategy
 
 ```python
-from kgraph.matching import MatchStrategy, register_strategy, MatchCandidate
+from kvault.matching import MatchStrategy, register_strategy, MatchCandidate
 
 @register_strategy("semantic")
 class SemanticMatchStrategy(MatchStrategy):
@@ -428,7 +428,7 @@ class SemanticMatchStrategy(MatchStrategy):
 ### Custom Storage Backend
 
 ```python
-from kgraph.core.storage import StorageInterface
+from kvault.core.storage import StorageInterface
 
 class PostgresStorage(StorageInterface):
     def write_entity(self, entity_type, entity_id, data, tier=None):
@@ -443,7 +443,7 @@ class PostgresStorage(StorageInterface):
 ### Custom Data Source
 
 ```python
-from kgraph.pipeline.data_sources import DataSource
+from kvault.pipeline.data_sources import DataSource
 
 class EmailDataSource(DataSource):
     def __init__(self, db_path: Path):
@@ -574,7 +574,7 @@ def orchestrator_with_mock(temp_config, mock_entities):
 pytest tests/ -v
 
 # Run with coverage
-pytest tests/ --cov=kgraph --cov-report=term-missing
+pytest tests/ --cov=kvault --cov-report=term-missing
 
 # Run E2E only
 pytest tests/test_e2e_pipeline.py -v
@@ -588,7 +588,7 @@ pytest tests/ --ignore=tests/test_e2e_pipeline.py -v
 `.pre-commit-config.yaml` runs on every commit:
 
 1. **pytest** - All tests must pass
-2. **mypy** - Type checking (kgraph/ directory)
+2. **mypy** - Type checking (kvault/ directory)
 3. **ruff** - Linting and formatting
 4. **pre-commit-hooks** - Trailing whitespace, YAML check, etc.
 

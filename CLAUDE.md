@@ -1,8 +1,8 @@
-# kgraph - Agent-First Knowledge Graph Framework
+# kvault - Agent-First Knowledge Graph Framework
 
 ## Overview
 
-kgraph is a Python framework for building and maintaining knowledge graphs with AI agent integration. It provides entity storage, indexing, matching strategies, and an orchestrator for automated knowledge curation.
+kvault is a Python framework for building and maintaining knowledge graphs with AI agent integration. It provides entity storage, indexing, matching strategies, and an orchestrator for automated knowledge curation.
 
 ## Quick Start
 
@@ -14,7 +14,7 @@ pytest                    # Run tests
 ## Architecture
 
 ```
-kgraph/
+kvault/
 ├── core/           # Storage, indexing, observability
 ├── matching/       # Entity matching strategies
 ├── orchestrator/   # Headless workflow runner
@@ -27,8 +27,8 @@ kgraph/
 SQLite-backed full-text search index for entity lookup.
 
 ```python
-from kgraph.core.index import EntityIndex
-index = EntityIndex(Path(".kgraph/index.db"))
+from kvault.core.index import EntityIndex
+index = EntityIndex(Path(".kvault/index.db"))
 index.rebuild(kg_root)  # Scans for entities
 results = index.search("query")
 ```
@@ -40,7 +40,7 @@ File-based entity storage with read/write operations.
 Spawns Claude subprocess to execute the 6-step workflow autonomously.
 
 ```python
-from kgraph.orchestrator import HeadlessOrchestrator, OrchestratorConfig
+from kvault.orchestrator import HeadlessOrchestrator, OrchestratorConfig
 config = OrchestratorConfig(kg_root=Path("."))
 orchestrator = HeadlessOrchestrator(config)
 result = orchestrator.ingest(content="...", source="manual")
@@ -90,16 +90,60 @@ The orchestrator enforces this workflow for all knowledge graph updates:
 
 ```bash
 # Index operations
-kgraph index rebuild --kg-root .
-kgraph index search --db .kgraph/index.db --query "term"
+kvault index rebuild --kg-root .
+kvault index search --db .kvault/index.db --query "term"
 
-# Orchestrator
-kgraph orchestrate ingest --kg-root . --content "..." --source "manual"
-kgraph orchestrate process --kg-root . --name "Entity" --type "person"
+# Orchestrator (DEPRECATED - use MCP server instead)
+kvault orchestrate ingest --kg-root . --content "..." --source "manual"
+kvault orchestrate process --kg-root . --name "Entity" --type "person"
 
 # Observability
-kgraph log summary --db .kgraph/logs.db
+kvault log summary --db .kvault/logs.db
+
+# MCP Server
+kvault-mcp  # Start MCP server for Claude Code
 ```
+
+## MCP Server (Preferred)
+
+The MCP server provides direct tool access for Claude Code, replacing the CLI orchestrator.
+
+### Installation
+
+```bash
+pip install kvault[mcp]
+```
+
+### Configuration (.claude/settings.json)
+
+```json
+{
+  "mcpServers": {
+    "kvault": {
+      "command": "kvault-mcp",
+      "env": {}
+    }
+  }
+}
+```
+
+### Tools (18 total)
+
+**Initialization:** `kvault_init`, `kvault_status`
+**Index:** `kvault_search`, `kvault_find_by_alias`, `kvault_find_by_email_domain`, `kvault_rebuild_index`
+**Entity:** `kvault_read_entity`, `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
+**Summary:** `kvault_read_summary`, `kvault_write_summary`, `kvault_get_parent_summaries`
+**Research:** `kvault_research`
+**Workflow:** `kvault_log_phase`, `kvault_write_journal`, `kvault_validate_transition`
+
+### Key Differences from CLI Orchestrator
+
+| CLI Orchestrator | MCP Server |
+|------------------|------------|
+| Single subprocess, parses output | Individual tool calls |
+| 10-15 min timeout | No timeout concerns |
+| Regex-based path extraction | Structured JSON responses |
+| Single session | Session state management |
 
 ## Important Patterns
 
@@ -108,7 +152,7 @@ Always verify identifiers (phone, email) EXACTLY before claiming entity match. N
 
 ### Frontmatter Parsing
 ```python
-from kgraph.core.frontmatter import parse_frontmatter, build_frontmatter
+from kvault.core.frontmatter import parse_frontmatter, build_frontmatter
 
 content = open("_summary.md").read()
 meta, body = parse_frontmatter(content)  # Returns (dict, str)

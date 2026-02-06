@@ -4,7 +4,7 @@ import json
 import pytest
 from pathlib import Path
 
-from kgraph.core.storage import SimpleStorage, normalize_entity_id
+from kvault.core.storage import SimpleStorage, normalize_entity_id
 
 
 class TestNormalizeEntityId:

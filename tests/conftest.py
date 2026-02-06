@@ -1,4 +1,4 @@
-"""Pytest configuration for kgraph tests."""
+"""Pytest configuration for kvault tests."""
 
 import pytest
 from pathlib import Path

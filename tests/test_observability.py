@@ -4,7 +4,7 @@ import json
 import pytest
 from pathlib import Path
 
-from kgraph.core.observability import ObservabilityLogger, LogEntry
+from kvault.core.observability import ObservabilityLogger, LogEntry
 
 
 class TestObservabilityLogger:

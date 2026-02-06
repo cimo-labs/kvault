@@ -1,10 +1,10 @@
-# kgraph
+# kvault
 
 Agent-first knowledge graph framework. Build knowledge graphs from unstructured data using intelligent agents.
 
 ## Philosophy
 
-**The agent IS the pipeline.** Claude (or another LLM) does extraction, research, decisions, and propagation. kgraph provides tools, not workflows.
+**The agent IS the pipeline.** Claude (or another LLM) does extraction, research, decisions, and propagation. kvault provides tools, not workflows.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -23,17 +23,62 @@ Agent (Claude) does:
   - Log (using ObservabilityLogger)
 ```
 
+## Getting Started with Claude Code
+
+The fastest way to get a personal knowledge base running with Claude Code:
+
+```bash
+# 1. Install kvault with MCP support
+pip install kvault[mcp]
+
+# 2. Initialize a new knowledge base
+kvault init my_kb --name "Your Name"
+
+# 3. Verify it's clean
+kvault check --kb-root my_kb
+```
+
+Then add the MCP server to `.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "kvault": {
+      "command": "kvault-mcp",
+      "env": {}
+    }
+  }
+}
+```
+
+And add the integrity hook (catches stale summaries before each prompt):
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "type": "command",
+        "command": "kvault check --kb-root /absolute/path/to/my_kb"
+      }
+    ]
+  }
+}
+```
+
+Customize the generated `CLAUDE.md` with your personal details, then start adding entities.
+
 ## Installation
 
 ```bash
-pip install kgraph
+pip install kvault
 ```
 
 Or install from source:
 
 ```bash
-git clone https://github.com/eddiel/kgraph
-cd kgraph
+git clone https://github.com/cimo-labs/kvault
+cd kvault
 pip install -e .
 ```
 
@@ -41,7 +86,7 @@ pip install -e .
 
 ```python
 from pathlib import Path
-from kgraph import (
+from kvault import (
     EntityIndex,
     SimpleStorage,
     ObservabilityLogger,
@@ -50,9 +95,9 @@ from kgraph import (
 
 # Initialize
 kg_root = Path("my_knowledge_base")
-index = EntityIndex(kg_root / ".kgraph" / "index.db")
+index = EntityIndex(kg_root / ".kvault" / "index.db")
 storage = SimpleStorage(kg_root)
-logger = ObservabilityLogger(kg_root / ".kgraph" / "logs.db")
+logger = ObservabilityLogger(kg_root / ".kvault" / "logs.db")
 researcher = EntityResearcher(index)
 
 # 1. Research - find existing entities
@@ -70,8 +115,8 @@ if action == "create":
 # 3. Write - create/update the entity
 storage.create_entity(entity_path, {
     "created": "2026-01-05",
-    "last_updated": "2026-01-05",
-    "sources": ["email:123"],
+    "updated": "2026-01-05",
+    "source": "email:123",
     "aliases": ["Alice", "alice@anthropic.com"]
 }, summary="# Alice Smith\n\nResearch scientist at Anthropic.")
 logger.log_write(entity_path, "create", "Created new entity")
@@ -92,7 +137,7 @@ logger.log_propagate(entity_path, ancestors)
 SQLite-backed entity index with full-text search for fast lookups.
 
 ```python
-from kgraph import EntityIndex
+from kvault import EntityIndex
 
 index = EntityIndex(Path("index.db"))
 
@@ -119,21 +164,21 @@ count = index.rebuild(Path("knowledge_graph"))
 Filesystem storage with minimal 4-field schema.
 
 ```python
-from kgraph import SimpleStorage
+from kvault import SimpleStorage
 
 storage = SimpleStorage(Path("knowledge_graph"))
 
 # Create entity
 storage.create_entity("people/alice", {
     "created": "2026-01-05",
-    "last_updated": "2026-01-05",
-    "sources": ["manual"],
+    "updated": "2026-01-05",
+    "source": "manual",
     "aliases": ["Alice"]
 }, summary="# Alice\n\nDescription here.")
 
 # Update entity
 storage.update_entity("people/alice",
-                      meta={"sources": ["manual", "email:123"]},
+                      meta={"source": "email:123"},
                       summary="# Alice\n\nUpdated description.")
 
 # Read
@@ -150,7 +195,7 @@ ancestors = storage.get_ancestors("people/collaborators/alice")
 Phase-based logging for debugging and system improvement.
 
 ```python
-from kgraph import ObservabilityLogger
+from kvault import ObservabilityLogger
 
 logger = ObservabilityLogger(Path("logs.db"))
 
@@ -175,7 +220,7 @@ summary = logger.get_session_summary()
 Research existing entities before creating new ones.
 
 ```python
-from kgraph import EntityResearcher, EntityIndex
+from kvault import EntityResearcher, EntityIndex
 
 index = EntityIndex(Path("index.db"))
 researcher = EntityResearcher(index)
@@ -197,7 +242,7 @@ best = researcher.best_match("Alice Smith")
 Pluggable strategies for entity deduplication.
 
 ```python
-from kgraph import (
+from kvault import (
     AliasMatchStrategy,
     FuzzyNameMatchStrategy,
     EmailDomainMatchStrategy
@@ -273,42 +318,92 @@ pip install -e ".[dev]"
 pytest
 
 # Format code
-black kgraph/
+black kvault/
 
 # Type check
-mypy kgraph/
+mypy kvault/
 ```
+
+## MCP Server (Claude Code Integration)
+
+The kvault MCP server provides direct tool access for Claude Code, enabling the 6-step workflow without subprocess parsing.
+
+### Installation
+
+```bash
+pip install kvault[mcp]  # Install with MCP support
+```
+
+### Configuration
+
+Add to `.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "kvault": {
+      "command": "kvault-mcp",
+      "env": {}
+    }
+  }
+}
+```
+
+### Available Tools
+
+| Category | Tools |
+|----------|-------|
+| **Init** | `kvault_init`, `kvault_status` |
+| **Index** | `kvault_search`, `kvault_find_by_alias`, `kvault_find_by_email_domain`, `kvault_rebuild_index` |
+| **Entity** | `kvault_read_entity`, `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity` |
+| **Summary** | `kvault_read_summary`, `kvault_write_summary`, `kvault_get_parent_summaries` |
+| **Research** | `kvault_research` |
+| **Workflow** | `kvault_log_phase`, `kvault_write_journal`, `kvault_validate_transition` |
+
+### Example Workflow
+
+```
+1. kvault_init(kg_root="/path/to/kb")
+2. kvault_research(name="John Doe", phone="+14155551234")
+3. kvault_write_entity(path="people/contacts/john_doe", meta={...}, content="...", create=true)
+4. kvault_get_parent_summaries(path="people/contacts/john_doe")
+5. kvault_write_summary(path="people/contacts", content="...")
+6. kvault_write_journal(actions=[...], source="manual")
+7. kvault_rebuild_index()
+```
+
+### Benefits
+
+- **Structured JSON responses** - No regex parsing of CLI output
+- **Direct control** - Each tool call is explicit and debuggable
+- **Session state** - Track workflow progress across calls
+- **No timeouts** - Individual tools complete quickly
+
+---
 
 ## CLI Usage
 
-Install in development mode and use the `kgraph` CLI to process a corpus, manage the index, and view logs.
+```bash
+pip install -e ".[dev]"
 
+# Initialize a new KB
+kvault init my_kb --name "Alice"
+
+# Check KB integrity (propagation, journal, index, frontmatter, branching)
+kvault check --kb-root my_kb
+kvault check                      # Auto-detects KB root from cwd
+
+# Process a corpus
+kvault process --corpus /path/to/corpus --kg-root /path/to/kg --dry-run
+kvault process --corpus /path/to/corpus --kg-root /path/to/kg --apply
+
+# Rebuild and search the index
+kvault index rebuild --kg-root /path/to/kg
+kvault index search --db /path/to/kg/.kvault/index.db --query "Acme"
+
+# Session summary (observability)
+kvault log summary --db /path/to/kg/.kvault/logs.db
 ```
-pip install -e .[dev]
-
-# 1) Dry-run a corpus (no writes)
-kgraph process --corpus /path/to/corpus --kg-root /path/to/kg --dry-run
-
-# 2) Apply changes (create/update entities, update index/logs)
-kgraph process --corpus /path/to/corpus --kg-root /path/to/kg --apply
-
-# Options
-#   --include-ext ".txt,.md"     File extensions to include
-#   --min-update-score 0.9        Threshold for auto-update vs review
-#   --limit-files 100             Process at most N files
-
-# 3) Rebuild and search the index
-kgraph index rebuild --kg-root /path/to/kg
-kgraph index search --db /path/to/kg/.kgraph/index.db --query "Acme"
-
-# 4) Session summary (observability)
-kgraph log summary --db /path/to/kg/.kgraph/logs.db
-```
-
-Notes:
-- The corpus processor uses heuristics to discover people and orgs from emails in `.txt/.md` files. It researches/deduplicates against the local index, writes entities with YAML frontmatter, and logs actions.
-- All writes require `--apply`. Without it, the command prints a JSON plan and does not modify the filesystem.
-- Entities are stored under `people/<id>/` and `orgs/<id>/`. The index and logs live under `<kg-root>/.kgraph/`.
 
 ## License
 

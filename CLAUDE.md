@@ -2,7 +2,7 @@
 
 ## Overview
 
-kvault is a personal knowledge base that runs inside Claude Code (or OpenAI Codex). It provides entity storage, indexing, matching strategies, and 20 MCP tools for structured, searchable agent memory.
+kvault is a personal knowledge base that runs inside Claude Code (or OpenAI Codex). It provides entity storage, filesystem-based search, matching strategies, and 16 MCP tools for structured, searchable agent memory.
 
 ## Quick Start
 
@@ -15,7 +15,7 @@ pytest                    # Run tests
 
 ```
 kvault/
-├── core/           # Storage, indexing, observability
+├── core/           # Storage, search, observability
 ├── matching/       # Entity matching strategies
 ├── orchestrator/   # Headless workflow runner
 └── cli/            # Command-line interface
@@ -23,21 +23,22 @@ kvault/
 
 ## Key Components
 
-### EntityIndex (core/index.py)
-SQLite-backed full-text search index for entity lookup.
+### Search (core/search.py)
+Filesystem-based search that scans `_summary.md` files directly. No SQLite index needed.
 
 ```python
-from kvault.core.index import EntityIndex
-index = EntityIndex(Path(".kvault/index.db"))
-index.rebuild(kg_root)  # Scans for entities
-results = index.search("query")
+from kvault.core.search import search, scan_entities, find_by_alias
+
+results = search(kg_root, "query")       # Unified search
+entities = scan_entities(kg_root)         # Full entity scan
+match = find_by_alias(kg_root, "email")  # Exact alias lookup
 ```
 
 ### SimpleStorage (core/storage.py)
 File-based entity storage with read/write operations.
 
 ### HeadlessOrchestrator (orchestrator/runner.py)
-Spawns Claude subprocess to execute the 6-step workflow autonomously.
+Spawns Claude subprocess to execute the 5-step workflow autonomously.
 
 ```python
 from kvault.orchestrator import HeadlessOrchestrator, OrchestratorConfig
@@ -75,24 +76,21 @@ context: ex-Stitch Fix
 
 **Legacy format**: Separate `_meta.json` files are still supported for backward compatibility but should not be used for new entities.
 
-## The 6-Step Workflow
+## The 5-Step Workflow
 
 The orchestrator enforces this workflow for all knowledge graph updates:
 
-1. **RESEARCH** - Search index for existing entities, extract identifiers
+1. **RESEARCH** - Search for existing entities, extract identifiers
 2. **DECIDE** - Output ActionPlan with create/update/delete/skip actions
 3. **EXECUTE** - Write entity files with YAML frontmatter
 4. **PROPAGATE** - Update ancestor `_summary.md` files
 5. **LOG** - Add entry to `journal/YYYY-MM/log.md`
-6. **REBUILD** - Rebuild index if new entities created
+
+No index rebuild needed — search reads files directly from disk.
 
 ## CLI Commands
 
 ```bash
-# Index operations
-kvault index rebuild --kg-root .
-kvault index search --db .kvault/index.db --query "term"
-
 # Observability
 kvault log summary --db .kvault/logs.db
 
@@ -123,15 +121,14 @@ pip install knowledgevault[mcp]
 }
 ```
 
-### Tools (20 total)
+### Tools (16 total)
 
-**Initialization:** `kvault_init`, `kvault_status`
-**Index:** `kvault_search`, `kvault_find_by_alias`, `kvault_find_by_email_domain`, `kvault_rebuild_index`
+**Search:** `kvault_search` — unified search (auto-detects name/email/domain queries)
 **Entity:** `kvault_read_entity`, `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
 **Summary:** `kvault_read_summary`, `kvault_write_summary`, `kvault_get_parent_summaries`, `kvault_propagate_all`
-**Research:** `kvault_research`
-**Workflow:** `kvault_log_phase`, `kvault_write_journal`, `kvault_validate_transition`
-**Validation:** `kvault_validate_kb`
+**Research:** `kvault_research` — dedupe check before creating
+**Workflow:** `kvault_log_phase`, `kvault_write_journal`
+**Validation:** `kvault_validate_kb`, `kvault_status`
 
 ### Key Differences from CLI Orchestrator
 
@@ -154,9 +151,6 @@ from kvault.core.frontmatter import parse_frontmatter, build_frontmatter
 content = open("_summary.md").read()
 meta, body = parse_frontmatter(content)  # Returns (dict, str)
 ```
-
-### Index Rebuild
-The index parses YAML frontmatter first, falls back to `_meta.json`. Phone and email fields are automatically added to aliases for matching.
 
 ## Development
 

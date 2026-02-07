@@ -1,6 +1,6 @@
 # kvault
 
-**Personal knowledge base that runs inside Claude Code.**
+**Tell your AI agent to build you a knowledge base. That's it.**
 
 ```bash
 pip install knowledgevault[mcp]
@@ -8,36 +8,31 @@ pip install knowledgevault[mcp]
 
 kvault gives your coding agent persistent, structured memory. It runs as an MCP server inside Claude Code (or any MCP-compatible tool), using the subscription you already pay for. No extra API keys. No extra cost.
 
-Your agent creates entities (people, projects, notes), deduplicates them with fuzzy matching, and keeps hierarchical summaries in sync — all through 17 MCP tools.
+Your agent creates entities (people, projects, notes), navigates the hierarchy via parent summaries, and keeps everything in sync — all through 15 MCP tools.
 
 ## Who is this for?
 
-Developers using **Claude Code**, **OpenAI Codex**, **Cursor**, **VS Code + Copilot**, or any MCP-compatible tool who want their agent to remember things between sessions — contacts, projects, meeting notes, research — in a structured, searchable format.
+Developers using **Claude Code**, **OpenAI Codex**, **Cursor**, **VS Code + Copilot**, or any MCP-compatible tool who want their agent to remember things between sessions — contacts, projects, meeting notes, research — in a structured, navigable format.
 
 ## What makes it different?
 
 | | kvault | [Anthropic memory server](https://github.com/anthropics/claude-code/tree/main/packages/memory) | [Notion AI](https://www.notion.so/product/ai) / [Mem.ai](https://mem.ai) | [obsidian-claude-pkm](https://github.com/4lph4-lab/obsidian-claude-pkm) |
 |---|---|---|---|---|
-| **Structure** | Hierarchical entities with dedup | Flat JSON | Rich docs, flat search | Obsidian vault |
-| **Agent-native** | 17 MCP tools, built for agents | 4 tools, basic | Chat sidebar | Template, not runtime |
+| **Structure** | Hierarchical entities with navigable tree | Flat JSON | Rich docs, flat search | Obsidian vault |
+| **Agent-native** | 15 MCP tools, built for agents | 4 tools, basic | Chat sidebar | Template, not runtime |
 | **Cost** | $0 (uses existing subscription) | $0 | $12-20/mo extra | $0 |
-| **Deduplication** | Fuzzy name + alias + email domain | None | None | Manual |
-| **Summaries** | Auto-propagating hierarchy | None | AI-generated | Manual |
+| **Navigation** | Parent summaries at every level | None | AI-generated | Manual |
+| **Search** | Agent uses its own Grep/Glob/Read | Built-in | Built-in | Manual |
 
-## Quickstart (60 seconds)
+## Quickstart (30 seconds)
+
+**1. Install**
 
 ```bash
-# 1. Install
 pip install knowledgevault[mcp]
-
-# 2. Create a knowledge base
-kvault init my_kb --name "Your Name"
-
-# 3. Verify it's clean
-kvault check --kb-root my_kb
 ```
 
-Add the MCP server to your AI tool's config:
+**2. Add the MCP server to your AI tool**
 
 **Claude Code** (`.claude/settings.json`):
 ```json
@@ -81,11 +76,15 @@ command = "kvault-mcp"
 }
 ```
 
-Then tell your agent: *"Initialize the knowledge base at ./my_kb"* — it will call `kvault_init` and you're up.
+**3. Tell your agent**
+
+> "Create a knowledge base for me at ./my_kb"
+
+Your agent calls `kvault_init`, creates the directory structure, and you're up.
 
 ## Try it: import your ChatGPT history
 
-The best way to see kvault in action is to point it at data you already have. ChatGPT lets you export your entire conversation history — years of questions, people mentioned, projects discussed, decisions made — and Claude Code + kvault can turn it into a structured, searchable knowledge base in minutes.
+The best way to see kvault in action is to point it at data you already have. ChatGPT lets you export your entire conversation history — years of questions, people mentioned, projects discussed, decisions made — and Claude Code + kvault can turn it into a structured, navigable knowledge base in minutes.
 
 **1. Export your ChatGPT data**
 
@@ -105,7 +104,7 @@ Extract the people, projects, and ideas I've discussed most frequently.
 Create entities for each one in the knowledge base.
 ```
 
-Claude Code will use the kvault tools to research each entity (deduplicating as it goes), create structured entries with frontmatter, and propagate summaries. You'll end up with a browsable, searchable knowledge base built from years of conversations you've already had.
+Claude Code will use the kvault tools to create structured entries with frontmatter and propagate summaries. You'll end up with a browsable, navigable knowledge base built from years of conversations you've already had.
 
 **Other great data sources to try:**
 
@@ -118,19 +117,18 @@ Claude Code will use the kvault tools to research each entity (deduplicating as 
 | **Meeting notes** | Any folder of markdown/text files | People, action items, decisions |
 | **Notion export** | Notion → Settings → Export | Projects, notes, wikis |
 
-The pattern is always the same: drop the data into `sources/`, tell your agent to process it, and let kvault handle deduplication and structure.
+The pattern is always the same: drop the data into `sources/`, tell your agent to process it, and let kvault handle structure and propagation.
 
 ## What happens next
 
-Every time your agent processes new information, it follows a 5-step workflow:
+Every time your agent processes new information, it follows a 4-step workflow:
 
-1. **Research** — Search for existing entities (fuzzy name, alias, email domain matching)
-2. **Decide** — Create, update, or skip based on match confidence
-3. **Write** — Create/update entity with YAML frontmatter (`_summary.md`)
-4. **Propagate** — Update all ancestor `_summary.md` files so summaries stay in sync
-5. **Log** — Add entry to `journal/YYYY-MM/log.md`
+1. **Navigate** — Browse the tree, read parent summaries to understand what exists
+2. **Write** — Create/update entity with YAML frontmatter (`_summary.md`)
+3. **Propagate** — Update all ancestor `_summary.md` files so summaries stay in sync
+4. **Log** — Add entry to `journal/YYYY-MM/log.md`
 
-No index rebuild needed — search reads files directly from disk.
+Your agent uses its own Grep/Glob/Read tools for searching. Parent summaries at each level act as curated indexes — when reading any entity, kvault automatically includes the parent summary so the agent sees sibling context for free.
 
 ## What an entity looks like
 
@@ -193,21 +191,19 @@ my_kb/
     └── logs.db                          # Observability
 ```
 
-Every directory with a `_summary.md` is a node. Summaries at each level capture the semantic landscape of their children.
+Every directory with a `_summary.md` is a node. Summaries at each level capture the semantic landscape of their children. When reading any entity, kvault returns the parent summary too — so the agent always knows what siblings exist.
 
-## MCP tools (17)
+## MCP tools (15)
 
 | Category | Tools |
 |----------|-------|
 | **Init** | `kvault_init`, `kvault_status` |
-| **Search** | `kvault_search` (auto-detects name, email, domain queries) |
 | **Entity** | `kvault_read_entity`, `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity` |
 | **Summary** | `kvault_read_summary`, `kvault_write_summary`, `kvault_get_parent_summaries`, `kvault_propagate_all` |
-| **Research** | `kvault_research` |
 | **Workflow** | `kvault_log_phase`, `kvault_write_journal`, `kvault_validate_transition` |
 | **Validation** | `kvault_validate_kb` |
 
-`kvault_write_entity` returns a `propagation_needed` list of ancestor paths, so agents know exactly which summaries to update.
+`kvault_read_entity` returns entity content **plus** the parent `_summary.md` — giving the agent sibling context for free. `kvault_write_entity` returns a `propagation_needed` list of ancestor paths, so agents know exactly which summaries to update.
 
 ## Python API
 
@@ -215,17 +211,12 @@ kvault also exposes a Python API for programmatic use:
 
 ```python
 from pathlib import Path
-from kvault import SimpleStorage, search, scan_entities, find_by_alias
+from kvault import SimpleStorage, scan_entities
 
 kg_root = Path("my_kb")
 storage = SimpleStorage(kg_root)
 
-# Search (filesystem-based, no index needed)
-results = search(kg_root, "Sarah Chen")        # Fuzzy name/alias/keyword
-results = search(kg_root, "sarah@anthropic.com")  # Auto-detects email
-match = find_by_alias(kg_root, "+14155551234")  # Exact alias lookup
-
-# All entities
+# Scan all entities
 entities = scan_entities(kg_root)
 
 # Navigate hierarchy

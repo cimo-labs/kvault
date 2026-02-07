@@ -1,15 +1,12 @@
 """kvault MCP Server - Model Context Protocol server for knowledge graph operations.
 
-Provides 17 tools for Claude Code to interact with the knowledge graph:
+Provides 15 tools for Claude Code to interact with the knowledge graph:
 
 Init (1):
 - kvault_init: Initialize KB, return hierarchy + root summary
 
-Search (1 — unified, no index to rebuild):
-- kvault_search: Smart search — auto-detects query type (name, email, domain, keyword)
-
 Entity Tools (5):
-- kvault_read_entity: Read entity with YAML frontmatter
+- kvault_read_entity: Read entity with YAML frontmatter + parent summary
 - kvault_write_entity: Write entity with YAML frontmatter (returns propagation_needed)
 - kvault_list_entities: List entities in a category
 - kvault_delete_entity: Delete an entity
@@ -23,9 +20,6 @@ Summary Tools (3):
 Propagation (1):
 - kvault_propagate_all: Get all ancestors for propagation
 
-Research Tool (1):
-- kvault_research: Research entities using multiple matching strategies
-
 Workflow Tools (4):
 - kvault_log_phase: Log a workflow phase
 - kvault_write_journal: Write a journal entry
@@ -35,9 +29,8 @@ Workflow Tools (4):
 Validation Tools (1):
 - kvault_validate_kb: Check KB integrity
 
-Design: No SQLite index. Search reads files directly on every call.
-At typical KB sizes (< 1000 entities) this is fast (< 200ms) and
-eliminates stale-index bugs entirely.
+Agents use their own Grep/Glob/Read tools for searching.
+kvault_read_entity includes the parent summary for sibling context.
 """
 
 import json
@@ -56,9 +49,8 @@ except ImportError:
     MCP_AVAILABLE = False
 
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter
-from kvault.core.storage import SimpleStorage
+from kvault.core.storage import SimpleStorage, scan_entities, count_entities, list_entity_records
 from kvault.core.observability import ObservabilityLogger
-import kvault.core.search as fs_search
 from kvault.mcp.state import get_session_manager, WorkflowStep
 from kvault.mcp.validation import (
     normalize_path,
@@ -106,7 +98,7 @@ def _init_infrastructure(kg_root: str) -> Dict[str, Any]:
         "kg_root": str(_kg_root),
         "root_summary": root_summary,
         "hierarchy": hierarchy,
-        "entity_count": fs_search.count_entities(_kg_root),
+        "entity_count": count_entities(_kg_root),
     }
 
 
@@ -378,53 +370,28 @@ def handle_kvault_init(kg_root: str) -> Dict[str, Any]:
     return result
 
 
-def handle_kvault_search(
-    query: str,
-    category: Optional[str] = None,
-    limit: int = 10,
-) -> List[Dict[str, Any]]:
-    """Unified search — auto-detects query type and returns ranked results.
-
-    Query types (auto-detected):
-      - Email address (alice@acme.com) → exact alias match + domain match
-      - Domain (@acme.com or acme.com) → all entities at that domain
-      - Text (anything else) → fuzzy name/alias match + content keywords
-
-    Args:
-        query: Search query (name, email, domain, or keywords)
-        category: Optional category filter
-        limit: Maximum results
-
-    Returns:
-        List of matching entities with scores
-    """
-    _ensure_initialized()
-
-    results = fs_search.search(_kg_root, query, category=category, limit=limit)
-    return [
-        {
-            "path": r.path,
-            "name": r.name,
-            "aliases": r.aliases,
-            "category": r.category,
-            "email_domains": r.email_domains,
-            "score": round(r.score, 3),
-            "match_reason": r.match_reason,
-        }
-        for r in results
-    ]
-
-
 def handle_kvault_read_entity(path: str) -> Optional[Dict[str, Any]]:
-    """Read entity with YAML frontmatter.
+    """Read entity with YAML frontmatter and parent summary for sibling context.
 
     Args:
         path: Entity path (e.g., "people/contacts/john_doe")
 
     Returns:
-        Entity data with meta and content, or None if not found
+        Entity data with meta, content, parent_summary, and parent_path, or None if not found
     """
-    return _read_entity_with_frontmatter(path)
+    entity_data = _read_entity_with_frontmatter(path)
+    if not entity_data:
+        return None
+
+    # Include parent summary for sibling context
+    ancestors = _storage.get_ancestors(path)
+    if ancestors:
+        parent_summary_path = _kg_root / ancestors[0] / "_summary.md"
+        if parent_summary_path.exists():
+            entity_data["parent_summary"] = parent_summary_path.read_text()
+            entity_data["parent_path"] = ancestors[0]
+
+    return entity_data
 
 
 def handle_kvault_write_entity(
@@ -463,7 +430,7 @@ def handle_kvault_list_entities(category: Optional[str] = None) -> List[Dict[str
     """
     _ensure_initialized()
 
-    entries = fs_search.list_entities(_kg_root, category=category)
+    entries = list_entity_records(_kg_root, category=category)
     return [
         {
             "path": e.path,
@@ -692,90 +659,6 @@ def handle_kvault_get_parent_summaries(path: str) -> List[Dict[str, Any]]:
     return results
 
 
-def handle_kvault_research(
-    name: str,
-    aliases: Optional[List[str]] = None,
-    email: Optional[str] = None,
-    phone: Optional[str] = None,
-    session_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Research entities using multiple matching strategies.
-
-    Args:
-        name: Name to search for
-        aliases: Optional additional aliases
-        email: Optional email address
-        phone: Optional phone number
-        session_id: Optional session ID for workflow tracking.
-
-    Returns:
-        Research results with matches and suggested action
-    """
-    _ensure_initialized()
-
-    # Add phone to aliases if provided
-    if phone and aliases is None:
-        aliases = []
-    if phone:
-        from kvault.mcp.validation import normalize_phone
-
-        normalized_phone = normalize_phone(phone)
-        aliases.append(normalized_phone)
-
-    # Scan entities once, run multiple search passes
-    entities = fs_search.scan_entities(_kg_root)
-
-    # Search by name
-    name_results = fs_search.search(_kg_root, name, limit=10, _entities=entities)
-
-    # Search by each alias
-    alias_results = []
-    for alias in aliases or []:
-        alias_results.extend(fs_search.search(_kg_root, alias, limit=5, _entities=entities))
-
-    # Search by email if provided
-    email_results = []
-    if email:
-        email_results = fs_search.search(_kg_root, email, limit=5, _entities=entities)
-
-    # Merge and dedupe — keep highest score per path
-    best_by_path: Dict[str, Dict[str, Any]] = {}
-    for r in name_results + alias_results + email_results:
-        existing = best_by_path.get(r.path)
-        if not existing or r.score > existing["score"]:
-            best_by_path[r.path] = {
-                "path": r.path,
-                "name": r.name,
-                "match_type": r.match_reason,
-                "score": round(r.score, 3),
-            }
-
-    matches = sorted(best_by_path.values(), key=lambda m: m["score"], reverse=True)
-
-    # Determine suggested action
-    if not matches:
-        action, target, confidence = "create", None, 0.95
-    elif matches[0]["score"] >= 0.9:
-        action, target, confidence = "update", matches[0]["path"], matches[0]["score"]
-    elif matches[0]["score"] >= 0.7:
-        action, target, confidence = "review", matches[0]["path"], matches[0]["score"]
-    else:
-        action, target, confidence = "create", None, 1.0 - matches[0]["score"]
-
-    # Record in session state
-    if session_id:
-        session = get_session_manager().get_session(session_id)
-        if session:
-            session.record_research(matches, intent=action)
-
-    return {
-        "matches": matches,
-        "suggested_action": action,
-        "suggested_target": target,
-        "confidence": confidence,
-    }
-
-
 def handle_kvault_log_phase(
     phase: str,
     data: Dict[str, Any],
@@ -941,7 +824,7 @@ def handle_kvault_validate_kb() -> Dict[str, Any]:
     issues = []
 
     # Scan all entities from filesystem (single source of truth)
-    entities = fs_search.scan_entities(_kg_root)
+    entities = scan_entities(_kg_root)
 
     for entity in entities:
         entity_data = _read_entity_with_frontmatter(entity.path)
@@ -1084,30 +967,8 @@ def create_server() -> "Server":
                 },
             ),
             Tool(
-                name="kvault_search",
-                description=(
-                    "Smart search for entities. Auto-detects query type:\n"
-                    "- Name/text: fuzzy match on names, aliases, and content keywords\n"
-                    "- Email (alice@acme.com): exact alias match + domain match\n"
-                    "- Domain (@acme.com or acme.com): find all entities at that domain\n"
-                    "No index to rebuild — reads files directly."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query (name, email, domain, or keywords)",
-                        },
-                        "category": {"type": "string", "description": "Optional category filter"},
-                        "limit": {"type": "integer", "description": "Max results (default 10)"},
-                    },
-                    "required": ["query"],
-                },
-            ),
-            Tool(
                 name="kvault_read_entity",
-                description="Read entity with YAML frontmatter. Returns meta and content.",
+                description="Read entity with YAML frontmatter. Returns meta, content, and parent summary (sibling context).",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -1233,28 +1094,6 @@ def create_server() -> "Server":
                 },
             ),
             Tool(
-                name="kvault_research",
-                description="Research entities using multiple matching strategies (fuzzy name, alias, email domain).",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string", "description": "Name to search for"},
-                        "aliases": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Additional aliases",
-                        },
-                        "email": {"type": "string", "description": "Email address"},
-                        "phone": {"type": "string", "description": "Phone number"},
-                        "session_id": {
-                            "type": "string",
-                            "description": "Session ID for workflow tracking",
-                        },
-                    },
-                    "required": ["name"],
-                },
-            ),
-            Tool(
                 name="kvault_log_phase",
                 description="Log a workflow phase for observability.",
                 inputSchema={
@@ -1354,12 +1193,6 @@ def create_server() -> "Server":
         try:
             if name == "kvault_init":
                 result = handle_kvault_init(arguments["kg_root"])
-            elif name == "kvault_search":
-                result = handle_kvault_search(
-                    arguments["query"],
-                    category=arguments.get("category"),
-                    limit=arguments.get("limit", 10),
-                )
             elif name == "kvault_read_entity":
                 result = handle_kvault_read_entity(arguments["path"])
             elif name == "kvault_write_entity":
@@ -1394,14 +1227,6 @@ def create_server() -> "Server":
                 )
             elif name == "kvault_get_parent_summaries":
                 result = handle_kvault_get_parent_summaries(arguments["path"])
-            elif name == "kvault_research":
-                result = handle_kvault_research(
-                    arguments["name"],
-                    aliases=arguments.get("aliases"),
-                    email=arguments.get("email"),
-                    phone=arguments.get("phone"),
-                    session_id=arguments.get("session_id"),
-                )
             elif name == "kvault_log_phase":
                 result = handle_kvault_log_phase(
                     arguments["phase"],

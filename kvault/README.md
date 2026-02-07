@@ -8,8 +8,8 @@ Main Python package for the personal knowledge base framework.
 kvault/
 ├── __init__.py          # Package exports
 ├── cli/                 # Command-line interface
-├── core/                # Storage, search, frontmatter, observability
-├── mcp/                 # MCP server (17 tools for Claude Code, Codex, etc.)
+├── core/                # Storage, frontmatter, observability
+├── mcp/                 # MCP server (15 tools for Claude Code, Codex, etc.)
 ├── orchestrator/        # Headless workflow runner (5-step pipeline)
 └── templates/           # Default templates for new KBs
 ```
@@ -21,11 +21,10 @@ from kvault import (
     # Core
     SimpleStorage,
     normalize_entity_id,
-    # Search (filesystem-based, no index)
-    search,
     scan_entities,
-    find_by_alias,
-    find_by_email_domain,
+    count_entities,
+    list_entity_records,
+    EntityRecord,
     # Frontmatter
     parse_frontmatter,
     build_frontmatter,
@@ -38,7 +37,7 @@ from kvault import (
 ```
 ┌─────────────────────────────────────────────┐
 │              MCP Server (Preferred)          │
-│  17 tools: kvault_init, kvault_search, ...  │
+│  15 tools: kvault_init, kvault_read_entity..│
 │  kvault-mcp entry point                     │
 └─────────────────────────────────────────────┘
                       │

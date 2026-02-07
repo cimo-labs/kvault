@@ -19,8 +19,8 @@
 4. **FRONTMATTER REQUIRED.** Every entity needs `source` and `aliases` in YAML frontmatter.
    `created` and `updated` are set automatically by MCP tools.
 
-5. **RESEARCH BEFORE WRITE.** Always search for existing entities before creating new ones.
-   Use `kvault_search`. Never create duplicates.
+5. **CHECK BEFORE WRITE.** Always browse the tree and read parent summaries before creating new entities.
+   Use Grep/Glob/Read to check for existing entities. Never create duplicates.
 
 ---
 
@@ -50,17 +50,17 @@ Customize this section with your details.
 
 ---
 
-## Workflow (5 steps)
+## Workflow (4 steps)
 
-### 1. RESEARCH — Find what exists
+### 1. NAVIGATE — Find what exists and decide
+Browse the tree and read parent summaries. Use your own Grep/Glob/Read tools:
 ```
-kvault_search(query="Alice Smith")    # fuzzy name/alias match
-kvault_search(query="alice@acme.com") # email → exact alias + domain match
-kvault_search(query="@acme.com")      # all entities at that domain
-kvault_research(name="Alice Smith")   # dedupe check with suggested action
+kvault_init(kg_root=".")              # Get hierarchy tree
+kvault_read_entity(path="...")        # Returns entity + parent summary (sibling context)
+kvault_list_entities(category="...")  # List entities in a category
 ```
 
-### 2. DECIDE — Create, update, or skip
+Then decide:
 
 | Situation | Action |
 |-----------|--------|
@@ -68,18 +68,18 @@ kvault_research(name="Alice Smith")   # dedupe check with suggested action
 | Doesn't exist, is significant | **CREATE** new |
 | Doesn't exist, is trivial | **LOG** in journal only |
 
-### 3. WRITE — Create/update the entity
+### 2. WRITE — Create/update the entity
 ```
 kvault_write_entity(path="people/friends/alice", meta={...}, content="...", create=true)
 ```
 
-### 4. PROPAGATE — Update ALL ancestor summaries
+### 3. PROPAGATE — Update ALL ancestor summaries
 ```
 kvault_propagate_all(path="people/friends/alice")  # returns ancestors
 ```
 Read each ancestor, update content, write back.
 
-### 5. LOG — Journal entry
+### 4. LOG — Journal entry
 ```
 kvault_write_journal(actions=[...], source="manual")
 ```
@@ -106,14 +106,13 @@ Context and notes here.
 
 ---
 
-## MCP Tools Reference
+## MCP Tools Reference (15)
 
-**Search:** `kvault_search` — unified search (auto-detects name/email/domain queries)
-**Entity:** `kvault_read_entity`, `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
+**Entity:** `kvault_read_entity` (includes parent summary), `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
 **Summary:** `kvault_read_summary`, `kvault_write_summary`, `kvault_get_parent_summaries`, `kvault_propagate_all`
-**Research:** `kvault_research` — dedupe check before creating
-**Workflow:** `kvault_log_phase`, `kvault_write_journal`
+**Workflow:** `kvault_log_phase`, `kvault_write_journal`, `kvault_validate_transition`
 **Validation:** `kvault_validate_kb`, `kvault_status`
+**Init:** `kvault_init`
 
 ---
 

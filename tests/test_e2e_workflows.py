@@ -1,6 +1,6 @@
 """End-to-end workflow tests for kvault MCP handlers.
 
-Tests complete user workflows (the 6-step pipeline) against the sample KB fixture.
+Tests complete user workflows (the 5-step pipeline) against the sample KB fixture.
 Following CJE's testing philosophy: test what users actually do, with real-ish data.
 """
 
@@ -10,7 +10,6 @@ from tests.conftest import SAMPLE_KB_ENTITY_COUNT
 
 from kvault.mcp.server import (
     handle_kvault_init,
-    handle_kvault_research,
     handle_kvault_write_entity,
     handle_kvault_read_entity,
     handle_kvault_delete_entity,
@@ -18,7 +17,6 @@ from kvault.mcp.server import (
     handle_kvault_propagate_all,
     handle_kvault_write_journal,
     handle_kvault_write_summary,
-    handle_kvault_search,
     handle_kvault_list_entities,
     handle_kvault_validate_kb,
 )
@@ -29,15 +27,11 @@ from kvault.mcp.server import (
 
 
 class TestCreateWorkflow:
-    """Test the full create entity workflow: research → write → propagate → journal → rebuild."""
+    """Test the full create entity workflow: write → propagate → journal."""
 
     def test_create_new_entity_full_workflow(self, initialized_kb):
-        """Complete 6-step workflow: research unknown → create → propagate → journal → rebuild → search."""
-        # 1. Research — no match expected
-        result = handle_kvault_research("Dave Wilson")
-        assert result["suggested_action"] == "create"
-
-        # 2. Write new entity
+        """Complete workflow: create → propagate → journal."""
+        # 1. Write new entity
         result = handle_kvault_write_entity(
             path="people/work/dave_wilson",
             meta={
@@ -51,12 +45,12 @@ class TestCreateWorkflow:
         )
         assert result["success"]
 
-        # 3. Propagate — get ancestors and verify chain
+        # 2. Propagate — get ancestors and verify chain
         result = handle_kvault_propagate_all("people/work/dave_wilson")
         assert result["success"]
         assert result["count"] >= 2  # people/work + people + root
 
-        # 4. Journal — log the action
+        # 3. Journal — log the action
         result = handle_kvault_write_journal(
             actions=[
                 {
@@ -70,13 +64,10 @@ class TestCreateWorkflow:
         assert result["success"]
         assert result["actions_logged"] == 1
 
-        # 5. Verify — entity is searchable immediately (no rebuild needed)
-        results = handle_kvault_search("Dave Wilson")
-        assert any("dave_wilson" in r["path"] for r in results)
-
-        # Also verify by email
-        results = handle_kvault_search("dave@newcorp.com")
-        assert any("dave_wilson" in r["path"] for r in results)
+        # 4. Verify — entity is readable
+        entity = handle_kvault_read_entity("people/work/dave_wilson")
+        assert entity is not None
+        assert "Dave Wilson" in entity["content"]
 
     def test_create_sets_name_from_alias(self, empty_kb):
         """write_entity should auto-set 'name' from first non-email alias."""
@@ -90,58 +81,13 @@ class TestCreateWorkflow:
         entity = handle_kvault_read_entity("people/test_person")
         assert entity["meta"]["name"] == "Test Person"
 
-    def test_create_immediately_searchable(self, empty_kb):
-        """New entities should be searchable immediately (no rebuild needed)."""
-        handle_kvault_write_entity(
-            path="people/auto_test",
-            meta={"source": "test", "aliases": ["Auto Test"]},
-            content="# Auto Test\n",
-            create=True,
-        )
-
-        # Should be searchable immediately — no index to rebuild
-        results = handle_kvault_search("Auto Test")
-        assert len(results) >= 1
-
-
-# ============================================================================
-# Dedup Workflow
-# ============================================================================
-
-
-class TestDedupWorkflow:
-    """Test deduplication: research finds existing entity, suggests update instead of create."""
-
-    def test_research_finds_existing_prevents_duplicate(self, initialized_kb):
-        """Researching an existing entity should suggest 'update', not 'create'."""
-        result = handle_kvault_research("Alice Smith")
-        assert result["suggested_action"] == "update"
-        assert result["suggested_target"] is not None
-        assert "alice_smith" in result["suggested_target"]
-
-    def test_fuzzy_match_suggests_update_or_review(self, initialized_kb):
-        """Fuzzy typo should still find the existing entity."""
-        result = handle_kvault_research("Alice Smth")  # typo
-        assert len(result["matches"]) > 0
-        top = result["matches"][0]
-        assert top["score"] >= 0.85
-        assert "alice" in top["path"]
-
-    def test_email_domain_match_found(self, initialized_kb):
-        """Research with email should find entities at same domain."""
-        result = handle_kvault_research("Someone", email="ceo@acme.com")
-        matches = result["matches"]
-        # Should find alice_smith (alice@acme.com → acme.com domain)
-        domain_matches = [m for m in matches if "email_domain" in m.get("match_type", "")]
-        assert len(domain_matches) >= 1
-
-    def test_unicode_dedup(self, initialized_kb):
-        """José García should match Jose Garcia (accent normalization)."""
-        result = handle_kvault_research("Jose Garcia")
-        assert len(result["matches"]) > 0
-        top = result["matches"][0]
-        assert "jose" in top["path"]
-        assert top["score"] >= 0.95
+    def test_read_entity_includes_parent_summary(self, initialized_kb):
+        """read_entity should include parent summary for sibling context."""
+        entity = handle_kvault_read_entity("people/friends/alice_smith")
+        assert entity is not None
+        assert "parent_summary" in entity
+        assert "parent_path" in entity
+        assert entity["parent_path"] == "people/friends"
 
 
 # ============================================================================
@@ -186,8 +132,8 @@ class TestUpdateWorkflow:
 class TestDeleteWorkflow:
     """Test entity deletion."""
 
-    def test_delete_removes_from_disk_and_index(self, initialized_kb):
-        """Deleting an entity should remove files and update index."""
+    def test_delete_removes_from_disk(self, initialized_kb):
+        """Deleting an entity should remove files from disk."""
         # Verify entity exists
         entity = handle_kvault_read_entity("people/work/bob_jones")
         assert entity is not None
@@ -199,10 +145,9 @@ class TestDeleteWorkflow:
         # Verify gone from disk
         assert not (initialized_kb / "people" / "work" / "bob_jones").exists()
 
-        # Verify gone from search
-        results = handle_kvault_search("Bob Jones")
-        bob_results = [r for r in results if "bob_jones" in r["path"]]
-        assert len(bob_results) == 0
+        # Verify gone from read
+        entity = handle_kvault_read_entity("people/work/bob_jones")
+        assert entity is None
 
     def test_delete_nonexistent_returns_error(self, initialized_kb):
         """Deleting a nonexistent entity should fail."""
@@ -233,11 +178,9 @@ class TestMoveWorkflow:
         # New path exists
         assert (initialized_kb / "people" / "friends" / "bob_jones" / "_summary.md").exists()
 
-        # Searchable at new path
-        results = handle_kvault_search("Bob Jones")
-        bob_results = [r for r in results if "bob_jones" in r["path"]]
-        assert len(bob_results) >= 1
-        assert "friends" in bob_results[0]["path"]
+        # Readable at new path
+        entity = handle_kvault_read_entity("people/friends/bob_jones")
+        assert entity is not None
 
     def test_move_to_existing_blocked(self, initialized_kb):
         """Moving to an existing entity path should fail."""

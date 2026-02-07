@@ -5,7 +5,7 @@ import os
 import pytest
 from pathlib import Path
 
-from kvault.core.search import scan_entities
+from kvault.core.storage import scan_entities
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter
 
 # ============================================================================

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledgevault"
-version = "0.4.0"
-description = "Personal knowledge base that runs inside Claude Code — structured, searchable, zero extra cost"
+version = "0.5.0"
+description = "Personal knowledge base that runs inside any MCP-compatible AI tool — structured, navigable, zero extra cost"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"

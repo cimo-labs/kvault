@@ -2,7 +2,7 @@
 
 ## Overview
 
-kvault is a personal knowledge base that runs inside Claude Code (or OpenAI Codex). It provides entity storage, filesystem-based search, matching strategies, and 16 MCP tools for structured, searchable agent memory.
+kvault is a personal knowledge base that runs inside Claude Code (or OpenAI Codex). It provides entity storage, hierarchical navigation, and 15 MCP tools for structured agent memory.
 
 ## Quick Start
 
@@ -15,27 +15,22 @@ pytest                    # Run tests
 
 ```
 kvault/
-├── core/           # Storage, search, observability
-├── matching/       # Entity matching strategies
+├── core/           # Storage, frontmatter, observability
 ├── orchestrator/   # Headless workflow runner
 └── cli/            # Command-line interface
 ```
 
 ## Key Components
 
-### Search (core/search.py)
-Filesystem-based search that scans `_summary.md` files directly. No SQLite index needed.
+### SimpleStorage + scan_entities (core/storage.py)
+File-based entity storage with read/write operations and entity scanning.
 
 ```python
-from kvault.core.search import search, scan_entities, find_by_alias
+from kvault.core.storage import SimpleStorage, scan_entities
 
-results = search(kg_root, "query")       # Unified search
+storage = SimpleStorage(kg_root)
 entities = scan_entities(kg_root)         # Full entity scan
-match = find_by_alias(kg_root, "email")  # Exact alias lookup
 ```
-
-### SimpleStorage (core/storage.py)
-File-based entity storage with read/write operations.
 
 ### HeadlessOrchestrator (orchestrator/runner.py)
 Spawns Claude subprocess to execute the 5-step workflow autonomously.
@@ -76,17 +71,16 @@ context: ex-Stitch Fix
 
 **Legacy format**: Separate `_meta.json` files are still supported for backward compatibility but should not be used for new entities.
 
-## The 5-Step Workflow
+## The 4-Step Workflow
 
 The orchestrator enforces this workflow for all knowledge graph updates:
 
-1. **RESEARCH** - Search for existing entities, extract identifiers
-2. **DECIDE** - Output ActionPlan with create/update/delete/skip actions
-3. **EXECUTE** - Write entity files with YAML frontmatter
-4. **PROPAGATE** - Update ancestor `_summary.md` files
-5. **LOG** - Add entry to `journal/YYYY-MM/log.md`
+1. **NAVIGATE** - Browse the tree, read parent summaries to find existing entities
+2. **WRITE** - Create/update entity files with YAML frontmatter
+3. **PROPAGATE** - Update ancestor `_summary.md` files
+4. **LOG** - Add entry to `journal/YYYY-MM/log.md`
 
-No index rebuild needed — search reads files directly from disk.
+Agents use their own Grep/Glob/Read tools for searching. `kvault_read_entity` includes the parent summary for sibling context.
 
 ## CLI Commands
 
@@ -121,14 +115,13 @@ pip install knowledgevault[mcp]
 }
 ```
 
-### Tools (16 total)
+### Tools (15 total)
 
-**Search:** `kvault_search` — unified search (auto-detects name/email/domain queries)
-**Entity:** `kvault_read_entity`, `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
+**Entity:** `kvault_read_entity` (includes parent summary), `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
 **Summary:** `kvault_read_summary`, `kvault_write_summary`, `kvault_get_parent_summaries`, `kvault_propagate_all`
-**Research:** `kvault_research` — dedupe check before creating
-**Workflow:** `kvault_log_phase`, `kvault_write_journal`
+**Workflow:** `kvault_log_phase`, `kvault_write_journal`, `kvault_validate_transition`
 **Validation:** `kvault_validate_kb`, `kvault_status`
+**Init:** `kvault_init`
 
 ### Key Differences from CLI Orchestrator
 

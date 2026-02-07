@@ -4,14 +4,20 @@ SimpleStorage - Filesystem storage with minimal schema.
 Stores entities as directories with:
 - _meta.json: 4-field metadata (created, last_updated, sources, aliases)
 - _summary.md: Freeform markdown content
+
+Also provides scan_entities() for walking the KB and parsing entity metadata.
 """
 
 import json
+import os
 import re
 import shutil
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from kvault.core.frontmatter import parse_frontmatter
 
 
 def normalize_entity_id(name: str) -> str:
@@ -318,5 +324,156 @@ class SimpleStorage:
         return None
 
 
-# Keep backward compatibility for normalize_entity_id
-__all__ = ["SimpleStorage", "normalize_entity_id"]
+# ---------------------------------------------------------------------------
+# Entity scanning (moved from search.py)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class EntityRecord:
+    """Parsed entity from disk — cheap to build, cached per search call."""
+
+    path: str
+    name: str
+    aliases: List[str]
+    category: str
+    email_domains: List[str]
+    content: str  # raw markdown body (after frontmatter)
+    last_updated: str = ""  # YYYY-MM-DD from file mtime
+
+
+def scan_entities(kg_root: Path) -> List[EntityRecord]:
+    """Walk the KB and parse every entity.
+
+    An entity is a directory containing _summary.md with YAML frontmatter,
+    at depth >= 2 from kg_root (i.e. category/entity at minimum).
+
+    Returns list of EntityRecord. Cheap at < 1000 entities.
+    """
+    kg_root = Path(kg_root)
+    entities: List[EntityRecord] = []
+
+    for summary_path in kg_root.rglob("_summary.md"):
+        entity_dir = summary_path.parent
+        rel_path = entity_dir.relative_to(kg_root)
+
+        # Skip hidden dirs (check relative path parts, not absolute)
+        if any(part.startswith(".") for part in rel_path.parts):
+            continue
+
+        # Must be at least 2 levels deep (category/entity)
+        if len(rel_path.parts) < 2:
+            continue
+
+        try:
+            content = summary_path.read_text()
+        except OSError:
+            continue
+
+        meta, body = parse_frontmatter(content)
+        if not meta:
+            # Check for legacy _meta.json
+            meta_path = entity_dir / "_meta.json"
+            if meta_path.exists():
+                try:
+                    meta = json.loads(meta_path.read_text())
+                except (json.JSONDecodeError, OSError):
+                    continue
+            else:
+                continue
+
+        # Extract aliases (coerce non-strings)
+        aliases = [str(a) for a in meta.get("aliases", []) if a is not None]
+
+        # Add phone/email from dedicated fields
+        for extra_field in ("phone", "email"):
+            val = meta.get(extra_field)
+            if val and str(val) not in aliases:
+                aliases.append(str(val))
+
+        # Derive display name
+        name = meta.get("name") or meta.get("topic")
+        if not name and aliases:
+            for a in aliases:
+                if (
+                    isinstance(a, str)
+                    and "@" not in a
+                    and not a.startswith("+")
+                    and not a.isdigit()
+                ):
+                    name = a
+                    break
+            if not name:
+                name = str(aliases[0])
+        if not name:
+            name = entity_dir.name
+
+        # Extract email domains
+        email_domains = []
+        for a in aliases:
+            if "@" in a:
+                domain = a.split("@")[-1].lower()
+                if domain not in email_domains:
+                    email_domains.append(domain)
+
+        category = rel_path.parts[0]
+
+        # Derive last_updated from frontmatter or file mtime
+        last_updated = meta.get("updated") or meta.get("created") or ""
+        if not last_updated:
+            try:
+                mtime = os.path.getmtime(summary_path)
+                last_updated = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+            except OSError:
+                last_updated = ""
+
+        entities.append(
+            EntityRecord(
+                path=str(rel_path),
+                name=name,
+                aliases=aliases,
+                category=category,
+                email_domains=email_domains,
+                content=body,
+                last_updated=last_updated,
+            )
+        )
+
+    return entities
+
+
+def count_entities(
+    kg_root: Path,
+    category: Optional[str] = None,
+    *,
+    _entities: Optional[List[EntityRecord]] = None,
+) -> int:
+    """Count entities, optionally filtered by category."""
+    entities = _entities or scan_entities(kg_root)
+    if category:
+        entities = [e for e in entities if e.category == category]
+    return len(entities)
+
+
+def list_entity_records(
+    kg_root: Path,
+    category: Optional[str] = None,
+    *,
+    _entities: Optional[List[EntityRecord]] = None,
+) -> List[EntityRecord]:
+    """List all entities (optionally filtered). Returns them sorted by name."""
+    entities = _entities or scan_entities(kg_root)
+    if category:
+        entities = [e for e in entities if e.category == category]
+    entities.sort(key=lambda e: e.name.lower())
+    return entities
+
+
+__all__ = [
+    "SimpleStorage",
+    "normalize_entity_id",
+    "EntityRecord",
+    "scan_entities",
+    "count_entities",
+    "list_entity_records",
+]

@@ -1,62 +1,27 @@
 """
-kvault - Agent-first knowledge graph framework
+kvault - Personal knowledge base for AI agents.
 
-Build knowledge graphs from unstructured data using intelligent agents.
-The agent does extraction, research, decisions, and propagation.
-kvault provides tools, not workflows.
+Stores entities as YAML-frontmatter Markdown files with fuzzy search,
+deduplication, and hierarchical summary propagation. Runs as an MCP
+server inside Claude Code, Cursor, VS Code, or any MCP-compatible tool.
 
-Core components:
-- EntityIndex: SQLite-backed entity index with full-text search
-- SimpleStorage: Filesystem storage with minimal 4-field schema
-- ObservabilityLogger: Phase-based logging for debugging and improvement
-- EntityResearcher: Research existing entities before creating new ones
-
-Matching strategies:
-- AliasMatchStrategy: Exact match against known aliases
-- FuzzyNameMatchStrategy: Fuzzy string matching on names
-- EmailDomainMatchStrategy: Match by email domain
+No external API keys. No extra cost. Just files.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
-# Core modules
-from kvault.core.index import EntityIndex, IndexEntry
+from kvault.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
 from kvault.core.storage import SimpleStorage, normalize_entity_id
-from kvault.core.observability import ObservabilityLogger, LogEntry
-from kvault.core.research import EntityResearcher
-
-# Matching strategies
-from kvault.matching import (
-    MatchStrategy,
-    MatchCandidate,
-    EntityIndexEntry,
-    AliasMatchStrategy,
-    FuzzyNameMatchStrategy,
-    EmailDomainMatchStrategy,
-    register_strategy,
-    get_strategy,
-    list_strategies,
-    load_strategies,
-)
+from kvault.core.search import search, scan_entities, find_by_alias, find_by_email_domain
 
 __all__ = [
-    # Core
-    "EntityIndex",
-    "IndexEntry",
+    "parse_frontmatter",
+    "build_frontmatter",
+    "merge_frontmatter",
     "SimpleStorage",
     "normalize_entity_id",
-    "ObservabilityLogger",
-    "LogEntry",
-    "EntityResearcher",
-    # Matching
-    "MatchStrategy",
-    "MatchCandidate",
-    "EntityIndexEntry",
-    "AliasMatchStrategy",
-    "FuzzyNameMatchStrategy",
-    "EmailDomainMatchStrategy",
-    "register_strategy",
-    "get_strategy",
-    "list_strategies",
-    "load_strategies",
+    "search",
+    "scan_entities",
+    "find_by_alias",
+    "find_by_email_domain",
 ]

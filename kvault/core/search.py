@@ -104,7 +104,7 @@ def scan_entities(kg_root: Path) -> List[EntityRecord]:
         name = meta.get("name") or meta.get("topic")
         if not name and aliases:
             for a in aliases:
-                if isinstance(a, str) and "@" not in a and not a.startswith("+"):
+                if isinstance(a, str) and "@" not in a and not a.startswith("+") and not a.isdigit():
                     name = a
                     break
             if not name:

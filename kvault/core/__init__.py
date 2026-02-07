@@ -1,20 +1,14 @@
-"""Core abstractions for kvault - agent-first design."""
+"""kvault core modules."""
 
-from kvault.core.index import EntityIndex, IndexEntry
+from kvault.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
 from kvault.core.storage import SimpleStorage, normalize_entity_id
-from kvault.core.observability import ObservabilityLogger, LogEntry
-from kvault.core.research import EntityResearcher
+from kvault.core.observability import ObservabilityLogger
 
 __all__ = [
-    # Index
-    "EntityIndex",
-    "IndexEntry",
-    # Storage
+    "parse_frontmatter",
+    "build_frontmatter",
+    "merge_frontmatter",
     "SimpleStorage",
     "normalize_entity_id",
-    # Observability
     "ObservabilityLogger",
-    "LogEntry",
-    # Research
-    "EntityResearcher",
 ]

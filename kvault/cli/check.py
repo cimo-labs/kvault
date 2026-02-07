@@ -3,9 +3,8 @@
 Checks:
 1. PROPAGATE: Parent summaries should be as recent as children
 2. LOG: Journal should be updated if entities changed today
-3. REBUILD: Index should be as recent as newest entity
-4. WRITE: Entities should have required frontmatter (source, aliases)
-5. BRANCH: Directories with >10 children should be restructured
+3. WRITE: Entities should have required frontmatter (source, aliases)
+4. BRANCH: Directories with >10 children should be restructured
 
 Exit codes:
     0 = All checks pass (silent)
@@ -122,30 +121,6 @@ def check_journal(kb_root: Path) -> List[str]:
     return warnings
 
 
-def check_index(kb_root: Path, threshold_minutes: int) -> List[str]:
-    """Check if index.db is as recent as newest entity."""
-    warnings = []
-    threshold = timedelta(minutes=threshold_minutes)
-
-    index_path = kb_root / ".kvault" / "index.db"
-    if not index_path.exists():
-        warnings.append("REBUILD: index.db missing")
-        return warnings
-
-    index_mtime = _get_mtime(index_path)
-
-    newest_mtime = None
-    for entity in _find_entities(kb_root):
-        entity_mtime = _get_mtime(entity)
-        if newest_mtime is None or entity_mtime > newest_mtime:
-            newest_mtime = entity_mtime
-
-    if newest_mtime and (newest_mtime - index_mtime) > threshold:
-        warnings.append("REBUILD: index stale")
-
-    return warnings
-
-
 def check_frontmatter(kb_root: Path) -> List[str]:
     """Check that entities have required frontmatter fields."""
     warnings = []
@@ -229,7 +204,6 @@ def check_kb(kb_root: Optional[Path], threshold: int) -> None:
     all_warnings: List[str] = []
     all_warnings.extend(check_propagation(kb_root, threshold))
     all_warnings.extend(check_journal(kb_root))
-    all_warnings.extend(check_index(kb_root, threshold))
     all_warnings.extend(check_frontmatter(kb_root))
     all_warnings.extend(check_directory_size(kb_root))
 

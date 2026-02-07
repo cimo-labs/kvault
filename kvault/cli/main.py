@@ -11,7 +11,6 @@ import click
 from kvault.cli.check import check_kb
 from kvault.core.observability import ObservabilityLogger
 
-
 # -------------------------
 # Helpers
 # -------------------------

@@ -8,7 +8,6 @@ from pathlib import Path
 from kvault.core.search import scan_entities
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter
 
-
 # ============================================================================
 # BUG-2: Entity name extraction
 # ============================================================================

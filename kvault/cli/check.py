@@ -20,7 +20,6 @@ import click
 
 from kvault.core.frontmatter import parse_frontmatter
 
-
 DEFAULT_THRESHOLD_MINUTES = 5
 
 

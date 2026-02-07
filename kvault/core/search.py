@@ -22,7 +22,6 @@ from typing import Any, Dict, List, Optional
 
 from kvault.core.frontmatter import parse_frontmatter
 
-
 # ---------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------

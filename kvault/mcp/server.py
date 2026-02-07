@@ -73,7 +73,6 @@ from kvault.mcp.validation import (
     success_response,
 )
 
-
 # Global instances (initialized when server starts)
 _kg_root: Optional[Path] = None
 _storage: Optional[SimpleStorage] = None

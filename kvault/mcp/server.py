@@ -1,13 +1,16 @@
 """kvault MCP Server - Model Context Protocol server for knowledge graph operations.
 
-Provides 16 tools for Claude Code to interact with the knowledge graph:
+Provides 17 tools for Claude Code to interact with the knowledge graph:
+
+Init (1):
+- kvault_init: Initialize KB, return hierarchy + root summary
 
 Search (1 — unified, no index to rebuild):
 - kvault_search: Smart search — auto-detects query type (name, email, domain, keyword)
 
 Entity Tools (5):
 - kvault_read_entity: Read entity with YAML frontmatter
-- kvault_write_entity: Write entity with YAML frontmatter (validates required fields)
+- kvault_write_entity: Write entity with YAML frontmatter (returns propagation_needed)
 - kvault_list_entities: List entities in a category
 - kvault_delete_entity: Delete an entity
 - kvault_move_entity: Move an entity to new path
@@ -47,6 +50,7 @@ try:
     from mcp.server import Server
     from mcp.server.stdio import stdio_server
     from mcp.types import Tool, TextContent
+
     MCP_AVAILABLE = True
 except ImportError:
     MCP_AVAILABLE = False
@@ -123,10 +127,9 @@ def _build_hierarchy_tree(root: Path, max_depth: int = 3) -> str:
             return
 
         try:
-            subdirs = sorted([
-                p for p in path.iterdir()
-                if p.is_dir() and not p.name.startswith(".")
-            ])
+            subdirs = sorted(
+                [p for p in path.iterdir() if p.is_dir() and not p.name.startswith(".")]
+            )
         except PermissionError:
             return
 
@@ -289,6 +292,11 @@ def _write_entity_with_frontmatter(
         "created": create,
     }
 
+    # Add propagation reminder — ancestors that need summary updates
+    ancestors = _storage.get_ancestors(entity_path)
+    ancestors.append(".")  # include root
+    result["propagation_needed"] = ancestors
+
     # Record in session state
     if session_id:
         session = get_session_manager().get_session(session_id)
@@ -341,7 +349,9 @@ def _check_workflow_order(session_id: Optional[str], expected_step: WorkflowStep
     return None
 
 
-def _add_workflow_warning(result: Dict[str, Any], session_id: Optional[str], expected_step: WorkflowStep) -> Dict[str, Any]:
+def _add_workflow_warning(
+    result: Dict[str, Any], session_id: Optional[str], expected_step: WorkflowStep
+) -> Dict[str, Any]:
     """Add workflow warning to result if steps are out of order."""
     warning = _check_workflow_order(session_id, expected_step)
     if warning:
@@ -713,6 +723,7 @@ def handle_kvault_research(
         aliases = []
     if phone:
         from kvault.mcp.validation import normalize_phone
+
         normalized_phone = normalize_phone(phone)
         aliases.append(normalized_phone)
 
@@ -724,7 +735,7 @@ def handle_kvault_research(
 
     # Search by each alias
     alias_results = []
-    for alias in (aliases or []):
+    for alias in aliases or []:
         alias_results.extend(fs_search.search(_kg_root, alias, limit=5, _entities=entities))
 
     # Search by email if provided
@@ -887,20 +898,24 @@ def handle_kvault_propagate_all(
     for ancestor in ancestors:
         summary_data = handle_kvault_read_summary(ancestor)
         if summary_data:
-            propagation_targets.append({
-                "path": ancestor,
-                "current_content": summary_data.get("content", ""),
-                "has_meta": bool(summary_data.get("meta")),
-            })
+            propagation_targets.append(
+                {
+                    "path": ancestor,
+                    "current_content": summary_data.get("content", ""),
+                    "has_meta": bool(summary_data.get("meta")),
+                }
+            )
 
     # Also include root
     root_summary = handle_kvault_read_summary(".")
     if root_summary:
-        propagation_targets.append({
-            "path": ".",
-            "current_content": root_summary.get("content", ""),
-            "has_meta": bool(root_summary.get("meta")),
-        })
+        propagation_targets.append(
+            {
+                "path": ".",
+                "current_content": root_summary.get("content", ""),
+                "has_meta": bool(root_summary.get("meta")),
+            }
+        )
 
     # Record in session state
     if session_id:
@@ -940,23 +955,27 @@ def handle_kvault_validate_kb() -> Dict[str, Any]:
 
             # Check for incomplete placeholder
             if "Context TBD" in content or "TBD" in content:
-                issues.append({
-                    "type": "incomplete_entity",
-                    "severity": "info",
-                    "path": entity.path,
-                    "message": "Entity has placeholder content that needs enrichment",
-                    "fix": "Update entity with complete context information",
-                })
+                issues.append(
+                    {
+                        "type": "incomplete_entity",
+                        "severity": "info",
+                        "path": entity.path,
+                        "message": "Entity has placeholder content that needs enrichment",
+                        "fix": "Update entity with complete context information",
+                    }
+                )
 
             # Check for missing frontmatter
             if not entity_data.get("has_frontmatter"):
-                issues.append({
-                    "type": "missing_frontmatter",
-                    "severity": "warning",
-                    "path": entity.path,
-                    "message": "Entity uses legacy _meta.json instead of YAML frontmatter",
-                    "fix": "Rewrite entity with kvault_write_entity() to migrate to frontmatter",
-                })
+                issues.append(
+                    {
+                        "type": "missing_frontmatter",
+                        "severity": "warning",
+                        "path": entity.path,
+                        "message": "Entity uses legacy _meta.json instead of YAML frontmatter",
+                        "fix": "Rewrite entity with kvault_write_entity() to migrate to frontmatter",
+                    }
+                )
 
     # Sort by severity
     severity_order = {"error": 0, "warning": 1, "info": 2}
@@ -1031,6 +1050,7 @@ def handle_validate_workflow_transition(
 
     # Check without session
     from kvault.mcp.state import VALID_TRANSITIONS
+
     valid = to_ws in VALID_TRANSITIONS.get(from_ws, [])
     return {
         "valid": valid,
@@ -1060,7 +1080,10 @@ def create_server() -> "Server":
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "kg_root": {"type": "string", "description": "Path to knowledge graph root directory"},
+                        "kg_root": {
+                            "type": "string",
+                            "description": "Path to knowledge graph root directory",
+                        },
                     },
                     "required": ["kg_root"],
                 },
@@ -1077,7 +1100,10 @@ def create_server() -> "Server":
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Search query (name, email, domain, or keywords)"},
+                        "query": {
+                            "type": "string",
+                            "description": "Search query (name, email, domain, or keywords)",
+                        },
                         "category": {"type": "string", "description": "Optional category filter"},
                         "limit": {"type": "integer", "description": "Max results (default 10)"},
                     },
@@ -1090,7 +1116,10 @@ def create_server() -> "Server":
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "Entity path (e.g., 'people/contacts/john_doe')"},
+                        "path": {
+                            "type": "string",
+                            "description": "Entity path (e.g., 'people/contacts/john_doe')",
+                        },
                     },
                     "required": ["path"],
                 },
@@ -1102,10 +1131,22 @@ def create_server() -> "Server":
                     "type": "object",
                     "properties": {
                         "path": {"type": "string", "description": "Entity path"},
-                        "meta": {"type": "object", "description": "Frontmatter metadata (must include 'source' and 'aliases')"},
-                        "content": {"type": "string", "description": "Markdown content (without frontmatter)"},
-                        "create": {"type": "boolean", "description": "True to create new, False to update"},
-                        "session_id": {"type": "string", "description": "Session ID for workflow tracking"},
+                        "meta": {
+                            "type": "object",
+                            "description": "Frontmatter metadata (must include 'source' and 'aliases')",
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Markdown content (without frontmatter)",
+                        },
+                        "create": {
+                            "type": "boolean",
+                            "description": "True to create new, False to update",
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID for workflow tracking",
+                        },
                     },
                     "required": ["path", "meta", "content"],
                 },
@@ -1127,7 +1168,10 @@ def create_server() -> "Server":
                     "type": "object",
                     "properties": {
                         "path": {"type": "string", "description": "Entity path to delete"},
-                        "session_id": {"type": "string", "description": "Session ID for workflow tracking"},
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID for workflow tracking",
+                        },
                     },
                     "required": ["path"],
                 },
@@ -1140,7 +1184,10 @@ def create_server() -> "Server":
                     "properties": {
                         "source_path": {"type": "string", "description": "Current entity path"},
                         "target_path": {"type": "string", "description": "New entity path"},
-                        "session_id": {"type": "string", "description": "Session ID for workflow tracking"},
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID for workflow tracking",
+                        },
                     },
                     "required": ["source_path", "target_path"],
                 },
@@ -1151,7 +1198,10 @@ def create_server() -> "Server":
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "Path to directory containing _summary.md"},
+                        "path": {
+                            "type": "string",
+                            "description": "Path to directory containing _summary.md",
+                        },
                     },
                     "required": ["path"],
                 },
@@ -1162,10 +1212,16 @@ def create_server() -> "Server":
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "Path to directory for _summary.md"},
+                        "path": {
+                            "type": "string",
+                            "description": "Path to directory for _summary.md",
+                        },
                         "content": {"type": "string", "description": "Markdown content"},
                         "meta": {"type": "object", "description": "Optional frontmatter"},
-                        "session_id": {"type": "string", "description": "Session ID for workflow tracking"},
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID for workflow tracking",
+                        },
                     },
                     "required": ["path", "content"],
                 },
@@ -1188,10 +1244,17 @@ def create_server() -> "Server":
                     "type": "object",
                     "properties": {
                         "name": {"type": "string", "description": "Name to search for"},
-                        "aliases": {"type": "array", "items": {"type": "string"}, "description": "Additional aliases"},
+                        "aliases": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Additional aliases",
+                        },
                         "email": {"type": "string", "description": "Email address"},
                         "phone": {"type": "string", "description": "Phone number"},
-                        "session_id": {"type": "string", "description": "Session ID for workflow tracking"},
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID for workflow tracking",
+                        },
                     },
                     "required": ["name"],
                 },
@@ -1202,7 +1265,10 @@ def create_server() -> "Server":
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "phase": {"type": "string", "description": "Phase name (research, decide, execute, etc.)"},
+                        "phase": {
+                            "type": "string",
+                            "description": "Phase name (research, decide, execute, etc.)",
+                        },
                         "data": {"type": "object", "description": "Structured data to log"},
                         "session_id": {"type": "string", "description": "Optional session ID"},
                     },
@@ -1229,7 +1295,10 @@ def create_server() -> "Server":
                         },
                         "source": {"type": "string", "description": "Source identifier"},
                         "date": {"type": "string", "description": "Optional date (YYYY-MM-DD)"},
-                        "session_id": {"type": "string", "description": "Session ID for workflow tracking"},
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID for workflow tracking",
+                        },
                     },
                     "required": ["actions", "source"],
                 },
@@ -1263,8 +1332,14 @@ def create_server() -> "Server":
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "Entity or category path to propagate from"},
-                        "session_id": {"type": "string", "description": "Session ID for workflow tracking"},
+                        "path": {
+                            "type": "string",
+                            "description": "Entity or category path to propagate from",
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID for workflow tracking",
+                        },
                     },
                     "required": ["path"],
                 },
@@ -1385,6 +1460,7 @@ async def run_server():
 def main():
     """CLI entry point for the MCP server."""
     import asyncio
+
     asyncio.run(run_server())
 
 

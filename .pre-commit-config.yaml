@@ -27,13 +27,18 @@ repos:
         # TODO: Fix type annotations and remove || true
         verbose: true
 
-  # Ruff - fast Python linter and formatter
+  # Black - code formatter
+  - repo: https://github.com/psf/black
+    rev: '24.10.0'
+    hooks:
+      - id: black
+
+  # Ruff - fast Python linter
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.8.0
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
-      - id: ruff-format
 
   # Standard pre-commit hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks

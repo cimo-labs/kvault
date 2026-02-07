@@ -23,6 +23,7 @@ from kvault.core.search import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def sample_kb(tmp_path):
     """Create a minimal KB for testing."""
@@ -88,6 +89,7 @@ def entities(sample_kb):
 # scan_entities
 # ---------------------------------------------------------------------------
 
+
 class TestScanEntities:
     def test_finds_all_entities(self, sample_kb):
         entities = scan_entities(sample_kb)
@@ -146,6 +148,7 @@ class TestScanEntities:
 # Normalization helpers
 # ---------------------------------------------------------------------------
 
+
 class TestNormalize:
     def test_lowercases(self):
         assert _normalize("Alice") == "alice"
@@ -194,6 +197,7 @@ class TestIsDomainQuery:
 # ---------------------------------------------------------------------------
 # Unified search
 # ---------------------------------------------------------------------------
+
 
 class TestSearch:
     def test_name_match(self, sample_kb, entities):
@@ -277,6 +281,7 @@ class TestSearch:
 # find_by_alias
 # ---------------------------------------------------------------------------
 
+
 class TestFindByAlias:
     def test_exact_match(self, sample_kb, entities):
         result = find_by_alias(sample_kb, "Alice Smith", _entities=entities)
@@ -314,6 +319,7 @@ class TestFindByAlias:
 # find_by_email_domain
 # ---------------------------------------------------------------------------
 
+
 class TestFindByEmailDomain:
     def test_finds_by_domain(self, sample_kb, entities):
         results = find_by_email_domain(sample_kb, "acme.com", _entities=entities)
@@ -332,6 +338,7 @@ class TestFindByEmailDomain:
 # ---------------------------------------------------------------------------
 # count_entities / list_entities
 # ---------------------------------------------------------------------------
+
 
 class TestCountAndList:
     def test_count_all(self, sample_kb, entities):

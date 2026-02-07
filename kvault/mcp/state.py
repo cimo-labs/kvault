@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 class WorkflowStep(Enum):
     """Workflow steps in order."""
+
     INIT = "init"
     RESEARCH = "research"
     DECIDE = "decide"
@@ -100,7 +101,9 @@ class SessionState:
         self.research_intent = intent
         self.transition(WorkflowStep.DECIDE)
 
-    def record_decision(self, action_plan: List[Dict[str, Any]], reasoning: Optional[str] = None) -> None:
+    def record_decision(
+        self, action_plan: List[Dict[str, Any]], reasoning: Optional[str] = None
+    ) -> None:
         """Record decision and transition to EXECUTE step.
 
         Args:

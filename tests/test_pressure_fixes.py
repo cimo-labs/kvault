@@ -39,8 +39,11 @@ class TestNameExtraction:
         kb = tmp_path / "kb"
         kb.mkdir()
         (kb / "_summary.md").write_text("# KB\n")
-        self._make_entity(kb, "people/alice_smith",
-            "---\nsource: manual\naliases:\n- Alice Smith\n- alice@example.com\n---\n# Alice\n")
+        self._make_entity(
+            kb,
+            "people/alice_smith",
+            "---\nsource: manual\naliases:\n- Alice Smith\n- alice@example.com\n---\n# Alice\n",
+        )
         e = self._get_entity(kb, "people/alice_smith")
         assert e is not None
         assert e.name == "Alice Smith"
@@ -49,8 +52,11 @@ class TestNameExtraction:
         kb = tmp_path / "kb"
         kb.mkdir()
         (kb / "_summary.md").write_text("# KB\n")
-        self._make_entity(kb, "people/bob",
-            "---\nsource: manual\naliases:\n- bob@example.com\n- '+14155551234'\n- Bob Jones\n---\n# Bob\n")
+        self._make_entity(
+            kb,
+            "people/bob",
+            "---\nsource: manual\naliases:\n- bob@example.com\n- '+14155551234'\n- Bob Jones\n---\n# Bob\n",
+        )
         e = self._get_entity(kb, "people/bob")
         assert e is not None
         assert e.name == "Bob Jones"
@@ -59,8 +65,11 @@ class TestNameExtraction:
         kb = tmp_path / "kb"
         kb.mkdir()
         (kb / "_summary.md").write_text("# KB\n")
-        self._make_entity(kb, "people/mystery",
-            "---\nsource: manual\naliases:\n- mystery@corp.com\n---\n# Mystery\n")
+        self._make_entity(
+            kb,
+            "people/mystery",
+            "---\nsource: manual\naliases:\n- mystery@corp.com\n---\n# Mystery\n",
+        )
         e = self._get_entity(kb, "people/mystery")
         assert e is not None
         assert e.name == "mystery@corp.com"
@@ -69,8 +78,11 @@ class TestNameExtraction:
         kb = tmp_path / "kb"
         kb.mkdir()
         (kb / "_summary.md").write_text("# KB\n")
-        self._make_entity(kb, "people/charlie",
-            "---\nname: Charlie Day\nsource: manual\naliases:\n- CD\n---\n# Charlie\n")
+        self._make_entity(
+            kb,
+            "people/charlie",
+            "---\nname: Charlie Day\nsource: manual\naliases:\n- CD\n---\n# Charlie\n",
+        )
         e = self._get_entity(kb, "people/charlie")
         assert e is not None
         assert e.name == "Charlie Day"
@@ -80,8 +92,11 @@ class TestNameExtraction:
         kb.mkdir()
         (kb / "_summary.md").write_text("# KB\n")
         # Phone number without quotes → YAML parses as int
-        self._make_entity(kb, "people/dave",
-            "---\nsource: manual\naliases:\n- 14155551234\n- Dave Wilson\n---\n# Dave\n")
+        self._make_entity(
+            kb,
+            "people/dave",
+            "---\nsource: manual\naliases:\n- 14155551234\n- Dave Wilson\n---\n# Dave\n",
+        )
         e = self._get_entity(kb, "people/dave")
         assert e is not None
         assert e.name == "Dave Wilson"
@@ -90,8 +105,9 @@ class TestNameExtraction:
         kb = tmp_path / "kb"
         kb.mkdir()
         (kb / "_summary.md").write_text("# KB\n")
-        self._make_entity(kb, "people/unknown_person",
-            "---\nsource: manual\naliases: []\n---\n# Unknown\n")
+        self._make_entity(
+            kb, "people/unknown_person", "---\nsource: manual\naliases: []\n---\n# Unknown\n"
+        )
         e = self._get_entity(kb, "people/unknown_person")
         assert e is not None
         assert e.name == "unknown_person"
@@ -116,18 +132,17 @@ class TestValidateKbCategoryDirs:
 
         alice = kb / "people" / "friends" / "alice"
         alice.mkdir()
-        (alice / "_summary.md").write_text(
-            "---\nsource: test\naliases:\n- Alice\n---\n# Alice\n")
+        (alice / "_summary.md").write_text("---\nsource: test\naliases:\n- Alice\n---\n# Alice\n")
 
         bob = kb / "people" / "work" / "bob"
         bob.mkdir()
-        (bob / "_summary.md").write_text(
-            "---\nsource: test\naliases:\n- Bob\n---\n# Bob\n")
+        (bob / "_summary.md").write_text("---\nsource: test\naliases:\n- Bob\n---\n# Bob\n")
 
         return kb
 
     def test_subcategory_dirs_not_flagged(self, tmp_path):
         from kvault.mcp.server import handle_kvault_init, handle_kvault_validate_kb
+
         kb = self._create_kb_with_subcategories(tmp_path)
         handle_kvault_init(str(kb))
         result = handle_kvault_validate_kb()
@@ -136,6 +151,7 @@ class TestValidateKbCategoryDirs:
     def test_leaf_entity_without_frontmatter_not_scanned(self, tmp_path):
         """Entity without frontmatter won't appear in scan (no index to have ghost entries)."""
         from kvault.mcp.server import handle_kvault_init, handle_kvault_validate_kb
+
         kb = self._create_kb_with_subcategories(tmp_path)
 
         orphan = kb / "people" / "friends" / "orphan"
@@ -158,6 +174,7 @@ class TestWriteEntityAutoName:
 
     def test_auto_name_from_alias(self, empty_kb):
         from kvault.mcp.server import handle_kvault_write_entity, handle_kvault_read_entity
+
         handle_kvault_write_entity(
             path="people/test",
             meta={"source": "test", "aliases": ["Test Person", "test@example.com"]},
@@ -169,6 +186,7 @@ class TestWriteEntityAutoName:
 
     def test_auto_name_skips_email(self, empty_kb):
         from kvault.mcp.server import handle_kvault_write_entity, handle_kvault_read_entity
+
         handle_kvault_write_entity(
             path="people/test",
             meta={"source": "test", "aliases": ["test@example.com", "Test Person"]},
@@ -180,6 +198,7 @@ class TestWriteEntityAutoName:
 
     def test_auto_name_handles_non_string_aliases(self, empty_kb):
         from kvault.mcp.server import handle_kvault_write_entity, handle_kvault_read_entity
+
         handle_kvault_write_entity(
             path="people/test",
             meta={"source": "test", "aliases": [14155551234, "Test Person"]},
@@ -191,6 +210,7 @@ class TestWriteEntityAutoName:
 
     def test_explicit_name_not_overwritten(self, empty_kb):
         from kvault.mcp.server import handle_kvault_write_entity, handle_kvault_read_entity
+
         handle_kvault_write_entity(
             path="people/test",
             meta={"source": "test", "aliases": ["Alias"], "name": "Explicit Name"},

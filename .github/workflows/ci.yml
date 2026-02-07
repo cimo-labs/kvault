@@ -24,8 +24,6 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
-    # Informational only — existing code has formatting issues to address separately
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

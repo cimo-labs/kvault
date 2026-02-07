@@ -6,15 +6,15 @@ Pytest test suite for kvault.
 
 ```
 tests/
-├── __init__.py
-├── conftest.py              # Shared fixtures
+├── conftest.py              # Shared fixtures (sample_kb, initialized_kb, empty_kb)
 ├── fixtures/
-│   ├── __init__.py
-│   ├── sample_config.yaml   # Test configuration
-│   └── sample_emails.json   # 10 sample emails
-├── test_e2e_pipeline.py     # End-to-end tests (6 tests)
-├── test_agents.py           # Agent unit tests (19 tests)
-└── test_staging.py          # Staging layer tests (19 tests)
+│   └── sample_kb/           # 5-entity representative KB for E2E tests
+├── test_check.py            # kvault check CLI + propagation staleness detection
+├── test_e2e_workflows.py    # Complete 5-step workflow pipelines
+├── test_frontmatter.py      # YAML frontmatter parsing
+├── test_pressure_fixes.py   # Pressure test regression coverage
+├── test_search.py           # Filesystem search, alias, domain matching
+└── test_storage.py          # SimpleStorage filesystem operations
 ```
 
 ## Running Tests
@@ -23,121 +23,45 @@ tests/
 # Run all tests
 pytest tests/ -v
 
+# Quick summary
+pytest tests/ -q
+
 # Run with coverage
 pytest tests/ --cov=kvault --cov-report=term-missing
 
-# Run E2E tests only
-pytest tests/test_e2e_pipeline.py -v
-
-# Run unit tests only
-pytest tests/ --ignore=tests/test_e2e_pipeline.py -v
+# Single test file
+pytest tests/test_check.py -v
 
 # Stop on first failure
 pytest tests/ -x
 ```
 
-## Test Categories
-
-### E2E Tests (`test_e2e_pipeline.py`)
-
-Full pipeline integration tests:
-
-| Test | Scenario |
-|------|----------|
-| `test_create_new_entity_full_pipeline` | Process → CREATE → verify in KG |
-| `test_merge_duplicate_entity` | Alias match → stage MERGE |
-| `test_ambiguous_match_triggers_review` | Low confidence → question queue |
-| `test_answer_question_then_apply` | Review → approve → apply |
-| `test_session_state_tracking` | Session lifecycle |
-| `test_get_status` | Status reporting |
-
-### Agent Tests (`test_agents.py`)
-
-Data model and agent unit tests:
-
-- `TestExtractedEntity` - Serialization/deserialization
-- `TestMatchCandidate` - Candidate creation
-- `TestReconcileDecision` - Decision handling
-- `TestMockExtractionAgent` - Mock agent behavior
-- `TestAgentContext` - Context and prompts
-
-### Staging Tests (`test_staging.py`)
-
-Database and queue tests:
-
-- `TestStagingDatabase` - CRUD operations, status transitions
-- `TestQuestionQueue` - Add, answer, skip, priority ordering
-
 ## Key Fixtures
 
 ```python
 @pytest.fixture
-def temp_config() -> KGraphConfig:
-    """Configuration pointing to temp directories."""
+def sample_kb(tmp_path):
+    """Writable copy of the sample KB — safe to modify per test."""
 
 @pytest.fixture
-def temp_storage() -> FilesystemStorage:
-    """Temporary filesystem storage."""
+def initialized_kb(sample_kb):
+    """Sample KB with MCP server initialized."""
 
 @pytest.fixture
-def staging_db(tmp_path) -> StagingDatabase:
-    """Temporary SQLite database."""
-
-@pytest.fixture
-def sample_emails() -> list[dict]:
-    """10 sample emails from fixtures."""
-
-@pytest.fixture
-def mock_entities_new_company() -> list[dict]:
-    """Mock entities for new company scenario."""
-
-@pytest.fixture
-def existing_kg() -> FilesystemStorage:
-    """KG with pre-existing entity for merge tests."""
-
-@pytest.fixture
-def orchestrator_with_mock() -> Orchestrator:
-    """Orchestrator with MockExtractionAgent."""
-```
-
-## MockExtractionAgent
-
-Tests use `MockExtractionAgent` to avoid Claude CLI dependency:
-
-```python
-from kvault.pipeline.agents.extraction import MockExtractionAgent
-
-agent = MockExtractionAgent(config, mock_entities=[
-    {"name": "Test Corp", "entity_type": "customer", "confidence": 0.9}
-])
-
-# Inject into orchestrator
-orchestrator.extraction_agent = agent
+def empty_kb(tmp_path):
+    """Fresh KB with category structure but no entities. MCP initialized."""
 ```
 
 ## Test Data
 
-### sample_emails.json
+### sample_kb (5 entities)
 
-10 sample emails covering:
-- New companies (Acme Corp, GlobalTech)
-- Duplicates (ACME Corp vs Acme Corporation)
-- Ambiguous matches
-- Suppliers vs customers
+- `people/friends/alice_smith` — aliases: Alice Smith, alice@acme.com, Ali
+- `people/friends/jose_garcia` — aliases: José García, Jose Garcia, jose@startup.io
+- `people/work/sarah_chen` — aliases: Sarah Chen, sarah@anthropic.com
+- `people/work/bob_jones` — aliases: Bob Jones, bob@bigcorp.com, Bobby
+- `projects/kvault` — aliases: kvault, knowledgevault, knowledge vault
 
-### sample_config.yaml
+## Stats
 
-Minimal test configuration with:
-- Entity types: customer
-- Tiers: strategic, key, standard, prospects
-- Matching strategies: alias, fuzzy_name, email_domain
-- Confidence thresholds: 0.95/0.90/0.50
-
-## Coverage
-
-Target: >70% coverage of pipeline module
-
-```bash
-pytest tests/ --cov=kvault --cov-report=html
-open htmlcov/index.html
-```
+**133 tests, runs in < 1s.**

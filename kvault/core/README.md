@@ -1,32 +1,29 @@
 # Core Module
 
-Foundation layer for storage, indexing, and observability.
+Foundation layer for storage, search, and observability.
 
 ## Components
 
-### EntityIndex (`index.py`)
+### Filesystem Search (`search.py`)
 
-SQLite-backed entity index with full-text search:
+Searches entities by scanning `_summary.md` files directly — no index needed:
 
 ```python
-from kvault.core import EntityIndex
+from kvault.core.search import search, scan_entities, find_by_alias, find_by_email_domain
 
-index = EntityIndex(Path(".kvault/index.db"))
+# Unified search (auto-detects name, email, domain queries)
+results = search(kg_root, "Alice")
+results = search(kg_root, "alice@example.com")
 
-# Add entity
-index.add("people/alice", "Alice Smith",
-          aliases=["Alice", "alice@example.com", "+14155551234"],
-          category="people")
+# Exact alias lookup
+entry = find_by_alias(kg_root, "alice@example.com")
+entry = find_by_alias(kg_root, "+14155551234")  # Phone lookup
 
-# Search
-results = index.search("Alice")
+# Domain search
+results = find_by_email_domain(kg_root, "acme.com")
 
-# Find by alias (exact match)
-entry = index.find_by_alias("alice@example.com")
-entry = index.find_by_alias("+14155551234")  # Phone lookup
-
-# Rebuild from filesystem
-count = index.rebuild(Path("knowledge_graph"))
+# Full scan
+entities = scan_entities(kg_root)
 ```
 
 ### SimpleStorage (`storage.py`)
@@ -104,7 +101,7 @@ normalize_entity_id("R&L Carriers")      # "rl_carriers"
 ```
 core/
 ├── __init__.py       # Exports
-├── index.py          # EntityIndex with SQLite FTS
+├── search.py         # Filesystem-based search (no SQLite)
 ├── storage.py        # SimpleStorage filesystem operations
 ├── frontmatter.py    # YAML frontmatter parsing
 ├── observability.py  # Phase-based logging
@@ -142,4 +139,4 @@ people/alice/
 └── _summary.md    # Markdown content
 ```
 
-The index rebuilder (`index.rebuild()`) parses frontmatter first, falls back to `_meta.json`.
+The search module parses frontmatter first, falls back to `_meta.json`.

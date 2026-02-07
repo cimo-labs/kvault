@@ -1,19 +1,19 @@
 # kvault Architecture
 
 > **Canonical Reference** — This document is the single source of truth for kvault's design.
-> Last updated: 2026-02-06
+> Last updated: 2026-02-07
 
 ## Overview
 
-kvault is a personal knowledge base that runs inside any MCP-compatible AI tool (Claude Code, OpenAI Codex, Cursor, VS Code + Copilot, etc.). It stores entities as YAML-frontmatter Markdown files with fuzzy deduplication, hierarchical summary propagation, and 20 MCP tools for agent interaction.
+kvault is a personal knowledge base that runs inside any MCP-compatible AI tool (Claude Code, OpenAI Codex, Cursor, VS Code + Copilot, etc.). It stores entities as YAML-frontmatter Markdown files with fuzzy deduplication, hierarchical summary propagation, and 17 MCP tools for agent interaction.
 
 ### Goals
 
-1. **Agent-Native** — 20 MCP tools; agents operate the KB directly
+1. **Agent-Native** — 17 MCP tools; agents operate the KB directly
 2. **Structured Memory** — Hierarchical entities with deduplication, not flat notes
 3. **Zero Extra Cost** — Uses existing AI tool subscription; no API keys
 4. **Auditable** — Complete trail of all decisions in `.kvault/logs.db`
-5. **Portable** — Plain Markdown + SQLite; works offline, version-controllable
+5. **Portable** — Plain Markdown files; works offline, version-controllable
 
 ---
 
@@ -31,33 +31,23 @@ kvault is a personal knowledge base that runs inside any MCP-compatible AI tool 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         MCP SERVER (kvault-mcp)                              │
 │                                                                              │
-│  20 tools: init, search, read/write entity, propagate, journal, validate   │
+│  17 tools: init, search, read/write entity, propagate, journal, validate   │
 │  Session state management, workflow enforcement                             │
-│  kvault/mcp/server.py (52KB)                                               │
+│  kvault/mcp/server.py                                                       │
 └─────────────────────────────────┬───────────────────────────────────────────┘
                                   │
         ┌─────────────────────────┼─────────────────────────┐
         ▼                         ▼                         ▼
 ┌───────────────────┐ ┌───────────────────────┐ ┌───────────────────────┐
-│   EntityIndex     │ │    SimpleStorage      │ │   EntityResearcher    │
+│ Filesystem Search │ │    SimpleStorage      │ │ ObservabilityLogger   │
 │                   │ │                       │ │                       │
-│   SQLite FTS5     │ │   Filesystem CRUD     │ │   Multi-strategy     │
-│   .kvault/index.db│ │   YAML frontmatter    │ │   matching engine    │
-│                   │ │   _summary.md files   │ │                       │
-│   kvault/core/    │ │   kvault/core/        │ │   kvault/core/        │
-│   index.py        │ │   storage.py          │ │   research.py         │
-└───────────────────┘ └───────────────────────┘ └───────────┬───────────┘
-                                                            │
-                                                            ▼
-                                               ┌───────────────────────┐
-                                               │   Matching Strategies │
-                                               │                       │
-                                               │   AliasMatch (1.0)    │
-                                               │   FuzzyName (0.85-0.99)│
-                                               │   EmailDomain (0.85-0.95)│
-                                               │                       │
-                                               │   kvault/matching/    │
-                                               └───────────────────────┘
+│ Scans _summary.md │ │   Filesystem CRUD     │ │ Structured logging    │
+│ files directly    │ │   YAML frontmatter    │ │ .kvault/logs.db       │
+│ No index needed   │ │   _summary.md files   │ │                       │
+│                   │ │                       │ │ kvault/core/           │
+│ kvault/core/      │ │   kvault/core/        │ │ observability.py      │
+│ search.py         │ │   storage.py          │ │                       │
+└───────────────────┘ └───────────────────────┘ └───────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                      KNOWLEDGE BASE (Filesystem)                             │
@@ -70,7 +60,6 @@ kvault is a personal knowledge base that runs inside any MCP-compatible AI tool 
 │   │       └── _summary.md      ← Entity: YAML frontmatter + Markdown       │
 │   ├── journal/YYYY-MM/log.md                                                │
 │   └── .kvault/                                                               │
-│       ├── index.db             ← SQLite FTS5 search index                   │
 │       └── logs.db              ← Observability/audit log                    │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -84,25 +73,16 @@ kvault is a personal knowledge base that runs inside any MCP-compatible AI tool 
 | Component | File | Purpose |
 |-----------|------|---------|
 | **SimpleStorage** | `storage.py` | Filesystem CRUD for entities and summaries |
-| **EntityIndex** | `index.py` | SQLite FTS5 full-text search with alias indexing |
-| **EntityResearcher** | `research.py` | Multi-strategy entity matching and dedup detection |
+| **search** | `search.py` | Filesystem-based search — scans `_summary.md` files directly, no index |
 | **ObservabilityLogger** | `observability.py` | Structured logging to `.kvault/logs.db` |
 | **parse_frontmatter** | `frontmatter.py` | YAML frontmatter ↔ Markdown parsing |
 | **build_frontmatter** | `frontmatter.py` | Markdown ↔ YAML frontmatter serialization |
-
-### Matching Layer (`kvault/matching/`)
-
-| Component | File | Score Range | Purpose |
-|-----------|------|-------------|---------|
-| **AliasMatchStrategy** | `alias.py` | 1.0 | Exact match against known aliases |
-| **FuzzyNameMatchStrategy** | `fuzzy.py` | 0.85–0.99 | SequenceMatcher string similarity |
-| **EmailDomainMatchStrategy** | `domain.py` | 0.85–0.95 | Shared corporate email domains |
 
 ### MCP Server (`kvault/mcp/`)
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| **server.py** | `server.py` | 20 MCP tool handlers, session management |
+| **server.py** | `server.py` | 17 MCP tool handlers, session management |
 | **SessionState** | `state.py` | Per-session workflow state tracking |
 | **validation.py** | `validation.py` | 10 pure validation functions for tool inputs |
 
@@ -110,9 +90,9 @@ kvault is a personal knowledge base that runs inside any MCP-compatible AI tool 
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| **HeadlessOrchestrator** | `runner.py` | Spawns Claude subprocess for autonomous 6-step workflow |
+| **HeadlessOrchestrator** | `runner.py` | Spawns Claude subprocess for autonomous 5-step workflow |
 | **OrchestratorConfig** | `context.py` | Configuration for orchestrator runs |
-| **WorkflowStateMachine** | `state_machine.py` | State transitions for the 6-step workflow |
+| **WorkflowStateMachine** | `state_machine.py` | State transitions for the 5-step workflow |
 | **WorkflowEnforcer** | `enforcer.py` | Validates workflow compliance |
 
 ### CLI (`kvault/cli/`)
@@ -126,7 +106,7 @@ kvault is a personal knowledge base that runs inside any MCP-compatible AI tool 
 
 ## Data Flow (MCP-based, primary path)
 
-The agent drives the 6-step workflow through individual MCP tool calls:
+The agent drives the 5-step workflow through individual MCP tool calls:
 
 ```
 Agent (Claude Code, Codex, etc.)
@@ -135,24 +115,24 @@ Agent (Claude Code, Codex, etc.)
     │       → Loads hierarchy, root summary, entity count
     │
     ├── 2. kvault_research(name="...", email="...")
-    │       → Runs all matching strategies against index
+    │       → Scans filesystem, runs matching strategies
     │       → Returns matches with confidence scores
     │
     ├── 3. kvault_write_entity(path="...", meta={...}, content="...")
     │       → Creates/updates entity with YAML frontmatter
     │       → Validates required fields (source, aliases)
     │       → Sets created/updated timestamps
+    │       → Returns propagation_needed ancestor list
     │
     ├── 4. kvault_propagate_all(path="...")
-    │       → Returns list of ancestor paths
+    │       → Returns list of ancestor paths with current content
     │       → Agent reads, updates, and writes each summary
     │
-    ├── 5. kvault_write_journal(actions=[...], source="...")
-    │       → Appends to journal/YYYY-MM/log.md
-    │
-    └── 6. kvault_rebuild_index()
-            → Scans all entities, rebuilds FTS5 index
+    └── 5. kvault_write_journal(actions=[...], source="...")
+            → Appends to journal/YYYY-MM/log.md
 ```
+
+No index rebuild needed — search reads `_summary.md` files directly from disk.
 
 ---
 
@@ -180,30 +160,6 @@ Research scientist at Anthropic.
 
 ---
 
-## Extension Points
-
-### Custom Matching Strategy
-
-```python
-from kvault.matching import MatchStrategy, register_strategy, MatchCandidate
-
-@register_strategy("semantic")
-class SemanticMatchStrategy(MatchStrategy):
-    @property
-    def name(self) -> str:
-        return "semantic"
-
-    @property
-    def score_range(self) -> tuple[float, float]:
-        return (0.7, 0.95)
-
-    def find_matches(self, entity, index, threshold=0.0) -> list[MatchCandidate]:
-        # Your embedding-based matching logic
-        ...
-```
-
----
-
 ## Decision Log
 
 ### Why MCP Server over CLI Orchestrator?
@@ -216,15 +172,15 @@ class SemanticMatchStrategy(MatchStrategy):
 - Structured JSON responses (no regex parsing)
 - Works with any MCP-compatible tool, not just Claude
 
-### Why SQLite for Index and Logs?
+### Why Filesystem Search (not SQLite)?
 
-**Decision**: Use SQLite FTS5 for entity search and structured logging.
+**Decision**: Search scans `_summary.md` files directly. SQLite is used only for observability logs.
 
 **Rationale**:
-- Zero configuration
-- FTS5 provides fast full-text search
-- File-based = portable with the KB
-- Easy to inspect (any SQLite browser)
+- At typical KB sizes (< 1,000 entities), filesystem scan is fast (< 200ms)
+- Eliminates stale-index bugs entirely — no rebuild step needed
+- One fewer moving part; search results are always consistent with disk
+- SQLite `.kvault/logs.db` is still used for structured audit logging
 
 ### Why Filesystem over Database for Entities?
 
@@ -248,34 +204,20 @@ tests/
 ├── fixtures/
 │   └── sample_kb/               # 5-entity representative KB for E2E tests
 │
-├── E2E Tests (User Workflows)
-│   ├── test_e2e_workflows.py    # Complete 6-step workflow pipelines
-│   ├── test_e2e_search.py       # Search, alias, domain, research workflows
-│   └── test_e2e_cli.py          # CLI command tests
-│
-├── Core Tests (Infrastructure)
-│   ├── test_mcp_handlers.py     # All 20 MCP handler tests
-│   ├── test_mcp_validation.py   # Pure validation function tests
-│   └── test_examples.py         # README quickstart validation
+├── E2E Tests
+│   └── test_e2e_workflows.py    # Complete 5-step workflow pipelines
 │
 ├── Feature Tests
-│   ├── test_check.py            # kvault check CLI
+│   ├── test_check.py            # kvault check CLI + propagation staleness detection
 │   ├── test_frontmatter.py      # YAML frontmatter parsing
-│   ├── test_index.py            # EntityIndex FTS5
-│   ├── test_init.py             # KB initialization
-│   ├── test_matching.py         # Matching strategies
-│   ├── test_observability.py    # ObservabilityLogger
-│   ├── test_research.py         # EntityResearcher
+│   ├── test_search.py           # Filesystem search, alias, domain matching
 │   └── test_storage.py          # SimpleStorage filesystem
 │
-├── Regression Tests
-│   └── test_pressure_fixes.py   # Pressure test regression coverage
-│
-└── Integration Tests
-    └── test_orchestrator.py     # Headless orchestrator workflows
+└── Regression Tests
+    └── test_pressure_fixes.py   # Pressure test regression coverage
 ```
 
-**306 tests, runs in ~30s.**
+**133 tests, runs in < 1s.**
 
 ```bash
 pytest tests/                                     # Run all
@@ -294,3 +236,4 @@ pytest --cov=kvault --cov-report=term tests/       # With coverage
 | 0.1.0 | 2026-01-05 | Initial architecture |
 | 0.2.0 | 2026-01-23 | MCP server, YAML frontmatter, 20 tools |
 | 0.3.0 | 2026-02-06 | Multi-tool support (Codex, Cursor, VS Code), integrity hook |
+| 0.4.0 | 2026-02-07 | Removed SQLite index, filesystem-based search, 17 tools, 5-step workflow, propagation staleness detection |

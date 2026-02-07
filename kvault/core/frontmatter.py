@@ -59,9 +59,7 @@ def build_frontmatter(meta: Dict[str, Any]) -> str:
     return f"---\n{yaml_str}---\n\n"
 
 
-def merge_frontmatter(
-    existing: Dict[str, Any], new: Dict[str, Any]
-) -> Dict[str, Any]:
+def merge_frontmatter(existing: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
     """Merge new frontmatter into existing, preserving existing values.
 
     Special handling:

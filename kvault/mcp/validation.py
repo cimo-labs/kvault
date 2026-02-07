@@ -72,7 +72,7 @@ def normalize_phone(phone: str) -> str:
         Normalized phone number or original if can't parse
     """
     # Remove all non-digit characters
-    digits = re.sub(r'\D', '', phone)
+    digits = re.sub(r"\D", "", phone)
 
     # Handle different formats
     if len(digits) == 10:
@@ -99,7 +99,7 @@ def normalize_path(path: str) -> str:
         Normalized path
     """
     path = path.rstrip("/")
-    path = re.sub(r'/_summary\.md$', '', path)
+    path = re.sub(r"/_summary\.md$", "", path)
     return path.lower()
 
 
@@ -126,8 +126,11 @@ def validate_entity_path(path: str) -> Tuple[bool, Optional[str]]:
 
     # Check each part is valid identifier
     for part in parts:
-        if not re.match(r'^[a-z][a-z0-9_]*$', part):
-            return False, f"Invalid path component: '{part}' (must be lowercase alphanumeric with underscores)"
+        if not re.match(r"^[a-z][a-z0-9_]*$", part):
+            return (
+                False,
+                f"Invalid path component: '{part}' (must be lowercase alphanumeric with underscores)",
+            )
 
     return True, None
 
@@ -209,8 +212,8 @@ def extract_identifiers(text: str) -> Dict[str, List[str]]:
     """
     # Phone patterns
     phone_patterns = [
-        r'\+1[- ]?\(?\d{3}\)?[- ]?\d{3}[- ]?\d{4}',  # +1 (555) 123-4567
-        r'\(?\d{3}\)?[- ]?\d{3}[- ]?\d{4}',  # (555) 123-4567
+        r"\+1[- ]?\(?\d{3}\)?[- ]?\d{3}[- ]?\d{4}",  # +1 (555) 123-4567
+        r"\(?\d{3}\)?[- ]?\d{3}[- ]?\d{4}",  # (555) 123-4567
     ]
     phones = []
     for pattern in phone_patterns:
@@ -218,12 +221,51 @@ def extract_identifiers(text: str) -> Dict[str, List[str]]:
         phones.extend([normalize_phone(m) for m in matches])
 
     # Email pattern
-    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    email_pattern = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
     emails = re.findall(email_pattern, text)
 
     # Name pattern (capitalized words, excluding common words)
-    common_words = {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'its', 'may', 'new', 'now', 'old', 'see', 'two', 'way', 'who', 'boy', 'did', 'let', 'put', 'say', 'she', 'too', 'use'}
-    name_pattern = r'\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?)\b'
+    common_words = {
+        "the",
+        "and",
+        "for",
+        "are",
+        "but",
+        "not",
+        "you",
+        "all",
+        "can",
+        "had",
+        "her",
+        "was",
+        "one",
+        "our",
+        "out",
+        "day",
+        "get",
+        "has",
+        "him",
+        "his",
+        "how",
+        "its",
+        "may",
+        "new",
+        "now",
+        "old",
+        "see",
+        "two",
+        "way",
+        "who",
+        "boy",
+        "did",
+        "let",
+        "put",
+        "say",
+        "she",
+        "too",
+        "use",
+    }
+    name_pattern = r"\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?)\b"
     potential_names = re.findall(name_pattern, text)
     names = [n for n in potential_names if n.lower().split()[0] not in common_words]
 

@@ -159,9 +159,12 @@ ruff check . && black . && mypy .  # Lint, format, type-check
 pytest -v                           # Run tests with verbose output
 ```
 
+**Before committing:** Always run `black kvault/ tests/` to ensure CI passes. CI runs `black --check` and will reject unformatted code.
+
 ## Do Not
 
 - Create separate `_meta.json` files (use frontmatter instead)
 - Merge entities without exact identifier match
 - Skip the PROPAGATE step (summaries must stay in sync)
 - Modify entity files without going through the workflow
+- Commit without running `black` first

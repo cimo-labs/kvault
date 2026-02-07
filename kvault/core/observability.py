@@ -73,7 +73,8 @@ class ObservabilityLogger:
     def _init_db(self) -> None:
         """Create tables if they don't exist."""
         with sqlite3.connect(self.db_path) as conn:
-            conn.executescript("""
+            conn.executescript(
+                """
                 -- Main logs table
                 CREATE TABLE IF NOT EXISTS logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,7 +104,8 @@ class ObservabilityLogger:
                        json_extract(data, '$.confidence') as confidence,
                        json_extract(data, '$.reasoning') as reasoning
                 FROM logs WHERE phase = 'decide';
-            """)
+            """
+            )
 
     def _new_session(self) -> str:
         """Generate a new session ID."""
@@ -127,7 +129,9 @@ class ObservabilityLogger:
         """
         # Allow any phase that's in PHASES or starts with "step_"
         if phase not in self.PHASES and not phase.startswith("step_"):
-            raise ValueError(f"Invalid phase: {phase}. Must be one of {self.PHASES} or start with 'step_'")
+            raise ValueError(
+                f"Invalid phase: {phase}. Must be one of {self.PHASES} or start with 'step_'"
+            )
 
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(

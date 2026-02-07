@@ -27,14 +27,16 @@ from kvault.core.frontmatter import parse_frontmatter
 # Data
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SearchResult:
     """A single search result."""
-    path: str           # relative to kg_root, e.g. "people/friends/alice_smith"
-    name: str           # display name
-    aliases: list       # all aliases (strings)
-    category: str       # top-level directory
-    email_domains: list # extracted from aliases
+
+    path: str  # relative to kg_root, e.g. "people/friends/alice_smith"
+    name: str  # display name
+    aliases: list  # all aliases (strings)
+    category: str  # top-level directory
+    email_domains: list  # extracted from aliases
     last_updated: str = ""  # YYYY-MM-DD from file mtime
     score: float = 0.0  # relevance score (0-1)
     match_reason: str = ""  # why this matched
@@ -43,6 +45,7 @@ class SearchResult:
 @dataclass
 class EntityRecord:
     """Parsed entity from disk — cheap to build, cached per search call."""
+
     path: str
     name: str
     aliases: List[str]
@@ -55,6 +58,7 @@ class EntityRecord:
 # ---------------------------------------------------------------------------
 # Scanning
 # ---------------------------------------------------------------------------
+
 
 def scan_entities(kg_root: Path) -> List[EntityRecord]:
     """Walk the KB and parse every entity.
@@ -88,6 +92,7 @@ def scan_entities(kg_root: Path) -> List[EntityRecord]:
         if not meta:
             # Check for legacy _meta.json
             import json
+
             meta_path = entity_dir / "_meta.json"
             if meta_path.exists():
                 try:
@@ -110,7 +115,12 @@ def scan_entities(kg_root: Path) -> List[EntityRecord]:
         name = meta.get("name") or meta.get("topic")
         if not name and aliases:
             for a in aliases:
-                if isinstance(a, str) and "@" not in a and not a.startswith("+") and not a.isdigit():
+                if (
+                    isinstance(a, str)
+                    and "@" not in a
+                    and not a.startswith("+")
+                    and not a.isdigit()
+                ):
                     name = a
                     break
             if not name:
@@ -137,15 +147,17 @@ def scan_entities(kg_root: Path) -> List[EntityRecord]:
             except OSError:
                 last_updated = ""
 
-        entities.append(EntityRecord(
-            path=str(rel_path),
-            name=name,
-            aliases=aliases,
-            category=category,
-            email_domains=email_domains,
-            content=body,
-            last_updated=last_updated,
-        ))
+        entities.append(
+            EntityRecord(
+                path=str(rel_path),
+                name=name,
+                aliases=aliases,
+                category=category,
+                email_domains=email_domains,
+                content=body,
+                last_updated=last_updated,
+            )
+        )
 
     return entities
 
@@ -153,6 +165,7 @@ def scan_entities(kg_root: Path) -> List[EntityRecord]:
 # ---------------------------------------------------------------------------
 # Normalization helpers
 # ---------------------------------------------------------------------------
+
 
 def _normalize(text: str) -> str:
     """Lowercase, strip accents, collapse whitespace."""
@@ -192,8 +205,16 @@ def _is_domain_query(q: str) -> bool:
 # ---------------------------------------------------------------------------
 
 GENERIC_DOMAINS = {
-    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com",
-    "icloud.com", "mail.com", "protonmail.com", "live.com", "msn.com",
+    "gmail.com",
+    "yahoo.com",
+    "hotmail.com",
+    "outlook.com",
+    "aol.com",
+    "icloud.com",
+    "mail.com",
+    "protonmail.com",
+    "live.com",
+    "msn.com",
     "ymail.com",
 }
 
@@ -313,6 +334,7 @@ def list_entities(
 # ---------------------------------------------------------------------------
 # Internal scoring
 # ---------------------------------------------------------------------------
+
 
 def _to_result(e: EntityRecord, score: float, reason: str) -> SearchResult:
     return SearchResult(

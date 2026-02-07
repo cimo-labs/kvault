@@ -59,7 +59,13 @@ class TestCreateWorkflow:
 
         # 4. Journal — log the action
         result = handle_kvault_write_journal(
-            actions=[{"action_type": "create", "path": "people/work/dave_wilson", "reasoning": "Met at conference"}],
+            actions=[
+                {
+                    "action_type": "create",
+                    "path": "people/work/dave_wilson",
+                    "reasoning": "Met at conference",
+                }
+            ],
             source="conference",
         )
         assert result["success"]

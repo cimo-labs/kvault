@@ -108,6 +108,7 @@ class TestBuildFrontmatter:
 
     def test_preserves_key_order(self):
         from collections import OrderedDict
+
         meta = OrderedDict([("source", "test"), ("aliases", []), ("created", "2026-01-01")])
         result = build_frontmatter(meta)
         source_pos = result.index("source")

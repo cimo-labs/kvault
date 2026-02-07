@@ -2,16 +2,20 @@
 Filesystem-based entity search — no SQLite, no index to rebuild.
 
 Walks the KB directory, parses YAML frontmatter, and scores matches
-using fuzzy string matching + keyword overlap. At typical KB sizes
-(< 1000 entities) this is fast enough (< 200ms) and eliminates the
-stale-index problem entirely.
+using fuzzy string matching + keyword overlap. Designed for personal
+KBs under ~1000 entities where scan + match completes in < 200ms.
+At larger sizes, consider pre-scanning with scan_entities() and
+passing the result via the _entities parameter to avoid repeated
+filesystem walks.
 
 Replaces: EntityIndex (core/index.py) + find_by_alias + find_by_email_domain
 """
 
+import os
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -31,6 +35,7 @@ class SearchResult:
     aliases: list       # all aliases (strings)
     category: str       # top-level directory
     email_domains: list # extracted from aliases
+    last_updated: str = ""  # YYYY-MM-DD from file mtime
     score: float = 0.0  # relevance score (0-1)
     match_reason: str = ""  # why this matched
 
@@ -44,6 +49,7 @@ class EntityRecord:
     category: str
     email_domains: List[str]
     content: str  # raw markdown body (after frontmatter)
+    last_updated: str = ""  # YYYY-MM-DD from file mtime
 
 
 # ---------------------------------------------------------------------------
@@ -116,11 +122,20 @@ def scan_entities(kg_root: Path) -> List[EntityRecord]:
         email_domains = []
         for a in aliases:
             if "@" in a:
-                domain = a.split("@")[1].lower()
+                domain = a.split("@")[-1].lower()
                 if domain not in email_domains:
                     email_domains.append(domain)
 
         category = rel_path.parts[0]
+
+        # Derive last_updated from frontmatter or file mtime
+        last_updated = meta.get("updated") or meta.get("created") or ""
+        if not last_updated:
+            try:
+                mtime = os.path.getmtime(summary_path)
+                last_updated = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+            except OSError:
+                last_updated = ""
 
         entities.append(EntityRecord(
             path=str(rel_path),
@@ -129,6 +144,7 @@ def scan_entities(kg_root: Path) -> List[EntityRecord]:
             category=category,
             email_domains=email_domains,
             content=body,
+            last_updated=last_updated,
         ))
 
     return entities
@@ -305,6 +321,7 @@ def _to_result(e: EntityRecord, score: float, reason: str) -> SearchResult:
         aliases=e.aliases,
         category=e.category,
         email_domains=e.email_domains,
+        last_updated=e.last_updated,
         score=score,
         match_reason=reason,
     )
@@ -314,7 +331,7 @@ def _search_email(entities: List[EntityRecord], email: str) -> List[SearchResult
     """Search by email: exact alias match first, then domain match."""
     results = []
     email_lower = email.lower()
-    domain = email.split("@")[1].lower()
+    domain = email.split("@")[-1].lower()
 
     for e in entities:
         # Exact alias match

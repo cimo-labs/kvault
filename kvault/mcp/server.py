@@ -464,6 +464,7 @@ def handle_kvault_list_entities(category: Optional[str] = None) -> List[Dict[str
             "path": e.path,
             "name": e.name,
             "category": e.category,
+            "last_updated": e.last_updated,
         }
         for e in entries
     ]

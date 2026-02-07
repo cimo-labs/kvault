@@ -83,6 +83,43 @@ command = "kvault-mcp"
 
 Then tell your agent: *"Initialize the knowledge base at ./my_kb"* — it will call `kvault_init` and you're up.
 
+## Try it: import your ChatGPT history
+
+The best way to see kvault in action is to point it at data you already have. ChatGPT lets you export your entire conversation history — years of questions, people mentioned, projects discussed, decisions made — and Claude Code + kvault can turn it into a structured, searchable knowledge base in minutes.
+
+**1. Export your ChatGPT data**
+
+Go to [ChatGPT → Settings → Data controls → Export data](https://chatgpt.com/#settings/DataControls). You'll get an email with a zip file containing `conversations.json`.
+
+**2. Unzip it into your KB**
+
+```bash
+unzip chatgpt-export.zip -d my_kb/sources/chatgpt
+```
+
+**3. Tell Claude Code to process it**
+
+```
+Read through my ChatGPT export in sources/chatgpt/conversations.json.
+Extract the people, projects, and ideas I've discussed most frequently.
+Create entities for each one in the knowledge base.
+```
+
+Claude Code will use the kvault tools to research each entity (deduplicating as it goes), create structured entries with frontmatter, propagate summaries, and rebuild the index. You'll end up with a browsable, searchable knowledge base built from years of conversations you've already had.
+
+**Other great data sources to try:**
+
+| Source | How to get it | What you'll extract |
+|--------|---------------|---------------------|
+| **ChatGPT history** | Settings → Export data | People, projects, decisions, research threads |
+| **Google Contacts** | [Google Takeout](https://takeout.google.com/) (Contacts) | Names, emails, phone numbers, notes |
+| **iMessage** | `~/Library/Messages/chat.db` (macOS) | Relationships, interaction frequency, context |
+| **Gmail** | [Google Takeout](https://takeout.google.com/) (Mail) | Professional contacts, threads, follow-ups |
+| **Meeting notes** | Any folder of markdown/text files | People, action items, decisions |
+| **Notion export** | Notion → Settings → Export | Projects, notes, wikis |
+
+The pattern is always the same: drop the data into `sources/`, tell your agent to process it, and let kvault handle deduplication and structure.
+
 ## What happens next
 
 Every time your agent processes new information, it follows a 6-step workflow:

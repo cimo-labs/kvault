@@ -244,25 +244,45 @@ class SemanticMatchStrategy(MatchStrategy):
 
 ```
 tests/
-├── conftest.py                  # Shared fixtures
-├── fixtures/                    # Sample data
-├── test_check.py                # kvault check CLI tests
-├── test_e2e_cli.py              # End-to-end CLI tests
-├── test_frontmatter.py          # YAML frontmatter parsing
-├── test_index.py                # EntityIndex FTS5 tests
-├── test_init.py                 # kvault init tests
-├── test_matching.py             # Matching strategy tests
-├── test_observability.py        # ObservabilityLogger tests
-├── test_orchestrator.py         # Orchestrator workflow tests
-├── test_research.py             # EntityResearcher tests
-└── test_storage.py              # SimpleStorage tests
+├── conftest.py                  # Rich shared fixtures (sample_kb, initialized_kb, empty_kb)
+├── fixtures/
+│   └── sample_kb/               # 5-entity representative KB for E2E tests
+│
+├── E2E Tests (User Workflows)
+│   ├── test_e2e_workflows.py    # Complete 6-step workflow pipelines
+│   ├── test_e2e_search.py       # Search, alias, domain, research workflows
+│   └── test_e2e_cli.py          # CLI command tests
+│
+├── Core Tests (Infrastructure)
+│   ├── test_mcp_handlers.py     # All 20 MCP handler tests
+│   ├── test_mcp_validation.py   # Pure validation function tests
+│   └── test_examples.py         # README quickstart validation
+│
+├── Feature Tests
+│   ├── test_check.py            # kvault check CLI
+│   ├── test_frontmatter.py      # YAML frontmatter parsing
+│   ├── test_index.py            # EntityIndex FTS5
+│   ├── test_init.py             # KB initialization
+│   ├── test_matching.py         # Matching strategies
+│   ├── test_observability.py    # ObservabilityLogger
+│   ├── test_research.py         # EntityResearcher
+│   └── test_storage.py          # SimpleStorage filesystem
+│
+├── Regression Tests
+│   └── test_pressure_fixes.py   # Pressure test regression coverage
+│
+└── Integration Tests
+    └── test_orchestrator.py     # Headless orchestrator workflows
 ```
 
-**185 tests, runs in <10s.**
+**306 tests, runs in ~30s.**
 
 ```bash
-pytest                                  # Run all
-pytest --cov=kvault --cov-report=term   # With coverage
+pytest tests/                                     # Run all
+pytest tests/test_e2e*.py -q                      # Quick E2E validation
+pytest tests/test_mcp*.py -v                      # MCP layer tests
+pytest tests/ --ignore=tests/test_orchestrator.py  # Skip flaky orchestrator tests
+pytest --cov=kvault --cov-report=term tests/       # With coverage
 ```
 
 ---

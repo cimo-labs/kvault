@@ -55,22 +55,18 @@ try:
 except ImportError:
     MCP_AVAILABLE = False
 
-from kvault.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
-from kvault.core.storage import SimpleStorage, normalize_entity_id
+from kvault.core.frontmatter import parse_frontmatter, build_frontmatter
+from kvault.core.storage import SimpleStorage
 from kvault.core.observability import ObservabilityLogger
 import kvault.core.search as fs_search
-from kvault.mcp.state import get_session_manager, SessionState, WorkflowStep
+from kvault.mcp.state import get_session_manager, WorkflowStep
 from kvault.mcp.validation import (
     normalize_path,
     validate_entity_path,
-    validate_frontmatter,
-    build_default_frontmatter,
-    extract_identifiers,
     get_journal_path,
     format_journal_entry,
     ErrorCode,
     error_response,
-    success_response,
 )
 
 # Global instances (initialized when server starts)

@@ -6,7 +6,6 @@ Shared validation logic extracted from the CLI orchestrator.
 import re
 from datetime import datetime
 from enum import Enum
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 

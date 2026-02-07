@@ -1,10 +1,9 @@
 """kvault CLI — init and check commands."""
 
-import json
 from datetime import date
 from importlib.resources import files as resource_files
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 import click
 

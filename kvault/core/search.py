@@ -14,11 +14,11 @@ Replaces: EntityIndex (core/index.py) + find_by_alias + find_by_email_domain
 import os
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from kvault.core.frontmatter import parse_frontmatter
 

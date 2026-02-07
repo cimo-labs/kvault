@@ -2,7 +2,11 @@
 
 **Personal knowledge base that runs inside Claude Code.**
 
-kvault gives your coding agent persistent, structured memory. It runs as an MCP server inside Claude Code (or OpenAI Codex), using the subscription you already pay for. No extra API keys. No extra cost.
+```bash
+pip install knowledgevault[mcp]
+```
+
+kvault gives your coding agent persistent, structured memory. It runs as an MCP server inside Claude Code (or any MCP-compatible tool), using the subscription you already pay for. No extra API keys. No extra cost.
 
 Your agent creates entities (people, projects, notes), deduplicates them with fuzzy matching, and keeps hierarchical summaries in sync — all through 20 MCP tools.
 

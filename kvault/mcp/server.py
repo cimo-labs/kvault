@@ -257,6 +257,20 @@ def _write_entity_with_frontmatter(
             hint="Provide aliases as a list (can be empty: [])",
         )
 
+    # Auto-set 'name' from first alias if not provided
+    # This ensures search results show "Alice Smith" not "alice_smith"
+    if "name" not in meta and meta.get("aliases"):
+        # Use first non-email, non-phone alias as display name
+        for alias in meta["aliases"]:
+            if isinstance(alias, str) and "@" not in alias and not alias.startswith("+"):
+                meta["name"] = alias
+                break
+        # Fall back to first alias if all are emails/phones
+        if "name" not in meta and meta["aliases"]:
+            first = meta["aliases"][0]
+            if isinstance(first, str):
+                meta["name"] = first
+
     # Set/update date fields (these are always automatic)
     today = datetime.now().strftime("%Y-%m-%d")
     if create:
@@ -1018,6 +1032,19 @@ def handle_kvault_validate_kb() -> Dict[str, Any]:
         # Check if it should be an entity (has category/entity structure)
         parts = rel_path.split("/")
         if len(parts) >= 2 and rel_path not in indexed_paths:
+            # Skip category-level directories that have child entity dirs
+            # These are organizational groupings, not leaf entities
+            entity_parent = entity_dir.parent
+            has_child_entities = any(
+                (child / "_summary.md").exists()
+                for child in entity_parent.iterdir()
+                if child.is_dir() and not child.name.startswith(".")
+                and child.name != "journal"
+            )
+            if has_child_entities:
+                # This is a category/subcategory summary, not a missing entity
+                continue
+
             issues.append({
                 "type": "index_missing",
                 "severity": "warning",

@@ -252,20 +252,16 @@ tests/
 ├── test_index.py                # EntityIndex FTS5 tests
 ├── test_init.py                 # kvault init tests
 ├── test_matching.py             # Matching strategy tests
-├── test_mcp_handlers.py         # MCP tool handler integration tests
-├── test_mcp_validation.py       # MCP validation pure function tests
 ├── test_observability.py        # ObservabilityLogger tests
 ├── test_orchestrator.py         # Orchestrator workflow tests
 ├── test_research.py             # EntityResearcher tests
 └── test_storage.py              # SimpleStorage tests
 ```
 
-**256 tests, runs in <1s.**
+**185 tests, runs in <10s.**
 
 ```bash
 pytest                                  # Run all
-pytest tests/test_mcp_validation.py     # MCP validation (45 pure tests)
-pytest tests/test_mcp_handlers.py       # MCP integration (26 tests)
 pytest --cov=kvault --cov-report=term   # With coverage
 ```
 

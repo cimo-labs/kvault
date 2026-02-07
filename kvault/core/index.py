@@ -85,6 +85,9 @@ class EntityIndex:
         """Extract email domains from aliases."""
         domains = []
         for alias in aliases:
+            # Coerce non-string aliases (e.g., phone numbers parsed as int by YAML)
+            if not isinstance(alias, str):
+                continue
             if "@" in alias:
                 domain = alias.split("@")[1].lower()
                 if domain not in domains:
@@ -107,6 +110,8 @@ class EntityIndex:
             category: Top-level category (e.g., "people", "projects")
         """
         aliases = aliases or []
+        # Coerce non-string aliases (e.g., phone numbers parsed as int by YAML)
+        aliases = [str(a) if not isinstance(a, str) else a for a in aliases if a is not None]
         email_domains = self._extract_email_domains(aliases)
         last_updated = datetime.now().strftime("%Y-%m-%d")
 
@@ -419,8 +424,21 @@ class EntityIndex:
             category = parts[0] if parts else ""
 
             # Get name and aliases
-            name = meta.get("name", meta.get("topic", entity_dir.name))
             aliases = list(meta.get("aliases", []))
+            # Prefer explicit name/topic, then first non-email alias, then dir name
+            name = meta.get("name") or meta.get("topic")
+            if not name and aliases:
+                # Use first alias that isn't an email or phone number
+                for alias in aliases:
+                    if isinstance(alias, str) and "@" not in alias and not alias.startswith("+"):
+                        name = alias
+                        break
+                # Fall back to first alias if all are emails/phones
+                if not name:
+                    first = aliases[0]
+                    name = str(first) if first else entity_dir.name
+            if not name:
+                name = entity_dir.name
 
             # Add phone/email to aliases for matching
             if meta.get("phone"):

@@ -10,7 +10,6 @@ from tests.conftest import SAMPLE_KB_ENTITY_COUNT
 
 from kvault.mcp.server import (
     handle_kvault_init,
-    handle_kvault_rebuild_index,
     handle_kvault_research,
     handle_kvault_write_entity,
     handle_kvault_read_entity,
@@ -20,7 +19,6 @@ from kvault.mcp.server import (
     handle_kvault_write_journal,
     handle_kvault_write_summary,
     handle_kvault_search,
-    handle_kvault_find_by_alias,
     handle_kvault_list_entities,
     handle_kvault_validate_kb,
 )
@@ -67,18 +65,13 @@ class TestCreateWorkflow:
         assert result["success"]
         assert result["actions_logged"] == 1
 
-        # 5. Rebuild — update index
-        result = handle_kvault_rebuild_index()
-        assert result["entity_count"] == SAMPLE_KB_ENTITY_COUNT + 1
-
-        # 6. Verify — entity is searchable
+        # 5. Verify — entity is searchable immediately (no rebuild needed)
         results = handle_kvault_search("Dave Wilson")
         assert any("dave_wilson" in r["path"] for r in results)
 
-        # Also verify by alias
-        result = handle_kvault_find_by_alias("dave@newcorp.com")
-        assert result is not None
-        assert "dave_wilson" in result["path"]
+        # Also verify by email
+        results = handle_kvault_search("dave@newcorp.com")
+        assert any("dave_wilson" in r["path"] for r in results)
 
     def test_create_sets_name_from_alias(self, empty_kb):
         """write_entity should auto-set 'name' from first non-email alias."""
@@ -92,17 +85,16 @@ class TestCreateWorkflow:
         entity = handle_kvault_read_entity("people/test_person")
         assert entity["meta"]["name"] == "Test Person"
 
-    def test_create_with_auto_rebuild(self, empty_kb):
-        """auto_rebuild=True should update the index immediately."""
+    def test_create_immediately_searchable(self, empty_kb):
+        """New entities should be searchable immediately (no rebuild needed)."""
         handle_kvault_write_entity(
-            path="people/auto_rebuild_test",
+            path="people/auto_test",
             meta={"source": "test", "aliases": ["Auto Test"]},
             content="# Auto Test\n",
             create=True,
-            auto_rebuild=True,
         )
 
-        # Should be searchable immediately without manual rebuild
+        # Should be searchable immediately — no index to rebuild
         results = handle_kvault_search("Auto Test")
         assert len(results) >= 1
 
@@ -135,7 +127,7 @@ class TestDedupWorkflow:
         result = handle_kvault_research("Someone", email="ceo@acme.com")
         matches = result["matches"]
         # Should find alice_smith (alice@acme.com → acme.com domain)
-        domain_matches = [m for m in matches if m["match_type"] == "email_domain"]
+        domain_matches = [m for m in matches if "email_domain" in m.get("match_type", "")]
         assert len(domain_matches) >= 1
 
     def test_unicode_dedup(self, initialized_kb):
@@ -196,7 +188,7 @@ class TestDeleteWorkflow:
         assert entity is not None
 
         # Delete
-        result = handle_kvault_delete_entity("people/work/bob_jones", auto_rebuild=True)
+        result = handle_kvault_delete_entity("people/work/bob_jones")
         assert result["success"]
 
         # Verify gone from disk
@@ -222,12 +214,11 @@ class TestDeleteWorkflow:
 class TestMoveWorkflow:
     """Test entity move/rename."""
 
-    def test_move_updates_path_and_index(self, initialized_kb):
-        """Moving an entity should update filesystem and index."""
+    def test_move_updates_path(self, initialized_kb):
+        """Moving an entity should update filesystem."""
         result = handle_kvault_move_entity(
             "people/work/bob_jones",
             "people/friends/bob_jones",
-            auto_rebuild=True,
         )
         assert result["success"]
 
@@ -314,19 +305,16 @@ class TestValidationWorkflow:
         # Subcategory dirs (friends/, work/) should NOT be flagged
         assert len(index_missing) == 0, f"Unexpected index_missing: {index_missing}"
 
-    def test_validate_after_create_without_rebuild(self, initialized_kb):
-        """Creating an entity without rebuilding should be caught by validate."""
+    def test_new_entity_immediately_valid(self, initialized_kb):
+        """Creating an entity should pass validation immediately (no rebuild needed)."""
         handle_kvault_write_entity(
             path="people/friends/new_person",
             meta={"source": "test", "aliases": ["New Person"]},
             content="# New Person\n",
             create=True,
         )
-        # Don't rebuild — validate should catch it
-        # (Note: validate checks filesystem vs index, so new entity should be flagged)
-        # Actually, the new entity has frontmatter, so rebuild would index it.
-        # But since we didn't rebuild, it won't be in the index.
+        # No index means no stale-state issues — new entity is immediately valid
         result = handle_kvault_validate_kb()
-        index_missing = [i for i in result.get("issues", []) if i["type"] == "index_missing"]
-        flagged_paths = [i["path"] for i in index_missing]
-        assert "people/friends/new_person" in flagged_paths
+        assert result["valid"] is True or all(
+            i["severity"] == "info" for i in result.get("issues", [])
+        )

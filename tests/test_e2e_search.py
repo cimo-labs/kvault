@@ -11,8 +11,6 @@ from tests.conftest import SAMPLE_KB_ENTITY_COUNT
 
 from kvault.mcp.server import (
     handle_kvault_search,
-    handle_kvault_find_by_alias,
-    handle_kvault_find_by_email_domain,
     handle_kvault_research,
     handle_kvault_list_entities,
 )
@@ -87,73 +85,71 @@ class TestFTSSearch:
 
 
 class TestAliasLookup:
-    """Exact alias matching tests."""
+    """Alias matching via unified search — email/name queries auto-detected."""
 
-    def test_find_by_alias_exact_name(self, initialized_kb):
-        """Find entity by exact name alias."""
-        result = handle_kvault_find_by_alias("Alice Smith")
-        assert result is not None
-        assert "alice_smith" in result["path"]
+    def test_search_by_exact_name(self, initialized_kb):
+        """Search by exact name finds the entity."""
+        results = handle_kvault_search("Alice Smith")
+        assert len(results) >= 1
+        assert "alice_smith" in results[0]["path"]
 
-    def test_find_by_alias_case_insensitive(self, initialized_kb):
-        """Alias lookup is case-insensitive."""
-        result = handle_kvault_find_by_alias("ALICE SMITH")
-        assert result is not None
-        assert "alice_smith" in result["path"]
+    def test_search_by_name_case_insensitive(self, initialized_kb):
+        """Search is case-insensitive."""
+        results = handle_kvault_search("alice smith")
+        assert len(results) >= 1
+        assert "alice_smith" in results[0]["path"]
 
-    def test_find_by_alias_email(self, initialized_kb):
-        """Find entity by email alias."""
-        result = handle_kvault_find_by_alias("sarah@anthropic.com")
-        assert result is not None
-        assert "sarah_chen" in result["path"]
+    def test_search_by_email_alias(self, initialized_kb):
+        """Search by email finds exact alias match."""
+        results = handle_kvault_search("sarah@anthropic.com")
+        assert len(results) >= 1
+        assert "sarah_chen" in results[0]["path"]
 
-    def test_find_by_alias_short_alias(self, initialized_kb):
-        """Find entity by short alias (Ali for Alice Smith)."""
-        result = handle_kvault_find_by_alias("Ali")
-        assert result is not None
-        assert "alice_smith" in result["path"]
+    def test_search_by_short_alias(self, initialized_kb):
+        """Search by short alias (Ali for Alice Smith)."""
+        results = handle_kvault_search("Ali")
+        assert any("alice_smith" in r["path"] for r in results)
 
-    def test_find_by_alias_no_match(self, initialized_kb):
-        """Non-existent alias returns None."""
-        result = handle_kvault_find_by_alias("Completely Unknown Person")
-        assert result is None
+    def test_search_no_match(self, initialized_kb):
+        """Non-existent query returns empty."""
+        results = handle_kvault_search("Completely Unknown Person zzzzz")
+        assert len(results) == 0
 
-    def test_find_by_alias_unicode(self, initialized_kb):
-        """Find entity by Unicode alias (José García)."""
-        result = handle_kvault_find_by_alias("José García")
-        assert result is not None
-        assert "jose_garcia" in result["path"]
+    def test_search_unicode(self, initialized_kb):
+        """Search by Unicode name (José García)."""
+        results = handle_kvault_search("José García")
+        assert len(results) >= 1
+        assert "jose_garcia" in results[0]["path"]
 
-    def test_find_by_alias_alternate_spelling(self, initialized_kb):
-        """Find José García by non-accented alias 'Jose Garcia'."""
-        result = handle_kvault_find_by_alias("Jose Garcia")
-        assert result is not None
-        assert "jose_garcia" in result["path"]
+    def test_search_accent_insensitive(self, initialized_kb):
+        """Search 'Jose Garcia' finds 'José García'."""
+        results = handle_kvault_search("Jose Garcia")
+        assert any("jose_garcia" in r["path"] for r in results)
 
 
 # ============================================================================
-# Email Domain Search
+# Email Domain Search (via unified search)
 # ============================================================================
 
 
 class TestEmailDomain:
-    """Email domain matching tests."""
+    """Email domain matching via unified search."""
 
-    def test_find_by_domain(self, initialized_kb):
-        """Find entities by email domain."""
-        results = handle_kvault_find_by_email_domain("acme.com")
+    def test_search_by_at_domain(self, initialized_kb):
+        """Search @acme.com finds entities with that domain."""
+        results = handle_kvault_search("@acme.com")
         assert len(results) >= 1
         assert any("alice_smith" in r["path"] for r in results)
 
-    def test_find_by_domain_anthropic(self, initialized_kb):
-        """Find Anthropic employees by domain."""
-        results = handle_kvault_find_by_email_domain("anthropic.com")
+    def test_search_by_domain_anthropic(self, initialized_kb):
+        """Search @anthropic.com finds Anthropic employees."""
+        results = handle_kvault_search("@anthropic.com")
         assert len(results) >= 1
         assert any("sarah_chen" in r["path"] for r in results)
 
-    def test_unknown_domain_empty(self, initialized_kb):
-        """Unknown domain returns empty list."""
-        results = handle_kvault_find_by_email_domain("nonexistent-corp.com")
+    def test_search_unknown_domain(self, initialized_kb):
+        """Search for unknown domain returns empty."""
+        results = handle_kvault_search("@nonexistent-corp.com")
         assert len(results) == 0
 
 

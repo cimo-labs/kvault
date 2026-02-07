@@ -1,12 +1,9 @@
 """kvault MCP Server - Model Context Protocol server for knowledge graph operations.
 
-Provides 20 tools for Claude Code to interact with the knowledge graph:
+Provides 16 tools for Claude Code to interact with the knowledge graph:
 
-Index Tools (4):
-- kvault_search: Full-text search for entities
-- kvault_find_by_alias: Find entity by exact alias
-- kvault_find_by_email_domain: Find entities by email domain
-- kvault_rebuild_index: Rebuild the entity index
+Search (1 — unified, no index to rebuild):
+- kvault_search: Smart search — auto-detects query type (name, email, domain, keyword)
 
 Entity Tools (5):
 - kvault_read_entity: Read entity with YAML frontmatter
@@ -15,14 +12,16 @@ Entity Tools (5):
 - kvault_delete_entity: Delete an entity
 - kvault_move_entity: Move an entity to new path
 
-Summary Tools (4):
+Summary Tools (3):
 - kvault_read_summary: Read a summary file
 - kvault_write_summary: Write a summary file
 - kvault_get_parent_summaries: Get ancestor summaries
+
+Propagation (1):
 - kvault_propagate_all: Get all ancestors for propagation
 
 Research Tool (1):
-- kvault_research: Research entities using multiple strategies
+- kvault_research: Research entities using multiple matching strategies
 
 Workflow Tools (4):
 - kvault_log_phase: Log a workflow phase
@@ -31,12 +30,11 @@ Workflow Tools (4):
 - kvault_validate_transition: Check workflow transition validity
 
 Validation Tools (1):
-- kvault_validate_kb: Check KB integrity (index sync, orphaned entries, etc.)
+- kvault_validate_kb: Check KB integrity
 
-Session Management:
-- Most tools accept optional session_id for workflow tracking
-- Entity modification tools (write/delete/move) support auto_rebuild parameter
-- Workflow warnings are included in responses when steps are skipped
+Design: No SQLite index. Search reads files directly on every call.
+At typical KB sizes (< 1000 entities) this is fast (< 200ms) and
+eliminates stale-index bugs entirely.
 """
 
 import json
@@ -54,10 +52,9 @@ except ImportError:
     MCP_AVAILABLE = False
 
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
-from kvault.core.index import EntityIndex, IndexEntry
 from kvault.core.storage import SimpleStorage, normalize_entity_id
-from kvault.core.research import EntityResearcher
 from kvault.core.observability import ObservabilityLogger
+from kvault.core import search as fs_search
 from kvault.mcp.state import get_session_manager, SessionState, WorkflowStep
 from kvault.mcp.validation import (
     normalize_path,
@@ -75,9 +72,7 @@ from kvault.mcp.validation import (
 
 # Global instances (initialized when server starts)
 _kg_root: Optional[Path] = None
-_index: Optional[EntityIndex] = None
 _storage: Optional[SimpleStorage] = None
-_researcher: Optional[EntityResearcher] = None
 _logger: Optional[ObservabilityLogger] = None
 
 
@@ -89,16 +84,14 @@ def _ensure_initialized():
 
 def _init_infrastructure(kg_root: str) -> Dict[str, Any]:
     """Initialize kvault infrastructure for a given root."""
-    global _kg_root, _index, _storage, _researcher, _logger
+    global _kg_root, _storage, _logger
 
     _kg_root = Path(kg_root).resolve()
 
     kvault_dir = _kg_root / ".kvault"
     kvault_dir.mkdir(parents=True, exist_ok=True)
 
-    _index = EntityIndex(kvault_dir / "index.db")
     _storage = SimpleStorage(_kg_root)
-    _researcher = EntityResearcher(_index)
     _logger = ObservabilityLogger(kvault_dir / "logs.db")
 
     # Load root summary
@@ -114,7 +107,7 @@ def _init_infrastructure(kg_root: str) -> Dict[str, Any]:
         "kg_root": str(_kg_root),
         "root_summary": root_summary,
         "hierarchy": hierarchy,
-        "entity_count": _index.count(),
+        "entity_count": fs_search.count_entities(_kg_root),
     }
 
 
@@ -305,11 +298,8 @@ def _write_entity_with_frontmatter(
             else:
                 session.record_execution(updated=[entity_path])
 
-    # Auto-rebuild index if requested
-    if auto_rebuild:
-        rebuild_result = handle_kvault_rebuild_index(session_id=session_id)
-        result["index_rebuilt"] = True
-        result["entity_count"] = rebuild_result.get("entity_count")
+    # auto_rebuild is accepted for backward compatibility but is a no-op
+    # (no index to rebuild — search reads files directly)
 
     return result
 
@@ -388,19 +378,24 @@ def handle_kvault_search(
     category: Optional[str] = None,
     limit: int = 10,
 ) -> List[Dict[str, Any]]:
-    """Full-text search for entities.
+    """Unified search — auto-detects query type and returns ranked results.
+
+    Query types (auto-detected):
+      - Email address (alice@acme.com) → exact alias match + domain match
+      - Domain (@acme.com or acme.com) → all entities at that domain
+      - Text (anything else) → fuzzy name/alias match + content keywords
 
     Args:
-        query: Search query
+        query: Search query (name, email, domain, or keywords)
         category: Optional category filter
         limit: Maximum results
 
     Returns:
-        List of matching entities
+        List of matching entities with scores
     """
     _ensure_initialized()
 
-    results = _index.search(query, category=category, limit=limit)
+    results = fs_search.search(_kg_root, query, category=category, limit=limit)
     return [
         {
             "path": r.path,
@@ -408,81 +403,11 @@ def handle_kvault_search(
             "aliases": r.aliases,
             "category": r.category,
             "email_domains": r.email_domains,
+            "score": round(r.score, 3),
+            "match_reason": r.match_reason,
         }
         for r in results
     ]
-
-
-def handle_kvault_find_by_alias(alias: str) -> Optional[Dict[str, Any]]:
-    """Find entity by exact alias match.
-
-    Args:
-        alias: Alias to search for (case-insensitive)
-
-    Returns:
-        Entity info if found, None otherwise
-    """
-    _ensure_initialized()
-
-    result = _index.find_by_alias(alias)
-    if result:
-        return {
-            "path": result.path,
-            "name": result.name,
-            "aliases": result.aliases,
-            "category": result.category,
-            "email_domains": result.email_domains,
-        }
-    return None
-
-
-def handle_kvault_find_by_email_domain(domain: str) -> List[Dict[str, Any]]:
-    """Find entities by email domain.
-
-    Args:
-        domain: Email domain (e.g., "anthropic.com")
-
-    Returns:
-        List of matching entities
-    """
-    _ensure_initialized()
-
-    results = _index.find_by_email_domain(domain)
-    return [
-        {
-            "path": r.path,
-            "name": r.name,
-            "aliases": r.aliases,
-            "category": r.category,
-            "email_domains": r.email_domains,
-        }
-        for r in results
-    ]
-
-
-def handle_kvault_rebuild_index(session_id: Optional[str] = None) -> Dict[str, Any]:
-    """Rebuild the entity index from filesystem.
-
-    Args:
-        session_id: Optional session ID for workflow tracking.
-
-    Returns:
-        Count of entities indexed
-    """
-    _ensure_initialized()
-
-    count = _index.rebuild(_kg_root)
-
-    # Record in session state
-    if session_id:
-        session = get_session_manager().get_session(session_id)
-        if session:
-            session.record_rebuild(count)
-
-    return {
-        "success": True,
-        "entity_count": count,
-    }
 
 
 def handle_kvault_read_entity(path: str) -> Optional[Dict[str, Any]]:
@@ -533,13 +458,12 @@ def handle_kvault_list_entities(category: Optional[str] = None) -> List[Dict[str
     """
     _ensure_initialized()
 
-    entries = _index.list_all(category=category)
+    entries = fs_search.list_entities(_kg_root, category=category)
     return [
         {
             "path": e.path,
             "name": e.name,
             "category": e.category,
-            "last_updated": e.last_updated,
         }
         for e in entries
     ]
@@ -575,9 +499,6 @@ def handle_kvault_delete_entity(
     # Remove from filesystem
     shutil.rmtree(full_path)
 
-    # Remove from index
-    _index.remove(path)
-
     result = {
         "success": True,
         "path": path,
@@ -589,12 +510,6 @@ def handle_kvault_delete_entity(
         session = get_session_manager().get_session(session_id)
         if session:
             session.record_execution(deleted=[path])
-
-    # Auto-rebuild index if requested
-    if auto_rebuild:
-        rebuild_result = handle_kvault_rebuild_index(session_id=session_id)
-        result["index_rebuilt"] = True
-        result["entity_count"] = rebuild_result.get("entity_count")
 
     return result
 
@@ -647,20 +562,6 @@ def handle_kvault_move_entity(
     # Move directory
     shutil.move(str(source_full), str(target_full))
 
-    # Update index
-    _index.remove(source_path)
-
-    # Re-index target (read and add)
-    entity_data = _read_entity_with_frontmatter(target_path)
-    if entity_data and entity_data.get("meta"):
-        meta = entity_data["meta"]
-        _index.add(
-            path=target_path,
-            name=meta.get("name", target_path.split("/")[-1]),
-            aliases=meta.get("aliases", []),
-            category=target_path.split("/")[0] if "/" in target_path else "",
-        )
-
     result = {
         "success": True,
         "source": source_path,
@@ -672,12 +573,6 @@ def handle_kvault_move_entity(
         session = get_session_manager().get_session(session_id)
         if session:
             session.record_execution(moved=[{"source": source_path, "target": target_path}])
-
-    # Auto-rebuild index if requested
-    if auto_rebuild:
-        rebuild_result = handle_kvault_rebuild_index(session_id=session_id)
-        result["index_rebuilt"] = True
-        result["entity_count"] = rebuild_result.get("entity_count")
 
     return result
 
@@ -820,22 +715,45 @@ def handle_kvault_research(
         normalized_phone = normalize_phone(phone)
         aliases.append(normalized_phone)
 
-    # Run research
-    candidates = _researcher.research(name, aliases=aliases, email=email)
+    # Scan entities once, run multiple search passes
+    entities = fs_search.scan_entities(_kg_root)
 
-    # Get suggestion
-    action, target, confidence = _researcher.suggest_action(name, aliases=aliases, email=email)
+    # Search by name
+    name_results = fs_search.search(_kg_root, name, limit=10, _entities=entities)
 
-    matches = [
-        {
-            "path": c.candidate_path,
-            "name": c.candidate_name,
-            "match_type": c.match_type,
-            "score": c.match_score,
-            "details": c.match_details,
-        }
-        for c in candidates
-    ]
+    # Search by each alias
+    alias_results = []
+    for alias in (aliases or []):
+        alias_results.extend(fs_search.search(_kg_root, alias, limit=5, _entities=entities))
+
+    # Search by email if provided
+    email_results = []
+    if email:
+        email_results = fs_search.search(_kg_root, email, limit=5, _entities=entities)
+
+    # Merge and dedupe — keep highest score per path
+    best_by_path: Dict[str, Dict[str, Any]] = {}
+    for r in name_results + alias_results + email_results:
+        existing = best_by_path.get(r.path)
+        if not existing or r.score > existing["score"]:
+            best_by_path[r.path] = {
+                "path": r.path,
+                "name": r.name,
+                "match_type": r.match_reason,
+                "score": round(r.score, 3),
+            }
+
+    matches = sorted(best_by_path.values(), key=lambda m: m["score"], reverse=True)
+
+    # Determine suggested action
+    if not matches:
+        action, target, confidence = "create", None, 0.95
+    elif matches[0]["score"] >= 0.9:
+        action, target, confidence = "update", matches[0]["path"], matches[0]["score"]
+    elif matches[0]["score"] >= 0.7:
+        action, target, confidence = "review", matches[0]["path"], matches[0]["score"]
+    else:
+        action, target, confidence = "create", None, 1.0 - matches[0]["score"]
 
     # Record in session state
     if session_id:
@@ -1001,10 +919,8 @@ def handle_kvault_validate_kb() -> Dict[str, Any]:
     """Check KB integrity and report issues.
 
     Validates:
-    1. Index sync - entities exist but not indexed
-    2. Orphaned index entries - indexed but no file
-    3. Incomplete entities - have "Context TBD" placeholder
-    4. Missing frontmatter - entities without YAML frontmatter
+    1. Incomplete entities - have "Context TBD" placeholder
+    2. Missing frontmatter - entities without YAML frontmatter
 
     Returns:
         Validation results with issues list
@@ -1013,61 +929,11 @@ def handle_kvault_validate_kb() -> Dict[str, Any]:
 
     issues = []
 
-    # Get all entities from index
-    indexed_entries = _index.list_all()
-    indexed_paths = {e.path for e in indexed_entries}
+    # Scan all entities from filesystem (single source of truth)
+    entities = fs_search.scan_entities(_kg_root)
 
-    # Check 1: Find entities on filesystem not in index
-    for entity_dir in _kg_root.rglob("_summary.md"):
-        # Skip root summary
-        if entity_dir.parent == _kg_root:
-            continue
-
-        rel_path = str(entity_dir.parent.relative_to(_kg_root))
-
-        # Skip special directories
-        if rel_path.startswith(".") or rel_path.startswith("journal"):
-            continue
-
-        # Check if it should be an entity (has category/entity structure)
-        parts = rel_path.split("/")
-        if len(parts) >= 2 and rel_path not in indexed_paths:
-            # Skip category-level directories that have child entity dirs
-            # These are organizational groupings, not leaf entities
-            entity_parent = entity_dir.parent
-            has_child_entities = any(
-                (child / "_summary.md").exists()
-                for child in entity_parent.iterdir()
-                if child.is_dir() and not child.name.startswith(".")
-                and child.name != "journal"
-            )
-            if has_child_entities:
-                # This is a category/subcategory summary, not a missing entity
-                continue
-
-            issues.append({
-                "type": "index_missing",
-                "severity": "warning",
-                "path": rel_path,
-                "message": "Entity exists on filesystem but not in index",
-                "fix": "Run kvault_rebuild_index()",
-            })
-
-    # Check 2: Orphaned index entries
-    for entry in indexed_entries:
-        full_path = _kg_root / entry.path / "_summary.md"
-        if not full_path.exists():
-            issues.append({
-                "type": "orphaned_index",
-                "severity": "warning",
-                "path": entry.path,
-                "message": "Index entry exists but no entity file",
-                "fix": "Run kvault_rebuild_index() to remove stale entries",
-            })
-
-    # Check 3: Incomplete entities and missing frontmatter
-    for entry in indexed_entries:
-        entity_data = _read_entity_with_frontmatter(entry.path)
+    for entity in entities:
+        entity_data = _read_entity_with_frontmatter(entity.path)
         if entity_data:
             content = entity_data.get("content", "")
 
@@ -1076,7 +942,7 @@ def handle_kvault_validate_kb() -> Dict[str, Any]:
                 issues.append({
                     "type": "incomplete_entity",
                     "severity": "info",
-                    "path": entry.path,
+                    "path": entity.path,
                     "message": "Entity has placeholder content that needs enrichment",
                     "fix": "Update entity with complete context information",
                 })
@@ -1086,7 +952,7 @@ def handle_kvault_validate_kb() -> Dict[str, Any]:
                 issues.append({
                     "type": "missing_frontmatter",
                     "severity": "warning",
-                    "path": entry.path,
+                    "path": entity.path,
                     "message": "Entity uses legacy _meta.json instead of YAML frontmatter",
                     "fix": "Rewrite entity with kvault_write_entity() to migrate to frontmatter",
                 })
@@ -1200,47 +1066,21 @@ def create_server() -> "Server":
             ),
             Tool(
                 name="kvault_search",
-                description="Full-text search for entities in the knowledge graph.",
+                description=(
+                    "Smart search for entities. Auto-detects query type:\n"
+                    "- Name/text: fuzzy match on names, aliases, and content keywords\n"
+                    "- Email (alice@acme.com): exact alias match + domain match\n"
+                    "- Domain (@acme.com or acme.com): find all entities at that domain\n"
+                    "No index to rebuild — reads files directly."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Search query"},
+                        "query": {"type": "string", "description": "Search query (name, email, domain, or keywords)"},
                         "category": {"type": "string", "description": "Optional category filter"},
                         "limit": {"type": "integer", "description": "Max results (default 10)"},
                     },
                     "required": ["query"],
-                },
-            ),
-            Tool(
-                name="kvault_find_by_alias",
-                description="Find entity by exact alias (case-insensitive). Use for phone/email lookups.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "alias": {"type": "string", "description": "Alias to find (name, email, phone)"},
-                    },
-                    "required": ["alias"],
-                },
-            ),
-            Tool(
-                name="kvault_find_by_email_domain",
-                description="Find entities by email domain (e.g., 'anthropic.com').",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "domain": {"type": "string", "description": "Email domain to search"},
-                    },
-                    "required": ["domain"],
-                },
-            ),
-            Tool(
-                name="kvault_rebuild_index",
-                description="Rebuild the entity index from filesystem. Run after creating/deleting entities.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "session_id": {"type": "string", "description": "Session ID for workflow tracking"},
-                    },
                 },
             ),
             Tool(
@@ -1264,7 +1104,6 @@ def create_server() -> "Server":
                         "meta": {"type": "object", "description": "Frontmatter metadata (must include 'source' and 'aliases')"},
                         "content": {"type": "string", "description": "Markdown content (without frontmatter)"},
                         "create": {"type": "boolean", "description": "True to create new, False to update"},
-                        "auto_rebuild": {"type": "boolean", "description": "If true, rebuild index after writing"},
                         "session_id": {"type": "string", "description": "Session ID for workflow tracking"},
                     },
                     "required": ["path", "meta", "content"],
@@ -1287,7 +1126,6 @@ def create_server() -> "Server":
                     "type": "object",
                     "properties": {
                         "path": {"type": "string", "description": "Entity path to delete"},
-                        "auto_rebuild": {"type": "boolean", "description": "If true, rebuild index after deleting"},
                         "session_id": {"type": "string", "description": "Session ID for workflow tracking"},
                     },
                     "required": ["path"],
@@ -1301,7 +1139,6 @@ def create_server() -> "Server":
                     "properties": {
                         "source_path": {"type": "string", "description": "Current entity path"},
                         "target_path": {"type": "string", "description": "New entity path"},
-                        "auto_rebuild": {"type": "boolean", "description": "If true, rebuild index after moving"},
                         "session_id": {"type": "string", "description": "Session ID for workflow tracking"},
                     },
                     "required": ["source_path", "target_path"],
@@ -1433,7 +1270,7 @@ def create_server() -> "Server":
             ),
             Tool(
                 name="kvault_validate_kb",
-                description="Check KB integrity: index sync, orphaned entries, incomplete entities, missing frontmatter.",
+                description="Check KB integrity: incomplete entities, missing frontmatter.",
                 inputSchema={
                     "type": "object",
                     "properties": {},
@@ -1452,14 +1289,6 @@ def create_server() -> "Server":
                     category=arguments.get("category"),
                     limit=arguments.get("limit", 10),
                 )
-            elif name == "kvault_find_by_alias":
-                result = handle_kvault_find_by_alias(arguments["alias"])
-            elif name == "kvault_find_by_email_domain":
-                result = handle_kvault_find_by_email_domain(arguments["domain"])
-            elif name == "kvault_rebuild_index":
-                result = handle_kvault_rebuild_index(
-                    session_id=arguments.get("session_id"),
-                )
             elif name == "kvault_read_entity":
                 result = handle_kvault_read_entity(arguments["path"])
             elif name == "kvault_write_entity":
@@ -1468,7 +1297,6 @@ def create_server() -> "Server":
                     arguments["meta"],
                     arguments["content"],
                     create=arguments.get("create", False),
-                    auto_rebuild=arguments.get("auto_rebuild", False),
                     session_id=arguments.get("session_id"),
                 )
             elif name == "kvault_list_entities":
@@ -1476,14 +1304,12 @@ def create_server() -> "Server":
             elif name == "kvault_delete_entity":
                 result = handle_kvault_delete_entity(
                     arguments["path"],
-                    auto_rebuild=arguments.get("auto_rebuild", False),
                     session_id=arguments.get("session_id"),
                 )
             elif name == "kvault_move_entity":
                 result = handle_kvault_move_entity(
                     arguments["source_path"],
                     arguments["target_path"],
-                    auto_rebuild=arguments.get("auto_rebuild", False),
                     session_id=arguments.get("session_id"),
                 )
             elif name == "kvault_read_summary":

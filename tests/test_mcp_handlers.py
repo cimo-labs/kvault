@@ -1,6 +1,6 @@
 """Tests for kvault MCP handler functions.
 
-Tests each of the 20 MCP handlers individually against the sample KB fixture.
+Tests each of the 16 MCP handlers individually against the sample KB fixture.
 Complements the E2E workflow tests by testing handler-level behavior.
 """
 
@@ -11,9 +11,6 @@ from tests.conftest import SAMPLE_KB_ENTITY_COUNT
 from kvault.mcp.server import (
     handle_kvault_init,
     handle_kvault_search,
-    handle_kvault_find_by_alias,
-    handle_kvault_find_by_email_domain,
-    handle_kvault_rebuild_index,
     handle_kvault_read_entity,
     handle_kvault_write_entity,
     handle_kvault_list_entities,
@@ -61,7 +58,6 @@ class TestInit:
     def test_init_creates_kvault_dir(self, sample_kb):
         handle_kvault_init(str(sample_kb))
         assert (sample_kb / ".kvault").exists()
-        assert (sample_kb / ".kvault" / "index.db").exists()
 
 
 # ============================================================================
@@ -187,16 +183,16 @@ class TestWriteEntity:
         assert "created" in entity["meta"]
         assert "updated" in entity["meta"]
 
-    def test_auto_rebuild(self, empty_kb):
-        result = handle_kvault_write_entity(
+    def test_immediately_searchable(self, empty_kb):
+        """New entity is searchable immediately after creation (no rebuild)."""
+        handle_kvault_write_entity(
             path="people/test",
             meta={"source": "test", "aliases": ["Test"]},
             content="# Test\n",
             create=True,
-            auto_rebuild=True,
         )
-        assert result.get("index_rebuilt") is True
-        assert result.get("entity_count") >= 1
+        results = handle_kvault_search("Test")
+        assert len(results) >= 1
 
 
 # ============================================================================
@@ -215,11 +211,11 @@ class TestDeleteEntity:
         assert not result.get("success")
         assert result["error_code"] == "not_found"
 
-    def test_delete_with_auto_rebuild(self, initialized_kb):
-        result = handle_kvault_delete_entity("people/work/bob_jones", auto_rebuild=True)
-        assert result["success"]
-        assert result.get("index_rebuilt") is True
-        assert result["entity_count"] == SAMPLE_KB_ENTITY_COUNT - 1
+    def test_delete_removes_from_search(self, initialized_kb):
+        """Deleted entity is immediately gone from search results."""
+        handle_kvault_delete_entity("people/work/bob_jones")
+        results = handle_kvault_search("Bob Jones")
+        assert not any("bob_jones" in r["path"] for r in results)
 
 
 # ============================================================================

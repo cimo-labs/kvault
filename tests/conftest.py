@@ -54,10 +54,9 @@ def initialized_kb(sample_kb):
     Note: This sets global MCP state — tests using this fixture
     should not also call handle_kvault_init with a different path.
     """
-    from kvault.mcp.server import handle_kvault_init, handle_kvault_rebuild_index
+    from kvault.mcp.server import handle_kvault_init
 
     result = handle_kvault_init(str(sample_kb))
-    handle_kvault_rebuild_index()
     return sample_kb
 
 

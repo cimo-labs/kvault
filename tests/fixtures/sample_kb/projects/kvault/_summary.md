@@ -19,5 +19,5 @@ Personal knowledge base framework for AI coding agents.
 - PyPI: knowledgevault v0.3.0
 - License: MIT
 - 20 MCP tools
-- 256 tests (TODO: fix this claim)
+- 306 tests
 - Fuzzy dedup with alias matching

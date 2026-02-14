@@ -193,8 +193,8 @@ class SimpleStorage:
     def update_entity(
         self,
         entity_path: str,
-        meta: Dict[str, Any] = None,
-        summary: str = None,
+        meta: Optional[Dict[str, Any]] = None,
+        summary: Optional[str] = None,
     ) -> None:
         """Update existing entity (partial update supported).
 

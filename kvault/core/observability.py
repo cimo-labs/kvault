@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -73,7 +73,8 @@ class ObservabilityLogger:
     def _init_db(self) -> None:
         """Create tables if they don't exist."""
         with sqlite3.connect(self.db_path) as conn:
-            conn.executescript("""
+            conn.executescript(
+                """
                 -- Main logs table
                 CREATE TABLE IF NOT EXISTS logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,7 +104,8 @@ class ObservabilityLogger:
                        json_extract(data, '$.confidence') as confidence,
                        json_extract(data, '$.reasoning') as reasoning
                 FROM logs WHERE phase = 'decide';
-            """)
+            """
+            )
 
     def _new_session(self) -> str:
         """Generate a new session ID."""
@@ -142,7 +144,7 @@ class ObservabilityLogger:
 
     # Convenience methods
 
-    def log_input(self, items: List[Dict], source: str = None) -> None:
+    def log_input(self, items: List[Dict], source: Optional[str] = None) -> None:
         """Log what was received for processing.
 
         Args:
@@ -189,7 +191,7 @@ class ObservabilityLogger:
         entity: str,
         action: str,
         reasoning: str,
-        confidence: float = None,
+        confidence: Optional[float] = None,
     ) -> None:
         """Log decision with reasoning.
 
@@ -199,7 +201,7 @@ class ObservabilityLogger:
             reasoning: Explanation of why
             confidence: Optional confidence score (0.0-1.0)
         """
-        data = {
+        data: Dict[str, Any] = {
             "entity": entity,
             "action": action,
             "reasoning": reasoning,
@@ -235,7 +237,7 @@ class ObservabilityLogger:
         self,
         from_path: str,
         updated_paths: List[str],
-        reasoning: str = None,
+        reasoning: Optional[str] = None,
     ) -> None:
         """Log propagation chain.
 
@@ -257,9 +259,9 @@ class ObservabilityLogger:
     def log_error(
         self,
         error_type: str,
-        entity: str = None,
-        details: Dict = None,
-        resolution: str = None,
+        entity: Optional[str] = None,
+        details: Optional[Dict] = None,
+        resolution: Optional[str] = None,
     ) -> None:
         """Log errors and how they were handled.
 
@@ -269,7 +271,7 @@ class ObservabilityLogger:
             details: Optional additional details
             resolution: Optional resolution taken
         """
-        data = {
+        data: Dict[str, Any] = {
             "error_type": error_type,
         }
         if entity:
@@ -283,7 +285,7 @@ class ObservabilityLogger:
 
     # Query methods
 
-    def get_session(self, session_id: str = None) -> List[LogEntry]:
+    def get_session(self, session_id: Optional[str] = None) -> List[LogEntry]:
         """Get all logs for a session.
 
         Args:
@@ -312,7 +314,7 @@ class ObservabilityLogger:
                 for row in rows
             ]
 
-    def get_errors(self, since: str = None, limit: int = 100) -> List[LogEntry]:
+    def get_errors(self, since: Optional[str] = None, limit: int = 100) -> List[LogEntry]:
         """Get error logs.
 
         Args:
@@ -355,7 +357,7 @@ class ObservabilityLogger:
                 for row in rows
             ]
 
-    def get_decisions(self, action: str = None, limit: int = 100) -> List[LogEntry]:
+    def get_decisions(self, action: Optional[str] = None, limit: int = 100) -> List[LogEntry]:
         """Get decision logs.
 
         Args:
@@ -431,7 +433,7 @@ class ObservabilityLogger:
                 for row in rows
             ]
 
-    def get_session_summary(self, session_id: str = None) -> Dict[str, Any]:
+    def get_session_summary(self, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Get summary statistics for a session.
 
         Args:

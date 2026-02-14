@@ -8,7 +8,7 @@ VS Code, or any MCP-compatible tool.
 No external API keys. No extra cost. Just files.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
 from kvault.core.storage import (

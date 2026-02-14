@@ -37,7 +37,7 @@ def error_response(
     Returns:
         Structured error response dictionary
     """
-    response = {
+    response: Dict[str, Any] = {
         "success": False,
         "error_code": code.value,
         "error": message,
@@ -173,7 +173,7 @@ def build_default_frontmatter(
     """
     today = datetime.now().strftime("%Y-%m-%d")
 
-    meta = {
+    meta: Dict[str, Any] = {
         "created": today,
         "updated": today,
         "source": source,

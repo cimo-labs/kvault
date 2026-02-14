@@ -14,7 +14,7 @@
    fix every PROPAGATE and LOG warning before doing anything else.
 
 3. **JOURNAL EVERY SESSION.** If you modified any entity today, `journal/YYYY-MM/log.md`
-   must have an entry for today before the session ends.
+   must have an entry for today before the session ends. (Auto-logged if you pass `reasoning` to `kvault_write_entity`.)
 
 4. **FRONTMATTER REQUIRED.** Every entity needs `source` and `aliases` in YAML frontmatter.
    `created` and `updated` are set automatically by MCP tools.
@@ -50,7 +50,7 @@ Customize this section with your details.
 
 ---
 
-## Workflow (4 steps)
+## Workflow (2-call write)
 
 ### 1. NAVIGATE — Find what exists and decide
 Browse the tree and read parent summaries. Use your own Grep/Glob/Read tools:
@@ -68,21 +68,28 @@ Then decide:
 | Doesn't exist, is significant | **CREATE** new |
 | Doesn't exist, is trivial | **LOG** in journal only |
 
-### 2. WRITE — Create/update the entity
+### 2. WRITE — Create/update (Call 1)
 ```
-kvault_write_entity(path="people/friends/alice", meta={...}, content="...", create=true)
+kvault_write_entity(
+  path="people/friends/alice",
+  meta={...},
+  content="...",
+  create=true,
+  reasoning="Met at conference"    ← auto-logs journal
+)
+→ {ancestors: [{path, current_content}, ...], journal_logged: true}
 ```
 
-### 3. PROPAGATE — Update ALL ancestor summaries
+### 3. PROPAGATE — Batch-update ancestors (Call 2)
 ```
-kvault_propagate_all(path="people/friends/alice")  # returns ancestors
+kvault_update_summaries(updates=[
+  {path: "people/friends", content: "...updated..."},
+  {path: "people", content: "...updated..."},
+  {path: ".", content: "...updated..."}
+])
 ```
-Read each ancestor, update content, write back.
 
-### 4. LOG — Journal entry
-```
-kvault_write_journal(actions=[...], source="manual")
-```
+Read each ancestor's `current_content` from the write_entity response, update it, then pass all updates in one call.
 
 ---
 
@@ -106,12 +113,12 @@ Context and notes here.
 
 ---
 
-## MCP Tools Reference (15)
+## MCP Tools Reference (13)
 
-**Entity:** `kvault_read_entity` (includes parent summary), `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
-**Summary:** `kvault_read_summary`, `kvault_write_summary`, `kvault_get_parent_summaries`, `kvault_propagate_all`
-**Workflow:** `kvault_log_phase`, `kvault_write_journal`, `kvault_validate_transition`
-**Validation:** `kvault_validate_kb`, `kvault_status`
+**Entity:** `kvault_read_entity` (includes parent summary), `kvault_write_entity` (returns ancestors, auto-journals), `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
+**Summary:** `kvault_read_summary`, `kvault_write_summary`, `kvault_update_summaries` (batch), `kvault_get_parent_summaries`, `kvault_propagate_all`
+**Workflow:** `kvault_write_journal`
+**Validation:** `kvault_validate_kb`
 **Init:** `kvault_init`
 
 ---

@@ -1,33 +1,35 @@
 """kvault MCP Server - Model Context Protocol server for knowledge graph operations.
 
-Provides 15 tools for Claude Code to interact with the knowledge graph:
+Provides 13 tools for Claude Code to interact with the knowledge graph:
 
 Init (1):
 - kvault_init: Initialize KB, return hierarchy + root summary
 
 Entity Tools (5):
 - kvault_read_entity: Read entity with YAML frontmatter + parent summary
-- kvault_write_entity: Write entity with YAML frontmatter (returns propagation_needed)
+- kvault_write_entity: Write entity (returns ancestors for propagation, auto-journals if reasoning given)
 - kvault_list_entities: List entities in a category
 - kvault_delete_entity: Delete an entity
 - kvault_move_entity: Move an entity to new path
 
-Summary Tools (3):
+Summary Tools (4):
 - kvault_read_summary: Read a summary file
-- kvault_write_summary: Write a summary file
+- kvault_write_summary: Write a single summary file
+- kvault_update_summaries: Batch-update multiple summaries in one call
 - kvault_get_parent_summaries: Get ancestor summaries
 
 Propagation (1):
 - kvault_propagate_all: Get all ancestors for propagation
 
-Workflow Tools (4):
-- kvault_log_phase: Log a workflow phase
+Workflow (1):
 - kvault_write_journal: Write a journal entry
-- kvault_status: Get current workflow status
-- kvault_validate_transition: Check workflow transition validity
 
-Validation Tools (1):
+Validation (1):
 - kvault_validate_kb: Check KB integrity
+
+2-call write workflow:
+  1. kvault_write_entity(..., reasoning="...") → ancestors + auto-journal
+  2. kvault_update_summaries(updates=[...]) → batch propagation
 
 Agents use their own Grep/Glob/Read tools for searching.
 kvault_read_entity includes the parent summary for sibling context.
@@ -66,11 +68,27 @@ _kg_root: Optional[Path] = None
 _storage: Optional[SimpleStorage] = None
 _logger: Optional[ObservabilityLogger] = None
 
+_NOT_INIT_MSG = "kvault MCP server not initialized. Call kvault_init first."
 
-def _ensure_initialized():
+
+def _ensure_initialized() -> None:
     """Ensure global instances are initialized."""
     if _kg_root is None:
-        raise RuntimeError("kvault MCP server not initialized. Call kvault_init first.")
+        raise RuntimeError(_NOT_INIT_MSG)
+
+
+def _root() -> Path:
+    """Return KB root, raising if not initialized."""
+    if _kg_root is None:
+        raise RuntimeError(_NOT_INIT_MSG)
+    return _kg_root
+
+
+def _storage_instance() -> SimpleStorage:
+    """Return storage, raising if not initialized."""
+    if _storage is None:
+        raise RuntimeError(_NOT_INIT_MSG)
+    return _storage
 
 
 def _init_infrastructure(kg_root: str) -> Dict[str, Any]:
@@ -140,8 +158,9 @@ def _build_hierarchy_tree(root: Path, max_depth: int = 3) -> str:
 
 def _validate_within_root(path: str) -> bool:
     """Validate that a resolved path stays within the KB root."""
-    resolved = (_kg_root / path).resolve()
-    return resolved == _kg_root or str(resolved).startswith(str(_kg_root.resolve()) + "/")
+    kg_root = _root()
+    resolved = (kg_root / path).resolve()
+    return resolved == kg_root or str(resolved).startswith(str(kg_root.resolve()) + "/")
 
 
 def _read_entity_with_frontmatter(entity_path: str) -> Optional[Dict[str, Any]]:
@@ -149,12 +168,12 @@ def _read_entity_with_frontmatter(entity_path: str) -> Optional[Dict[str, Any]]:
 
     Returns dict with 'meta' and 'content' keys.
     """
-    _ensure_initialized()
+    kg_root = _root()
 
     if not _validate_within_root(entity_path):
         return None
 
-    full_path = _kg_root / entity_path
+    full_path = kg_root / entity_path
     summary_path = full_path / "_summary.md"
 
     if not summary_path.exists():
@@ -185,6 +204,8 @@ def _write_entity_with_frontmatter(
     create: bool = False,
     auto_rebuild: bool = False,
     session_id: Optional[str] = None,
+    reasoning: Optional[str] = None,
+    journal_source: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Write entity with YAML frontmatter.
 
@@ -195,18 +216,21 @@ def _write_entity_with_frontmatter(
         create: If True, fail if entity exists. If False, update.
         auto_rebuild: If True, rebuild index after writing.
         session_id: Optional session ID for workflow tracking.
+        reasoning: Optional reasoning for journal auto-logging.
+        journal_source: Optional source for journal (defaults to meta['source']).
 
     Returns:
-        Result dict with path and success status
+        Result dict with path, success status, ancestors, and journal info
     """
-    _ensure_initialized()
+    kg_root = _root()
+    storage = _storage_instance()
 
     entity_path = normalize_path(entity_path)
-    is_valid, error = validate_entity_path(entity_path)
+    is_valid, err_msg = validate_entity_path(entity_path)
     if not is_valid:
-        return error_response(ErrorCode.VALIDATION_ERROR, error)
+        return error_response(ErrorCode.VALIDATION_ERROR, err_msg or "Invalid path")
 
-    full_path = _kg_root / entity_path
+    full_path = kg_root / entity_path
     summary_path = full_path / "_summary.md"
 
     # Check existence
@@ -279,11 +303,6 @@ def _write_entity_with_frontmatter(
         "created": create,
     }
 
-    # Add propagation reminder — ancestors that need summary updates
-    ancestors = _storage.get_ancestors(entity_path)
-    ancestors.append(".")  # include root
-    result["propagation_needed"] = ancestors
-
     # Record in session state
     if session_id:
         session = get_session_manager().get_session(session_id)
@@ -293,8 +312,41 @@ def _write_entity_with_frontmatter(
             else:
                 session.record_execution(updated=[entity_path])
 
-    # auto_rebuild is accepted for backward compatibility but is a no-op
-    # (no index to rebuild — search reads files directly)
+    # Fetch ancestor summaries for propagation (always included)
+    ancestor_paths = storage.get_ancestors(entity_path)
+    ancestor_paths.append(".")  # include root
+    propagation_targets = []
+    for ancestor in ancestor_paths:
+        summary_data = handle_kvault_read_summary(ancestor)
+        if summary_data:
+            propagation_targets.append(
+                {
+                    "path": ancestor,
+                    "current_content": summary_data.get("content", ""),
+                    "has_meta": bool(summary_data.get("meta")),
+                }
+            )
+    result["ancestors"] = propagation_targets
+
+    # Auto-log journal if reasoning provided
+    if reasoning:
+        action_type = "create" if create else "update"
+        source = journal_source or meta.get("source", "unknown")
+        journal_result = handle_kvault_write_journal(
+            actions=[
+                {
+                    "action_type": action_type,
+                    "path": entity_path,
+                    "reasoning": reasoning,
+                }
+            ],
+            source=source,
+            session_id=session_id,
+        )
+        result["journal_logged"] = journal_result.get("success", False)
+        result["journal_path"] = journal_result.get("journal_path")
+    else:
+        result["journal_logged"] = False
 
     return result
 
@@ -384,9 +436,11 @@ def handle_kvault_read_entity(path: str) -> Optional[Dict[str, Any]]:
         return None
 
     # Include parent summary for sibling context
-    ancestors = _storage.get_ancestors(path)
+    kg_root = _root()
+    storage = _storage_instance()
+    ancestors = storage.get_ancestors(path)
     if ancestors:
-        parent_summary_path = _kg_root / ancestors[0] / "_summary.md"
+        parent_summary_path = kg_root / ancestors[0] / "_summary.md"
         if parent_summary_path.exists():
             entity_data["parent_summary"] = parent_summary_path.read_text()
             entity_data["parent_path"] = ancestors[0]
@@ -401,6 +455,8 @@ def handle_kvault_write_entity(
     create: bool = False,
     auto_rebuild: bool = False,
     session_id: Optional[str] = None,
+    reasoning: Optional[str] = None,
+    journal_source: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Write entity with YAML frontmatter.
 
@@ -411,11 +467,15 @@ def handle_kvault_write_entity(
         create: If True, create new entity. If False, update existing.
         auto_rebuild: If True, rebuild index after writing.
         session_id: Optional session ID for workflow tracking.
+        reasoning: Optional reasoning — triggers auto-journal logging.
+        journal_source: Optional source for journal (defaults to meta['source']).
 
     Returns:
-        Result with success status
+        Result with success status, ancestors for propagation, and journal info
     """
-    result = _write_entity_with_frontmatter(path, meta, content, create, auto_rebuild, session_id)
+    result = _write_entity_with_frontmatter(
+        path, meta, content, create, auto_rebuild, session_id, reasoning, journal_source
+    )
     return _add_workflow_warning(result, session_id, WorkflowStep.EXECUTE)
 
 
@@ -428,9 +488,7 @@ def handle_kvault_list_entities(category: Optional[str] = None) -> List[Dict[str
     Returns:
         List of entity summaries
     """
-    _ensure_initialized()
-
-    entries = list_entity_records(_kg_root, category=category)
+    entries = list_entity_records(_root(), category=category)
     return [
         {
             "path": e.path,
@@ -457,14 +515,14 @@ def handle_kvault_delete_entity(
     Returns:
         Result with success status
     """
-    _ensure_initialized()
+    kg_root = _root()
 
     path = normalize_path(path)
 
     if not _validate_within_root(path):
         return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
 
-    full_path = _kg_root / path
+    full_path = kg_root / path
 
     if not full_path.exists():
         return error_response(ErrorCode.NOT_FOUND, f"Entity doesn't exist: {path}")
@@ -504,21 +562,21 @@ def handle_kvault_move_entity(
     Returns:
         Result with success status
     """
-    _ensure_initialized()
+    kg_root = _root()
 
     source_path = normalize_path(source_path)
     target_path = normalize_path(target_path)
 
     # Validate paths
-    is_valid, error = validate_entity_path(target_path)
+    is_valid, err_msg = validate_entity_path(target_path)
     if not is_valid:
         return error_response(
             ErrorCode.VALIDATION_ERROR,
-            f"Invalid target path: {error}",
+            f"Invalid target path: {err_msg}",
         )
 
-    source_full = _kg_root / source_path
-    target_full = _kg_root / target_path
+    source_full = kg_root / source_path
+    target_full = kg_root / target_path
 
     if not source_full.exists():
         return error_response(ErrorCode.NOT_FOUND, f"Source doesn't exist: {source_path}")
@@ -559,18 +617,18 @@ def handle_kvault_read_summary(path: str) -> Optional[Dict[str, Any]]:
     Returns:
         Summary content with optional frontmatter
     """
-    _ensure_initialized()
+    kg_root = _root()
 
     path = normalize_path(path)
 
     if not _validate_within_root(path):
         return None
 
-    summary_path = _kg_root / path / "_summary.md"
+    summary_path = kg_root / path / "_summary.md"
 
     if not summary_path.exists():
         # Try as direct file
-        summary_path = _kg_root / path
+        summary_path = kg_root / path
         if not summary_path.exists() or not path.endswith(".md"):
             return None
 
@@ -601,10 +659,8 @@ def handle_kvault_write_summary(
     Returns:
         Result with success status
     """
-    _ensure_initialized()
-
     path = normalize_path(path)
-    dir_path = _kg_root / path
+    dir_path = _root() / path
     summary_path = dir_path / "_summary.md"
 
     # Create directory if needed
@@ -631,6 +687,55 @@ def handle_kvault_write_summary(
     }
 
 
+def handle_kvault_update_summaries(
+    updates: List[Dict[str, Any]],
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Batch-update multiple summary files in one call.
+
+    Args:
+        updates: List of dicts with 'path', 'content', and optional 'meta'.
+        session_id: Optional session ID for workflow tracking.
+
+    Returns:
+        Result with updated paths and count. Partial failure: successful
+        writes proceed even if one fails.
+    """
+    _root()  # ensure initialized
+
+    updated = []
+    errors = []
+    for item in updates:
+        path = item.get("path")
+        content = item.get("content")
+        meta = item.get("meta")
+        if not path or content is None:
+            errors.append({"path": path or "<missing>", "error": "Missing path or content"})
+            continue
+        try:
+            result = handle_kvault_write_summary(
+                path=path,
+                content=content,
+                meta=meta,
+                session_id=session_id,
+            )
+            if result.get("success"):
+                updated.append(path)
+            else:
+                errors.append({"path": path, "error": result.get("error", "Unknown error")})
+        except Exception as e:
+            errors.append({"path": path, "error": str(e)})
+
+    result = {
+        "success": len(updated) > 0 or (len(updates) == 0),
+        "updated": updated,
+        "count": len(updated),
+    }
+    if errors:
+        result["errors"] = errors
+    return result
+
+
 def handle_kvault_get_parent_summaries(path: str) -> List[Dict[str, Any]]:
     """Get ancestor summaries for a path.
 
@@ -640,10 +745,8 @@ def handle_kvault_get_parent_summaries(path: str) -> List[Dict[str, Any]]:
     Returns:
         List of ancestor summaries (closest first)
     """
-    _ensure_initialized()
-
     path = normalize_path(path)
-    ancestors = _storage.get_ancestors(path)
+    ancestors = _storage_instance().get_ancestors(path)
 
     results = []
     for ancestor in ancestors:
@@ -657,36 +760,6 @@ def handle_kvault_get_parent_summaries(path: str) -> List[Dict[str, Any]]:
         results.append(root_summary)
 
     return results
-
-
-def handle_kvault_log_phase(
-    phase: str,
-    data: Dict[str, Any],
-    session_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Log a workflow phase.
-
-    Args:
-        phase: Phase name (research, decide, execute, propagate, log, rebuild)
-        data: Structured data to log
-        session_id: Optional session ID
-
-    Returns:
-        Log result
-    """
-    _ensure_initialized()
-
-    # Add session ID to data
-    if session_id:
-        data["session_id"] = session_id
-
-    _logger.log(phase, data)
-
-    return {
-        "success": True,
-        "phase": phase,
-        "session_id": _logger.session_id,
-    }
 
 
 def handle_kvault_write_journal(
@@ -706,7 +779,7 @@ def handle_kvault_write_journal(
     Returns:
         Result with journal path
     """
-    _ensure_initialized()
+    kg_root = _root()
 
     # Parse date
     dt = datetime.now()
@@ -718,7 +791,7 @@ def handle_kvault_write_journal(
 
     # Get journal path
     journal_rel_path = get_journal_path(dt)
-    journal_full_path = _kg_root / journal_rel_path
+    journal_full_path = kg_root / journal_rel_path
 
     # Create directory
     journal_full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -767,10 +840,8 @@ def handle_kvault_propagate_all(
     Returns:
         List of ancestors with their current content
     """
-    _ensure_initialized()
-
     path = normalize_path(path)
-    ancestors = _storage.get_ancestors(path)
+    ancestors = _storage_instance().get_ancestors(path)
 
     propagation_targets = []
     for ancestor in ancestors:
@@ -819,12 +890,10 @@ def handle_kvault_validate_kb() -> Dict[str, Any]:
     Returns:
         Validation results with issues list
     """
-    _ensure_initialized()
-
     issues = []
 
     # Scan all entities from filesystem (single source of truth)
-    entities = scan_entities(_kg_root)
+    entities = scan_entities(_root())
 
     for entity in entities:
         entity_data = _read_entity_with_frontmatter(entity.path)
@@ -868,71 +937,6 @@ def handle_kvault_validate_kb() -> Dict[str, Any]:
             "warnings": len([i for i in issues if i["severity"] == "warning"]),
             "info": len([i for i in issues if i["severity"] == "info"]),
         },
-    }
-
-
-def handle_kvault_status(session_id: Optional[str] = None) -> Dict[str, Any]:
-    """Get current workflow status.
-
-    Args:
-        session_id: Optional session ID
-
-    Returns:
-        Current session state
-    """
-    session_mgr = get_session_manager()
-
-    if session_id:
-        session = session_mgr.get_session(session_id)
-        if session:
-            return session.to_dict()
-        return {"error": f"Session not found: {session_id}"}
-
-    # Return all sessions
-    return {
-        "sessions": session_mgr.list_sessions(),
-    }
-
-
-def handle_validate_workflow_transition(
-    from_step: str,
-    to_step: str,
-    session_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Check if a workflow transition is valid (advisory).
-
-    Args:
-        from_step: Current step name
-        to_step: Target step name
-        session_id: Optional session ID
-
-    Returns:
-        Validation result
-    """
-    try:
-        from_ws = WorkflowStep(from_step)
-        to_ws = WorkflowStep(to_step)
-    except ValueError as e:
-        return {"valid": False, "reason": str(e)}
-
-    session_mgr = get_session_manager()
-    if session_id:
-        session = session_mgr.get_session(session_id)
-        if session:
-            valid = session.can_transition_to(to_ws)
-            return {
-                "valid": valid,
-                "reason": None if valid else f"Cannot transition from {from_step} to {to_step}",
-                "current_step": session.current_step.value,
-            }
-
-    # Check without session
-    from kvault.mcp.state import VALID_TRANSITIONS
-
-    valid = to_ws in VALID_TRANSITIONS.get(from_ws, [])
-    return {
-        "valid": valid,
-        "reason": None if valid else f"Cannot transition from {from_step} to {to_step}",
     }
 
 
@@ -982,7 +986,7 @@ def create_server() -> "Server":
             ),
             Tool(
                 name="kvault_write_entity",
-                description="Write entity with YAML frontmatter. Requires 'source' and 'aliases' in meta. Use create=true for new entities.",
+                description="Write entity with YAML frontmatter. Returns ancestor summaries for propagation. If reasoning is provided, auto-logs a journal entry.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -998,6 +1002,14 @@ def create_server() -> "Server":
                         "create": {
                             "type": "boolean",
                             "description": "True to create new, False to update",
+                        },
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Why this entity is being created/updated. If provided, auto-logs a journal entry.",
+                        },
+                        "journal_source": {
+                            "type": "string",
+                            "description": "Source for journal entry (defaults to meta.source)",
                         },
                         "session_id": {
                             "type": "string",
@@ -1083,6 +1095,42 @@ def create_server() -> "Server":
                 },
             ),
             Tool(
+                name="kvault_update_summaries",
+                description="Batch-update multiple ancestor summaries in one call. Use after kvault_write_entity to propagate changes.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "updates": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {
+                                        "type": "string",
+                                        "description": "Path to directory for _summary.md",
+                                    },
+                                    "content": {
+                                        "type": "string",
+                                        "description": "Updated markdown content",
+                                    },
+                                    "meta": {
+                                        "type": "object",
+                                        "description": "Optional frontmatter",
+                                    },
+                                },
+                                "required": ["path", "content"],
+                            },
+                            "description": "List of summary updates",
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "Session ID for workflow tracking",
+                        },
+                    },
+                    "required": ["updates"],
+                },
+            ),
+            Tool(
                 name="kvault_get_parent_summaries",
                 description="Get ancestor summaries for propagation. Returns parent → root summaries.",
                 inputSchema={
@@ -1091,22 +1139,6 @@ def create_server() -> "Server":
                         "path": {"type": "string", "description": "Entity or category path"},
                     },
                     "required": ["path"],
-                },
-            ),
-            Tool(
-                name="kvault_log_phase",
-                description="Log a workflow phase for observability.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "phase": {
-                            "type": "string",
-                            "description": "Phase name (research, decide, execute, etc.)",
-                        },
-                        "data": {"type": "object", "description": "Structured data to log"},
-                        "session_id": {"type": "string", "description": "Optional session ID"},
-                    },
-                    "required": ["phase", "data"],
                 },
             ),
             Tool(
@@ -1135,29 +1167,6 @@ def create_server() -> "Server":
                         },
                     },
                     "required": ["actions", "source"],
-                },
-            ),
-            Tool(
-                name="kvault_status",
-                description="Get current workflow status and session info.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "session_id": {"type": "string", "description": "Optional session ID"},
-                    },
-                },
-            ),
-            Tool(
-                name="kvault_validate_transition",
-                description="Check if a workflow transition is valid (advisory).",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "from_step": {"type": "string", "description": "Current step"},
-                        "to_step": {"type": "string", "description": "Target step"},
-                        "session_id": {"type": "string", "description": "Optional session ID"},
-                    },
-                    "required": ["from_step", "to_step"],
                 },
             ),
             Tool(
@@ -1191,6 +1200,7 @@ def create_server() -> "Server":
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):
         try:
+            result: Any = None
             if name == "kvault_init":
                 result = handle_kvault_init(arguments["kg_root"])
             elif name == "kvault_read_entity":
@@ -1202,6 +1212,8 @@ def create_server() -> "Server":
                     arguments["content"],
                     create=arguments.get("create", False),
                     session_id=arguments.get("session_id"),
+                    reasoning=arguments.get("reasoning"),
+                    journal_source=arguments.get("journal_source"),
                 )
             elif name == "kvault_list_entities":
                 result = handle_kvault_list_entities(category=arguments.get("category"))
@@ -1227,12 +1239,6 @@ def create_server() -> "Server":
                 )
             elif name == "kvault_get_parent_summaries":
                 result = handle_kvault_get_parent_summaries(arguments["path"])
-            elif name == "kvault_log_phase":
-                result = handle_kvault_log_phase(
-                    arguments["phase"],
-                    arguments["data"],
-                    session_id=arguments.get("session_id"),
-                )
             elif name == "kvault_write_journal":
                 result = handle_kvault_write_journal(
                     arguments["actions"],
@@ -1240,12 +1246,9 @@ def create_server() -> "Server":
                     date=arguments.get("date"),
                     session_id=arguments.get("session_id"),
                 )
-            elif name == "kvault_status":
-                result = handle_kvault_status(session_id=arguments.get("session_id"))
-            elif name == "kvault_validate_transition":
-                result = handle_validate_workflow_transition(
-                    arguments["from_step"],
-                    arguments["to_step"],
+            elif name == "kvault_update_summaries":
+                result = handle_kvault_update_summaries(
+                    arguments["updates"],
                     session_id=arguments.get("session_id"),
                 )
             elif name == "kvault_propagate_all":

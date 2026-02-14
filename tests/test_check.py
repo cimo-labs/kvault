@@ -100,11 +100,11 @@ def test_propagation_falls_back_to_mtime(tmp_path):
     assert "newer" in prop_warnings[0]
 
 
-# ── write_entity propagation_needed tests ────────────────────────────
+# ── write_entity ancestors tests ─────────────────────────────────────
 
 
-def test_write_entity_returns_propagation_needed(empty_kb):
-    """write_entity result should include propagation_needed ancestor list."""
+def test_write_entity_returns_ancestors(empty_kb):
+    """write_entity result should include ancestors list with current content."""
     from kvault.mcp.server import handle_kvault_write_entity
 
     result = handle_kvault_write_entity(
@@ -115,13 +115,13 @@ def test_write_entity_returns_propagation_needed(empty_kb):
     )
 
     assert result["success"] is True
-    assert "propagation_needed" in result
-    assert isinstance(result["propagation_needed"], list)
-    assert len(result["propagation_needed"]) >= 1
+    assert "ancestors" in result
+    assert isinstance(result["ancestors"], list)
+    assert len(result["ancestors"]) >= 1
 
 
-def test_propagation_needed_includes_root(empty_kb):
-    """propagation_needed list should include '.' for root."""
+def test_ancestors_includes_root(empty_kb):
+    """ancestors list should include '.' for root."""
     from kvault.mcp.server import handle_kvault_write_entity
 
     result = handle_kvault_write_entity(
@@ -131,9 +131,10 @@ def test_propagation_needed_includes_root(empty_kb):
         create=True,
     )
 
-    assert "." in result["propagation_needed"]
+    ancestor_paths = [a["path"] for a in result["ancestors"]]
+    assert "." in ancestor_paths
     # Should also include intermediate ancestors
-    assert "people" in result["propagation_needed"]
+    assert "people" in ancestor_paths
 
 
 # ── _get_updated_date helper tests ───────────────────────────────────

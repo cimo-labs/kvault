@@ -2,7 +2,7 @@
 
 ## Overview
 
-kvault is a personal knowledge base that runs inside Claude Code (or OpenAI Codex). It provides entity storage, hierarchical navigation, and 15 MCP tools for structured agent memory.
+kvault is a personal knowledge base that runs inside Claude Code (or OpenAI Codex). It provides entity storage, hierarchical navigation, and 13 MCP tools for structured agent memory.
 
 ## Quick Start
 
@@ -71,16 +71,16 @@ context: ex-Stitch Fix
 
 **Legacy format**: Separate `_meta.json` files are still supported for backward compatibility but should not be used for new entities.
 
-## The 4-Step Workflow
+## The 2-Call Write Workflow
 
-The orchestrator enforces this workflow for all knowledge graph updates:
+All knowledge graph updates follow this pattern:
 
-1. **NAVIGATE** - Browse the tree, read parent summaries to find existing entities
-2. **WRITE** - Create/update entity files with YAML frontmatter
-3. **PROPAGATE** - Update ancestor `_summary.md` files
-4. **LOG** - Add entry to `journal/YYYY-MM/log.md`
+1. **NAVIGATE** — Browse the tree, read parent summaries to find existing entities (use Grep/Glob/Read)
+2. **WRITE (Call 1)** — `kvault_write_entity(..., reasoning="...")` → returns ancestor summaries + auto-logs journal
+3. **PROPAGATE (Call 2)** — `kvault_update_summaries(updates=[...])` → batch-update all ancestor summaries
 
-Agents use their own Grep/Glob/Read tools for searching. `kvault_read_entity` includes the parent summary for sibling context.
+The old 4-step workflow (write → propagate_all → write_summary × N → write_journal) is replaced by 2 MCP calls.
+`kvault_read_entity` includes the parent summary for sibling context.
 
 ## CLI Commands
 
@@ -115,12 +115,12 @@ pip install knowledgevault[mcp]
 }
 ```
 
-### Tools (15 total)
+### Tools (13 total)
 
-**Entity:** `kvault_read_entity` (includes parent summary), `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
-**Summary:** `kvault_read_summary`, `kvault_write_summary`, `kvault_get_parent_summaries`, `kvault_propagate_all`
-**Workflow:** `kvault_log_phase`, `kvault_write_journal`, `kvault_validate_transition`
-**Validation:** `kvault_validate_kb`, `kvault_status`
+**Entity:** `kvault_read_entity` (includes parent summary), `kvault_write_entity` (returns ancestors, auto-journals), `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
+**Summary:** `kvault_read_summary`, `kvault_write_summary`, `kvault_update_summaries` (batch), `kvault_get_parent_summaries`, `kvault_propagate_all`
+**Workflow:** `kvault_write_journal`
+**Validation:** `kvault_validate_kb`
 **Init:** `kvault_init`
 
 ### Key Differences from CLI Orchestrator

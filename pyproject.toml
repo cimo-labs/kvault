@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledgevault"
-version = "0.5.0"
+version = "0.6.0"
 description = "Personal knowledge base that runs inside any MCP-compatible AI tool — structured, navigable, zero extra cost"
 readme = "README.md"
 license = {text = "MIT"}
@@ -36,6 +36,7 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "black>=23.0",
     "mypy>=1.0",
+    "types-PyYAML>=6.0",
     "ruff>=0.1.0",
     "pre-commit>=3.0",
 ]

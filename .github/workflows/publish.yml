@@ -50,6 +50,6 @@ jobs:
           body: |
             ## Installation
             ```bash
-            pip install kvault==${{ steps.version.outputs.version }}
+            pip install knowledgevault==${{ steps.version.outputs.version }}
             ```
           generate_release_notes: true

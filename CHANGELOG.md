@@ -14,7 +14,7 @@ All notable changes to `knowledgevault` are documented in this file.
 ### Compatibility & Docs
 
 - Aligned README workflow language with staged MCP flow (research -> decide -> execute -> propagate -> log -> rebuild/validate).
-- Added packaging excludes for Python cache artifacts (`__pycache__`, `*.py[cod]`) to keep builds clean.
+- Added packaging excludes for Python cache artifacts (`__pycache__`, `*.py[cod]`) across wheel + sdist (`pyproject.toml`, `MANIFEST.in`) to keep releases clean.
 
 ### Testing
 

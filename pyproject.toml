@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledgevault"
-version = "0.6.0"
+version = "0.6.1"
 description = "Personal knowledge base that runs inside any MCP-compatible AI tool — structured, navigable, zero extra cost"
 readme = "README.md"
 license = {text = "MIT"}

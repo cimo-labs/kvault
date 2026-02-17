@@ -434,3 +434,55 @@ class TestBatchUpdateSummaries:
 
         journal_path = initialized_kb / write_result["journal_path"]
         assert journal_path.exists()
+
+
+class TestPathSafety:
+    """Test path traversal protections in MCP handlers."""
+
+    def test_write_summary_rejects_root_escape(self, initialized_kb):
+        """write_summary should block paths that escape KB root."""
+        result = handle_kvault_write_summary(
+            path="../escaped_dir",
+            content="# Escape Attempt\n",
+        )
+        assert not result.get("success")
+        assert result["error_code"] == "validation_error"
+        assert "Path escapes KB root" in result["error"]
+        assert not (initialized_kb.parent / "escaped_dir" / "_summary.md").exists()
+
+    def test_move_entity_rejects_invalid_source_path(self, initialized_kb):
+        """move_entity should reject traversal-like source paths."""
+        outside_dir = initialized_kb.parent / "outside_src"
+        outside_dir.mkdir()
+        (outside_dir / "_summary.md").write_text("# Outside\n")
+
+        result = handle_kvault_move_entity(
+            source_path="../outside_src",
+            target_path="people/friends/outside_src",
+        )
+
+        assert not result.get("success")
+        assert result["error_code"] == "validation_error"
+        assert "Invalid source path" in result["error"]
+        assert outside_dir.exists()
+        assert not (initialized_kb / "people" / "friends" / "outside_src").exists()
+
+    def test_move_entity_rejects_invalid_target_path(self, initialized_kb):
+        """move_entity should reject traversal-like target paths."""
+        result = handle_kvault_move_entity(
+            source_path="people/work/bob_jones",
+            target_path="../outside_target",
+        )
+        assert not result.get("success")
+        assert result["error_code"] == "validation_error"
+        assert "Invalid target path" in result["error"]
+        assert (initialized_kb / "people" / "work" / "bob_jones").exists()
+
+    def test_update_summaries_rejects_root_escape(self, initialized_kb):
+        """update_summaries should not allow writes outside KB root."""
+        result = handle_kvault_update_summaries(
+            updates=[{"path": "../escaped_batch", "content": "# Nope\n"}]
+        )
+        assert not result["success"]
+        assert len(result.get("errors", [])) == 1
+        assert not (initialized_kb.parent / "escaped_batch" / "_summary.md").exists()

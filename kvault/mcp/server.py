@@ -1,38 +1,12 @@
 """kvault MCP Server - Model Context Protocol server for knowledge graph operations.
 
-Provides 13 tools for Claude Code to interact with the knowledge graph:
+Canonical tool definitions live in ``kvault.mcp.manifest`` and are used at runtime
+for listing/health checks.
 
-Init (1):
-- kvault_init: Initialize KB, return hierarchy + root summary
-
-Entity Tools (5):
-- kvault_read_entity: Read entity with YAML frontmatter + parent summary
-- kvault_write_entity: Write entity (returns ancestors for propagation, auto-journals if reasoning given)
-- kvault_list_entities: List entities in a category
-- kvault_delete_entity: Delete an entity
-- kvault_move_entity: Move an entity to new path
-
-Summary Tools (4):
-- kvault_read_summary: Read a summary file
-- kvault_write_summary: Write a single summary file
-- kvault_update_summaries: Batch-update multiple summaries in one call
-- kvault_get_parent_summaries: Get ancestor summaries
-
-Propagation (1):
-- kvault_propagate_all: Get all ancestors for propagation
-
-Workflow (1):
-- kvault_write_journal: Write a journal entry
-
-Validation (1):
-- kvault_validate_kb: Check KB integrity
-
-2-call write workflow:
-  1. kvault_write_entity(..., reasoning="...") → ancestors + auto-journal
-  2. kvault_update_summaries(updates=[...]) → batch propagation
-
-Agents use their own Grep/Glob/Read tools for searching.
-kvault_read_entity includes the parent summary for sibling context.
+Key workflow:
+  1. kvault_write_entity(..., reasoning="...") -> ancestors + optional auto-journal
+  2. kvault_update_summaries(updates=[...]) -> batch propagation
+  3. kvault_validate_kb() -> integrity check
 """
 
 import json
@@ -51,8 +25,14 @@ except ImportError:
     MCP_AVAILABLE = False
 
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter
+from kvault.core.daily_artifacts import generate_daily_artifact, parse_iso_date
 from kvault.core.storage import SimpleStorage, scan_entities, count_entities, list_entity_records
 from kvault.core.observability import ObservabilityLogger
+from kvault.mcp.manifest import (
+    TOOL_MANIFEST_VERSION,
+    get_prefixed_tool_names,
+    get_tool_manifest,
+)
 from kvault.mcp.state import get_session_manager, WorkflowStep
 from kvault.mcp.validation import (
     normalize_path,
@@ -197,9 +177,60 @@ def _read_entity_with_frontmatter(entity_path: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def _derive_display_alias(entity_path: str) -> str:
+    """Derive a human-friendly alias from the entity leaf path."""
+    leaf = entity_path.split("/")[-1]
+    return leaf.replace("_", " ").strip().title() or leaf
+
+
+def _resolve_entity_meta(
+    entity_path: str,
+    incoming_meta: Optional[Dict[str, Any]],
+    create: bool,
+    journal_source: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve metadata from existing entity state + incoming payload.
+
+    Priority order:
+      1. incoming meta fields
+      2. existing entity frontmatter/meta
+      3. safe defaults
+    """
+    meta: Dict[str, Any] = dict(incoming_meta or {})
+    existing_meta: Dict[str, Any] = {}
+
+    existing = _read_entity_with_frontmatter(entity_path)
+    if existing and isinstance(existing.get("meta"), dict):
+        existing_meta = dict(existing["meta"])
+
+    merged: Dict[str, Any] = dict(existing_meta)
+    merged.update(meta)
+
+    if not merged.get("source"):
+        merged["source"] = journal_source or existing_meta.get("source") or "auto:mcp"
+        merged["_autofilled_source"] = True
+
+    aliases = merged.get("aliases")
+    if aliases is None and isinstance(existing_meta.get("aliases"), list):
+        aliases = list(existing_meta["aliases"])
+
+    if aliases is None:
+        aliases = []
+
+    if not isinstance(aliases, list):
+        raise ValueError("frontmatter field 'aliases' must be a list")
+
+    if create and len(aliases) == 0:
+        aliases = [_derive_display_alias(entity_path)]
+        merged["_autofilled_aliases"] = True
+
+    merged["aliases"] = aliases
+    return merged
+
+
 def _write_entity_with_frontmatter(
     entity_path: str,
-    meta: Dict[str, Any],
+    meta: Optional[Dict[str, Any]],
     content: str,
     create: bool = False,
     auto_rebuild: bool = False,
@@ -211,7 +242,7 @@ def _write_entity_with_frontmatter(
 
     Args:
         entity_path: Path like "people/contacts/john_doe"
-        meta: Frontmatter metadata (must include: source, aliases)
+        meta: Optional frontmatter metadata (source/aliases default safely if omitted)
         content: Markdown content (without frontmatter)
         create: If True, fail if entity exists. If False, update.
         auto_rebuild: If True, rebuild index after writing.
@@ -247,16 +278,34 @@ def _write_entity_with_frontmatter(
             hint="Use create=true to create new entity",
         )
 
-    # Validate required frontmatter BEFORE applying defaults
-    # Required: source, aliases (created/updated are set automatically)
-    if "source" not in meta:
+    if meta is not None and not isinstance(meta, dict):
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            "frontmatter field 'meta' must be an object when provided",
+            hint="Pass meta as a JSON object, or omit it to reuse/apply defaults",
+        )
+
+    try:
+        meta = _resolve_entity_meta(
+            entity_path=entity_path,
+            incoming_meta=meta,
+            create=create,
+            journal_source=journal_source,
+        )
+    except ValueError as exc:
+        return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
+
+    autofilled_source = bool(meta.pop("_autofilled_source", False))
+    autofilled_aliases = bool(meta.pop("_autofilled_aliases", False))
+
+    if not isinstance(meta.get("source"), str) or not str(meta.get("source")).strip():
         return error_response(
             ErrorCode.VALIDATION_ERROR,
             "Missing required frontmatter field: source",
             details={"missing_fields": ["source"]},
             hint="Provide a source identifier (e.g., 'manual', 'imessage:thread_id')",
         )
-    if "aliases" not in meta:
+    if not isinstance(meta.get("aliases"), list):
         return error_response(
             ErrorCode.VALIDATION_ERROR,
             "Missing required frontmatter field: aliases",
@@ -302,6 +351,11 @@ def _write_entity_with_frontmatter(
         "path": entity_path,
         "created": create,
     }
+    if autofilled_source or autofilled_aliases:
+        result["meta_autofilled"] = {
+            "source": autofilled_source,
+            "aliases": autofilled_aliases,
+        }
 
     # Record in session state
     if session_id:
@@ -327,6 +381,13 @@ def _write_entity_with_frontmatter(
                 }
             )
     result["ancestors"] = propagation_targets
+    result["pipeline"] = {
+        "stage": "execute",
+        "next_stage": "propagate",
+        "next_action": "kvault_update_summaries",
+        "required": True,
+    }
+    result["propagation_required"] = len(propagation_targets) > 0
 
     # Auto-log journal if reasoning provided
     if reasoning:
@@ -418,8 +479,89 @@ def handle_kvault_init(kg_root: str) -> Dict[str, Any]:
 
     result["session_id"] = session.session_id
     result["current_step"] = session.current_step.value
+    result["pipeline"] = {
+        "stage": "research",
+        "next_stage": "execute",
+        "next_action": "kvault_write_entity",
+        "required": False,
+    }
 
     return result
+
+
+def handle_kvault_status(
+    session_id: Optional[str] = None,
+    tool_prefix: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Return server health, workflow state, and canonical tool metadata."""
+    manifest = get_tool_manifest()
+    if tool_prefix:
+        prefixed = get_prefixed_tool_names(tool_prefix)
+        for index, spec in enumerate(manifest):
+            spec["prefixed_name"] = prefixed[index]
+
+    session_mgr = get_session_manager()
+    sessions = session_mgr.list_sessions()
+    selected_session = session_mgr.get_session(session_id) if session_id else None
+
+    result: Dict[str, Any] = {
+        "initialized": _kg_root is not None,
+        "tool_manifest_version": TOOL_MANIFEST_VERSION,
+        "tool_count": len(manifest),
+        "tool_manifest": manifest,
+        "active_sessions": sessions,
+    }
+
+    if selected_session:
+        result["session"] = selected_session.to_dict()
+    elif session_id:
+        result["session"] = None
+        result["session_warning"] = f"Session not found: {session_id}"
+
+    if _kg_root is not None:
+        root = _root()
+        result["kg_root"] = str(root)
+        result["entity_count"] = count_entities(root)
+        result["health"] = {
+            "root_summary_exists": (root / "_summary.md").exists(),
+            "kvault_dir_exists": (root / ".kvault").exists(),
+        }
+
+    if _logger is not None:
+        result["logger_session_id"] = _logger.session_id
+
+    return result
+
+
+def handle_kvault_log_phase(
+    phase: str,
+    data: Optional[Dict[str, Any]] = None,
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Write a structured phase log entry to the observability database."""
+    _ensure_initialized()
+    if _logger is None:
+        return error_response(ErrorCode.NOT_INITIALIZED, _NOT_INIT_MSG)
+    if not isinstance(phase, str) or not phase.strip():
+        return error_response(ErrorCode.VALIDATION_ERROR, "phase must be a non-empty string")
+    if data is not None and not isinstance(data, dict):
+        return error_response(ErrorCode.VALIDATION_ERROR, "data must be an object when provided")
+
+    payload = dict(data or {})
+    if session_id:
+        payload.setdefault("workflow_session_id", session_id)
+    payload.setdefault("mcp_logged_at", datetime.now().isoformat())
+
+    try:
+        _logger.log(phase.strip(), payload)
+    except ValueError as exc:
+        return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
+
+    return {
+        "success": True,
+        "phase": phase.strip(),
+        "logger_session_id": _logger.session_id,
+    }
 
 
 def handle_kvault_read_entity(path: str) -> Optional[Dict[str, Any]]:
@@ -450,7 +592,7 @@ def handle_kvault_read_entity(path: str) -> Optional[Dict[str, Any]]:
 
 def handle_kvault_write_entity(
     path: str,
-    meta: Dict[str, Any],
+    meta: Optional[Dict[str, Any]],
     content: str,
     create: bool = False,
     auto_rebuild: bool = False,
@@ -462,7 +604,7 @@ def handle_kvault_write_entity(
 
     Args:
         path: Entity path
-        meta: Frontmatter metadata
+        meta: Optional frontmatter metadata
         content: Markdown content
         create: If True, create new entity. If False, update existing.
         auto_rebuild: If True, rebuild index after writing.
@@ -568,12 +710,25 @@ def handle_kvault_move_entity(
     target_path = normalize_path(target_path)
 
     # Validate paths
+    is_valid, err_msg = validate_entity_path(source_path)
+    if not is_valid:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            f"Invalid source path: {err_msg}",
+        )
+
     is_valid, err_msg = validate_entity_path(target_path)
     if not is_valid:
         return error_response(
             ErrorCode.VALIDATION_ERROR,
             f"Invalid target path: {err_msg}",
         )
+
+    if not _validate_within_root(source_path):
+        return error_response(ErrorCode.VALIDATION_ERROR, "Source path escapes KB root")
+
+    if not _validate_within_root(target_path):
+        return error_response(ErrorCode.VALIDATION_ERROR, "Target path escapes KB root")
 
     source_full = kg_root / source_path
     target_full = kg_root / target_path
@@ -660,6 +815,10 @@ def handle_kvault_write_summary(
         Result with success status
     """
     path = normalize_path(path)
+
+    if not _validate_within_root(path):
+        return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
+
     dir_path = _root() / path
     summary_path = dir_path / "_summary.md"
 
@@ -684,6 +843,12 @@ def handle_kvault_write_summary(
     return {
         "success": True,
         "path": path,
+        "pipeline": {
+            "stage": "propagate",
+            "next_stage": "validate",
+            "next_action": "kvault_validate_kb",
+            "required": False,
+        },
     }
 
 
@@ -730,6 +895,12 @@ def handle_kvault_update_summaries(
         "success": len(updated) > 0 or (len(updates) == 0),
         "updated": updated,
         "count": len(updated),
+        "pipeline": {
+            "stage": "propagate",
+            "next_stage": "validate",
+            "next_action": "kvault_validate_kb",
+            "required": False,
+        },
     }
     if errors:
         result["errors"] = errors
@@ -937,6 +1108,36 @@ def handle_kvault_validate_kb() -> Dict[str, Any]:
             "warnings": len([i for i in issues if i["severity"] == "warning"]),
             "info": len([i for i in issues if i["severity"] == "info"]),
         },
+        "pipeline": {
+            "stage": "validate",
+            "next_stage": "complete",
+            "next_action": None,
+            "required": False,
+        },
+    }
+
+
+def handle_kvault_generate_daily_artifact(
+    artifact_date: Optional[str] = None,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Generate a daily artifact from summaries + recent journal context."""
+    try:
+        parsed_date = parse_iso_date(artifact_date)
+    except ValueError as exc:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            str(exc),
+            hint="Use YYYY-MM-DD format (example: 2026-02-15)",
+        )
+
+    result = generate_daily_artifact(_root(), artifact_date=parsed_date, force=force)
+    return {
+        "success": True,
+        "date": result.artifact_date.isoformat(),
+        "path": str(result.path.relative_to(_root())),
+        "written": result.written,
+        "content": result.content,
     }
 
 
@@ -957,258 +1158,37 @@ def create_server() -> "Server":
     async def list_tools():
         return [
             Tool(
-                name="kvault_init",
-                description="Initialize kvault and return context (hierarchy, root summary, entity count). Call this first.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "kg_root": {
-                            "type": "string",
-                            "description": "Path to knowledge graph root directory",
-                        },
-                    },
-                    "required": ["kg_root"],
-                },
-            ),
-            Tool(
-                name="kvault_read_entity",
-                description="Read entity with YAML frontmatter. Returns meta, content, and parent summary (sibling context).",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Entity path (e.g., 'people/contacts/john_doe')",
-                        },
-                    },
-                    "required": ["path"],
-                },
-            ),
-            Tool(
-                name="kvault_write_entity",
-                description="Write entity with YAML frontmatter. Returns ancestor summaries for propagation. If reasoning is provided, auto-logs a journal entry.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Entity path"},
-                        "meta": {
-                            "type": "object",
-                            "description": "Frontmatter metadata (must include 'source' and 'aliases')",
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Markdown content (without frontmatter)",
-                        },
-                        "create": {
-                            "type": "boolean",
-                            "description": "True to create new, False to update",
-                        },
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Why this entity is being created/updated. If provided, auto-logs a journal entry.",
-                        },
-                        "journal_source": {
-                            "type": "string",
-                            "description": "Source for journal entry (defaults to meta.source)",
-                        },
-                        "session_id": {
-                            "type": "string",
-                            "description": "Session ID for workflow tracking",
-                        },
-                    },
-                    "required": ["path", "meta", "content"],
-                },
-            ),
-            Tool(
-                name="kvault_list_entities",
-                description="List entities, optionally filtered by category.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "category": {"type": "string", "description": "Optional category filter"},
-                    },
-                },
-            ),
-            Tool(
-                name="kvault_delete_entity",
-                description="Delete an entity. WARNING: This is destructive.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Entity path to delete"},
-                        "session_id": {
-                            "type": "string",
-                            "description": "Session ID for workflow tracking",
-                        },
-                    },
-                    "required": ["path"],
-                },
-            ),
-            Tool(
-                name="kvault_move_entity",
-                description="Move an entity to a new path.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "source_path": {"type": "string", "description": "Current entity path"},
-                        "target_path": {"type": "string", "description": "New entity path"},
-                        "session_id": {
-                            "type": "string",
-                            "description": "Session ID for workflow tracking",
-                        },
-                    },
-                    "required": ["source_path", "target_path"],
-                },
-            ),
-            Tool(
-                name="kvault_read_summary",
-                description="Read a summary file (_summary.md) from a path.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to directory containing _summary.md",
-                        },
-                    },
-                    "required": ["path"],
-                },
-            ),
-            Tool(
-                name="kvault_write_summary",
-                description="Write a summary file. Used for category summaries and propagation.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to directory for _summary.md",
-                        },
-                        "content": {"type": "string", "description": "Markdown content"},
-                        "meta": {"type": "object", "description": "Optional frontmatter"},
-                        "session_id": {
-                            "type": "string",
-                            "description": "Session ID for workflow tracking",
-                        },
-                    },
-                    "required": ["path", "content"],
-                },
-            ),
-            Tool(
-                name="kvault_update_summaries",
-                description="Batch-update multiple ancestor summaries in one call. Use after kvault_write_entity to propagate changes.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "updates": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "path": {
-                                        "type": "string",
-                                        "description": "Path to directory for _summary.md",
-                                    },
-                                    "content": {
-                                        "type": "string",
-                                        "description": "Updated markdown content",
-                                    },
-                                    "meta": {
-                                        "type": "object",
-                                        "description": "Optional frontmatter",
-                                    },
-                                },
-                                "required": ["path", "content"],
-                            },
-                            "description": "List of summary updates",
-                        },
-                        "session_id": {
-                            "type": "string",
-                            "description": "Session ID for workflow tracking",
-                        },
-                    },
-                    "required": ["updates"],
-                },
-            ),
-            Tool(
-                name="kvault_get_parent_summaries",
-                description="Get ancestor summaries for propagation. Returns parent → root summaries.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Entity or category path"},
-                    },
-                    "required": ["path"],
-                },
-            ),
-            Tool(
-                name="kvault_write_journal",
-                description="Write a journal entry for actions taken.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "actions": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "action_type": {"type": "string"},
-                                    "path": {"type": "string"},
-                                    "reasoning": {"type": "string"},
-                                },
-                            },
-                            "description": "List of actions taken",
-                        },
-                        "source": {"type": "string", "description": "Source identifier"},
-                        "date": {"type": "string", "description": "Optional date (YYYY-MM-DD)"},
-                        "session_id": {
-                            "type": "string",
-                            "description": "Session ID for workflow tracking",
-                        },
-                    },
-                    "required": ["actions", "source"],
-                },
-            ),
-            Tool(
-                name="kvault_propagate_all",
-                description="Get all ancestor summaries for propagation. Returns ancestors with current content for Claude to update.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Entity or category path to propagate from",
-                        },
-                        "session_id": {
-                            "type": "string",
-                            "description": "Session ID for workflow tracking",
-                        },
-                    },
-                    "required": ["path"],
-                },
-            ),
-            Tool(
-                name="kvault_validate_kb",
-                description="Check KB integrity: incomplete entities, missing frontmatter.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {},
-                },
-            ),
+                name=spec["name"],
+                description=spec["description"],
+                inputSchema=spec["inputSchema"],
+            )
+            for spec in get_tool_manifest()
         ]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):
         try:
+            arguments = arguments or {}
             result: Any = None
             if name == "kvault_init":
                 result = handle_kvault_init(arguments["kg_root"])
+            elif name == "kvault_status":
+                result = handle_kvault_status(
+                    session_id=arguments.get("session_id"),
+                    tool_prefix=arguments.get("tool_prefix"),
+                )
+            elif name == "kvault_log_phase":
+                result = handle_kvault_log_phase(
+                    phase=arguments["phase"],
+                    data=arguments.get("data"),
+                    session_id=arguments.get("session_id"),
+                )
             elif name == "kvault_read_entity":
                 result = handle_kvault_read_entity(arguments["path"])
             elif name == "kvault_write_entity":
                 result = handle_kvault_write_entity(
                     arguments["path"],
-                    arguments["meta"],
+                    arguments.get("meta"),
                     arguments["content"],
                     create=arguments.get("create", False),
                     session_id=arguments.get("session_id"),
@@ -1255,6 +1235,11 @@ def create_server() -> "Server":
                 result = handle_kvault_propagate_all(
                     arguments["path"],
                     session_id=arguments.get("session_id"),
+                )
+            elif name == "kvault_generate_daily_artifact":
+                result = handle_kvault_generate_daily_artifact(
+                    artifact_date=arguments.get("date"),
+                    force=arguments.get("force", False),
                 )
             elif name == "kvault_validate_kb":
                 result = handle_kvault_validate_kb()

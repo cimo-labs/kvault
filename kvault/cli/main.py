@@ -1,13 +1,14 @@
-"""kvault CLI — init and check commands."""
+"""kvault CLI — init, check, and artifact commands."""
 
 from datetime import date
 from importlib.resources import files as resource_files
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import click
 
 from kvault.cli.check import check_kb
+from kvault.core.daily_artifacts import generate_daily_artifact, parse_iso_date
 from kvault.core.observability import ObservabilityLogger
 
 # -------------------------
@@ -103,6 +104,59 @@ def init_kb(path: Path, name: str) -> None:
     click.echo('  { "mcpServers": { "kvault": { "command": "kvault-mcp" } } }')
     click.echo()
     click.echo("Then customize CLAUDE.md and start adding entities.")
+
+
+@cli.group("artifact")
+def artifact_group() -> None:
+    """Generate derivative artifacts from the KB."""
+
+
+@artifact_group.command("daily")
+@click.option(
+    "--kb-root",
+    type=click.Path(path_type=Path),
+    default=".",
+    show_default=True,
+    help="Knowledge base root directory",
+)
+@click.option(
+    "--date",
+    "artifact_date",
+    default=None,
+    help="Artifact date (YYYY-MM-DD). Defaults to today.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Overwrite existing artifact for the given date.",
+)
+@click.option(
+    "--stdout",
+    "print_stdout",
+    is_flag=True,
+    help="Print generated artifact markdown to stdout.",
+)
+def generate_daily(
+    kb_root: Path, artifact_date: Optional[str], force: bool, print_stdout: bool
+) -> None:
+    """Generate the daily artifact markdown file."""
+    kb_root = kb_root.resolve()
+    if not kb_root.exists():
+        raise click.ClickException(f"Knowledge base root does not exist: {kb_root}")
+
+    try:
+        parsed_date = parse_iso_date(artifact_date)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    result = generate_daily_artifact(kb_root, artifact_date=parsed_date, force=force)
+    status = "Generated" if result.written else "Reused existing"
+    rel_path = result.path.relative_to(kb_root)
+    click.echo(f"{status} daily artifact: {rel_path}")
+
+    if print_stdout:
+        click.echo()
+        click.echo(result.content)
 
 
 if __name__ == "__main__":

@@ -8,9 +8,10 @@ VS Code, or any MCP-compatible tool.
 No external API keys. No extra cost. Just files.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
+from kvault.core.daily_artifacts import DailyArtifactResult, generate_daily_artifact, parse_iso_date
 from kvault.core.storage import (
     SimpleStorage,
     normalize_entity_id,
@@ -30,4 +31,7 @@ __all__ = [
     "scan_entities",
     "count_entities",
     "list_entity_records",
+    "DailyArtifactResult",
+    "generate_daily_artifact",
+    "parse_iso_date",
 ]

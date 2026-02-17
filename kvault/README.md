@@ -9,7 +9,7 @@ kvault/
 ├── __init__.py          # Package exports
 ├── cli/                 # Command-line interface
 ├── core/                # Storage, frontmatter, observability
-├── mcp/                 # MCP server (15 tools for Claude Code, Codex, etc.)
+├── mcp/                 # MCP server (16 tools for Claude Code, Codex, etc.)
 ├── orchestrator/        # Headless workflow runner (5-step pipeline)
 └── templates/           # Default templates for new KBs
 ```
@@ -37,7 +37,7 @@ from kvault import (
 ```
 ┌─────────────────────────────────────────────┐
 │              MCP Server (Preferred)          │
-│  15 tools: kvault_init, kvault_read_entity..│
+│  16 tools: kvault_init, kvault_status, ...  │
 │  kvault-mcp entry point                     │
 └─────────────────────────────────────────────┘
                       │
@@ -68,6 +68,9 @@ kvault init my_kb --name "Your Name"
 
 # Validate integrity
 kvault check --kb-root my_kb
+
+# Generate a daily artifact
+kvault artifact daily --kb-root my_kb --date 2026-02-15
 
 # Observability
 kvault log summary --db my_kb/.kvault/logs.db

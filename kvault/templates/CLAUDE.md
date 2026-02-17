@@ -113,11 +113,12 @@ Context and notes here.
 
 ---
 
-## MCP Tools Reference (13)
+## MCP Tools Reference (14)
 
 **Entity:** `kvault_read_entity` (includes parent summary), `kvault_write_entity` (returns ancestors, auto-journals), `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
 **Summary:** `kvault_read_summary`, `kvault_write_summary`, `kvault_update_summaries` (batch), `kvault_get_parent_summaries`, `kvault_propagate_all`
 **Workflow:** `kvault_write_journal`
+**Artifacts:** `kvault_generate_daily_artifact`
 **Validation:** `kvault_validate_kb`
 **Init:** `kvault_init`
 

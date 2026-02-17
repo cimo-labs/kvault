@@ -2,7 +2,7 @@
 
 ## Overview
 
-kvault is a personal knowledge base that runs inside Claude Code (or OpenAI Codex). It provides entity storage, hierarchical navigation, and 13 MCP tools for structured agent memory.
+kvault is a personal knowledge base that runs inside Claude Code (or OpenAI Codex). It provides entity storage, hierarchical navigation, and 14 MCP tools for structured agent memory.
 
 ## Quick Start
 
@@ -88,6 +88,9 @@ The old 4-step workflow (write → propagate_all → write_summary × N → writ
 # Observability
 kvault log summary --db .kvault/logs.db
 
+# Daily summary artifact
+kvault artifact daily --kb-root . --date 2026-02-15
+
 # MCP Server
 kvault-mcp  # Start MCP server for Claude Code
 ```
@@ -115,11 +118,12 @@ pip install knowledgevault[mcp]
 }
 ```
 
-### Tools (13 total)
+### Tools (14 total)
 
 **Entity:** `kvault_read_entity` (includes parent summary), `kvault_write_entity` (returns ancestors, auto-journals), `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
 **Summary:** `kvault_read_summary`, `kvault_write_summary`, `kvault_update_summaries` (batch), `kvault_get_parent_summaries`, `kvault_propagate_all`
 **Workflow:** `kvault_write_journal`
+**Artifacts:** `kvault_generate_daily_artifact`
 **Validation:** `kvault_validate_kb`
 **Init:** `kvault_init`
 

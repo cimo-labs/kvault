@@ -8,7 +8,7 @@ pip install knowledgevault[mcp]
 
 kvault gives your coding agent persistent, structured memory. It runs as an MCP server inside Claude Code (or any MCP-compatible tool), using the subscription you already pay for. No extra API keys. No extra cost.
 
-Your agent creates entities (people, projects, notes), navigates the hierarchy via parent summaries, and keeps everything in sync — all through 15 MCP tools.
+Your agent creates entities (people, projects, notes), navigates the hierarchy via parent summaries, and keeps everything in sync — all through 16 MCP tools.
 
 ## Who is this for?
 
@@ -19,7 +19,7 @@ Developers using **Claude Code**, **OpenAI Codex**, **Cursor**, **VS Code + Copi
 | | kvault | [Anthropic memory server](https://github.com/anthropics/claude-code/tree/main/packages/memory) | [Notion AI](https://www.notion.so/product/ai) / [Mem.ai](https://mem.ai) | [obsidian-claude-pkm](https://github.com/4lph4-lab/obsidian-claude-pkm) |
 |---|---|---|---|---|
 | **Structure** | Hierarchical entities with navigable tree | Flat JSON | Rich docs, flat search | Obsidian vault |
-| **Agent-native** | 15 MCP tools, built for agents | 4 tools, basic | Chat sidebar | Template, not runtime |
+| **Agent-native** | 16 MCP tools, built for agents | 4 tools, basic | Chat sidebar | Template, not runtime |
 | **Cost** | $0 (uses existing subscription) | $0 | $12-20/mo extra | $0 |
 | **Navigation** | Parent summaries at every level | None | AI-generated | Manual |
 | **Search** | Agent uses its own Grep/Glob/Read | Built-in | Built-in | Manual |
@@ -193,17 +193,19 @@ my_kb/
 
 Every directory with a `_summary.md` is a node. Summaries at each level capture the semantic landscape of their children. When reading any entity, kvault returns the parent summary too — so the agent always knows what siblings exist.
 
-## MCP tools (15)
+## MCP tools (16)
 
 | Category | Tools |
 |----------|-------|
-| **Init** | `kvault_init`, `kvault_status` |
+| **Init** | `kvault_init` |
+| **Status** | `kvault_status` |
 | **Entity** | `kvault_read_entity`, `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity` |
-| **Summary** | `kvault_read_summary`, `kvault_write_summary`, `kvault_get_parent_summaries`, `kvault_propagate_all` |
-| **Workflow** | `kvault_log_phase`, `kvault_write_journal`, `kvault_validate_transition` |
+| **Summary** | `kvault_read_summary`, `kvault_write_summary`, `kvault_update_summaries`, `kvault_get_parent_summaries`, `kvault_propagate_all` |
+| **Workflow** | `kvault_log_phase`, `kvault_write_journal` |
+| **Artifacts** | `kvault_generate_daily_artifact` |
 | **Validation** | `kvault_validate_kb` |
 
-`kvault_read_entity` returns entity content **plus** the parent `_summary.md` — giving the agent sibling context for free. `kvault_write_entity` returns a `propagation_needed` list of ancestor paths, so agents know exactly which summaries to update.
+`kvault_read_entity` returns entity content **plus** the parent `_summary.md` — giving the agent sibling context for free. `kvault_write_entity` returns ancestor summaries and pipeline hints so agents know exactly what to propagate next.
 
 ## Python API
 
@@ -239,6 +241,40 @@ Catch stale summaries before each prompt by adding to `.claude/settings.json`:
     ]
   }
 }
+```
+
+## Daily artifacts + Moss automation
+
+Generate a daily summary artifact directly:
+
+```bash
+kvault artifact daily --kb-root /absolute/path/to/my_kb --date 2026-02-15
+```
+
+Output path:
+
+```text
+/absolute/path/to/my_kb/.kvault/artifacts/daily/YYYY-MM-DD.md
+```
+
+For Moss/OpenClaw, two practical patterns:
+
+1. Direct cron on the host (simple and reliable):
+```cron
+15 6 * * * cd ~/personal_kb && kvault artifact daily --kb-root . --date "$(date +\%F)" --force >> /tmp/kvault-artifacts.log 2>&1
+```
+
+2. Cron queues a request for Moss (agent-owned execution):
+```bash
+cat >> ~/.openclaw/workspace/claude-code/inbox.md << 'EOF'
+## 2026-02-15T06:15:00-08:00 - STATUS: PENDING
+
+**From:** System Cron
+**Priority:** NORMAL
+**Request:** Run `kvault artifact daily --kb-root /home/eddie/personal_kb --date 2026-02-15 --force`, then confirm in outbox.
+
+---
+EOF
 ```
 
 ## Development

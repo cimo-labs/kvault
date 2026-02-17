@@ -67,6 +67,18 @@ logger.log_write("people/alice", "create", "Created entity")
 logger.log_propagate("people/alice", ["people"])
 ```
 
+### EntityResearcher (`research.py`)
+
+Reusable matching and reconciliation suggestions for dedup/update flows:
+
+```python
+from kvault.core.research import EntityResearcher
+
+researcher = EntityResearcher(Path("knowledge_graph"))
+candidates = researcher.research("Universal Robots", aliases=["UR"])
+action, target_path, confidence = researcher.suggest_action("Universal Robots", aliases=["UR"])
+```
+
 ### normalize_entity_id (`storage.py`)
 
 Converts entity names to filesystem-safe IDs:
@@ -85,6 +97,7 @@ core/
 ├── __init__.py       # Exports
 ├── storage.py        # SimpleStorage + scan_entities + count/list
 ├── frontmatter.py    # YAML frontmatter parsing
+├── research.py       # Entity matching + reconciliation suggestions
 ├── observability.py  # Phase-based logging
 └── README.md
 ```

@@ -3,6 +3,7 @@
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
 from kvault.core.storage import SimpleStorage, normalize_entity_id
 from kvault.core.observability import ObservabilityLogger
+from kvault.core.research import EntityResearcher, ResearchCandidate
 from kvault.core.daily_artifacts import (
     DailyArtifactResult,
     generate_daily_artifact,
@@ -16,6 +17,8 @@ __all__ = [
     "SimpleStorage",
     "normalize_entity_id",
     "ObservabilityLogger",
+    "EntityResearcher",
+    "ResearchCandidate",
     "DailyArtifactResult",
     "generate_daily_artifact",
     "parse_iso_date",

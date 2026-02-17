@@ -1,238 +1,140 @@
 # kvault Architecture
 
-> **Canonical Reference** — This document is the single source of truth for kvault's design.
-> Last updated: 2026-02-07
+Canonical architecture for the `knowledgevault` package.
+Last updated: 2026-02-17
 
 ## Overview
 
-kvault is a personal knowledge base that runs inside any MCP-compatible AI tool (Claude Code, OpenAI Codex, Cursor, VS Code + Copilot, etc.). It stores entities as YAML-frontmatter Markdown files with fuzzy deduplication, hierarchical summary propagation, and 15 MCP tools for agent interaction.
+`kvault` is a filesystem-native knowledge base runtime for MCP-compatible agents.
+It stores entities in Markdown with YAML frontmatter, exposes a canonical MCP tool
+manifest, and keeps write workflows auditable via `.kvault/logs.db`.
 
-### Goals
+## Design Goals
 
-1. **Agent-Native** — 15 MCP tools; agents operate the KB directly
-2. **Structured Memory** — Hierarchical entities with deduplication, not flat notes
-3. **Zero Extra Cost** — Uses existing AI tool subscription; no API keys
-4. **Auditable** — Complete trail of all decisions in `.kvault/logs.db`
-5. **Portable** — Plain Markdown files; works offline, version-controllable
+1. Agent-native interface through MCP.
+2. Deterministic, Git-friendly file storage.
+3. Explicit workflow and validation boundaries.
+4. Zero external service dependencies.
+5. Portable across agent runtimes (Claude Code, Codex, Cursor, VS Code, Windsurf).
 
----
-
-## Architecture Diagram
+## System Layers
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          AI TOOL INTERFACE                                   │
-│                                                                              │
-│  Claude Code    OpenAI Codex    Cursor    VS Code + Copilot    Windsurf    │
-│  (.claude/)     (.codex/)       (.cursor/) (.vscode/)                       │
-└─────────────────────────────────┬───────────────────────────────────────────┘
-                                  │ MCP (stdio)
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         MCP SERVER (kvault-mcp)                              │
-│                                                                              │
-│  15 tools: init, read/write entity, propagate, journal, validate           │
-│  Session state management, workflow enforcement                             │
-│  kvault/mcp/server.py                                                       │
-└─────────────────────────────────┬───────────────────────────────────────────┘
-                                  │
-        ┌─────────────────────────────────────────────┐
-        ▼                                             ▼
-┌───────────────────────────────┐ ┌───────────────────────────────┐
-│    SimpleStorage + Scanning   │ │     ObservabilityLogger       │
-│                               │ │                               │
-│   Filesystem CRUD + scanning  │ │   Structured logging          │
-│   YAML frontmatter            │ │   .kvault/logs.db             │
-│   _summary.md files           │ │                               │
-│   scan_entities / count       │ │   kvault/core/                │
-│                               │ │   observability.py            │
-│   kvault/core/storage.py      │ │                               │
-└───────────────────────────────┘ └───────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      KNOWLEDGE BASE (Filesystem)                             │
-│                                                                              │
-│   my_kb/                                                                     │
-│   ├── _summary.md              ← Root: executive overview                   │
-│   ├── people/                                                                │
-│   │   ├── _summary.md          ← Semantic summary of all people             │
-│   │   └── sarah_chen/                                                        │
-│   │       └── _summary.md      ← Entity: YAML frontmatter + Markdown       │
-│   ├── journal/YYYY-MM/log.md                                                │
-│   └── .kvault/                                                               │
-│       └── logs.db              ← Observability/audit log                    │
-└─────────────────────────────────────────────────────────────────────────────┘
+AI Tool Runtime
+  -> MCP (stdio)
+  -> kvault.mcp.server (manifest-driven)
+  -> core modules (storage/frontmatter/research/observability/artifacts)
+  -> filesystem knowledge base
 ```
 
----
+### MCP Layer (`kvault/mcp/`)
 
-## Component Descriptions
+- `manifest.py` is the canonical source of tool names/schemas.
+- `server.py` wires manifest entries to handlers and session state.
+- `state.py` tracks workflow sessions.
+- `validation.py` centralizes input/path/frontmatter validation.
+
+Current canonical tool count: **16**
+(`kvault_init`, `kvault_status`, `kvault_log_phase`, entity CRUD, summary tools,
+`kvault_write_journal`, `kvault_generate_daily_artifact`, `kvault_validate_kb`).
 
 ### Core Layer (`kvault/core/`)
 
-| Component | File | Purpose |
-|-----------|------|---------|
-| **SimpleStorage** | `storage.py` | Filesystem CRUD for entities and summaries |
-| **scan_entities** | `storage.py` | Walk KB, parse entity metadata from `_summary.md` files |
-| **ObservabilityLogger** | `observability.py` | Structured logging to `.kvault/logs.db` |
-| **parse_frontmatter** | `frontmatter.py` | YAML frontmatter ↔ Markdown parsing |
-| **build_frontmatter** | `frontmatter.py` | Markdown ↔ YAML frontmatter serialization |
+- `storage.py`: filesystem CRUD + `scan_entities` / entity records.
+- `frontmatter.py`: parse/build/merge YAML frontmatter.
+- `research.py`: reusable entity matching and reconciliation suggestions.
+- `observability.py`: structured logs to `.kvault/logs.db`.
+- `daily_artifacts.py`: deterministic daily artifact generation.
 
-### MCP Server (`kvault/mcp/`)
+### CLI Layer (`kvault/cli/`)
 
-| Component | File | Purpose |
-|-----------|------|---------|
-| **server.py** | `server.py` | 15 MCP tool handlers, session management. `kvault_read_entity` includes parent summary. |
-| **SessionState** | `state.py` | Per-session workflow state tracking |
-| **validation.py** | `validation.py` | 10 pure validation functions for tool inputs |
+- `kvault init`
+- `kvault check`
+- `kvault artifact daily`
+- `kvault log summary`
 
-### Orchestrator (`kvault/orchestrator/`)
+CLI commands are thin wrappers around core modules.
 
-| Component | File | Purpose |
-|-----------|------|---------|
-| **HeadlessOrchestrator** | `runner.py` | Spawns Claude subprocess for autonomous 5-step workflow |
-| **OrchestratorConfig** | `context.py` | Configuration for orchestrator runs |
-| **WorkflowStateMachine** | `state_machine.py` | State transitions for the 5-step workflow |
-| **WorkflowEnforcer** | `enforcer.py` | Validates workflow compliance |
+## Storage Model
 
-### CLI (`kvault/cli/`)
+### Preferred Entity Format
 
-| Component | File | Purpose |
-|-----------|------|---------|
-| **main.py** | `main.py` | CLI entry point (`kvault` command) |
-| **check.py** | `check.py` | `kvault check` integrity validation |
-
----
-
-## Data Flow (MCP-based, primary path)
-
-The agent drives the 4-step workflow through individual MCP tool calls:
-
-```
-Agent (Claude Code, Codex, etc.)
-    │
-    ├── 1. kvault_init(kg_root=".")
-    │       → Loads hierarchy, root summary, entity count
-    │
-    ├── 2. Agent uses Grep/Glob/Read to check for existing entities
-    │       → Reads parent summaries for sibling context
-    │
-    ├── 3. kvault_write_entity(path="...", meta={...}, content="...")
-    │       → Creates/updates entity with YAML frontmatter
-    │       → Validates required fields (source, aliases)
-    │       → Sets created/updated timestamps
-    │       → Returns propagation_needed ancestor list
-    │
-    ├── 4. kvault_propagate_all(path="...")
-    │       → Returns list of ancestor paths with current content
-    │       → Agent reads, updates, and writes each summary
-    │
-    └── 5. kvault_write_journal(actions=[...], source="...")
-            → Appends to journal/YYYY-MM/log.md
-```
-
-Agents use their own Grep/Glob/Read tools for searching. `kvault_read_entity` includes the parent summary for sibling context.
-
----
-
-## Entity Format
-
-Single `_summary.md` file with YAML frontmatter:
+Each entity is a directory containing a `_summary.md` with YAML frontmatter:
 
 ```markdown
 ---
-created: 2026-02-06
-updated: 2026-02-06
+created: 2026-02-17
+updated: 2026-02-17
 source: manual
-aliases: [Sarah Chen, sarah@anthropic.com]
-email: sarah@anthropic.com
-relationship_type: colleague
+aliases: [Alice Smith, alice@example.com]
 ---
-# Sarah Chen
+# Alice Smith
 
-Research scientist at Anthropic.
+Entity body...
 ```
 
-**Required fields:** `source`, `aliases`
-**Auto-set fields:** `created`, `updated`
-**Optional fields:** `phone`, `email`, `relationship_type`, `context`, `related_to`, `last_interaction`, `status`
+### Legacy Compatibility
 
----
+`scan_entities` supports legacy `_meta.json` fallback for read compatibility.
+New writes should use frontmatter in `_summary.md`.
 
-## Decision Log
+## Write Workflow
 
-### Why MCP Server over CLI Orchestrator?
+The canonical agent write flow:
 
-**Decision**: MCP server is the primary interface; orchestrator is available for autonomous batch processing.
+1. `kvault_init(kg_root=...)`
+2. research/navigation via agent file tools or `kvault_list_entities` / read tools
+3. `kvault_write_entity(..., reasoning=...)`
+4. `kvault_update_summaries(updates=[...])`
+5. optional explicit `kvault_write_journal(...)` (auto-journal can happen on write)
+6. optional `kvault_validate_kb`
 
-**Rationale**:
-- Individual tool calls give the agent fine-grained control
-- No subprocess timeout issues
-- Structured JSON responses (no regex parsing)
-- Works with any MCP-compatible tool, not just Claude
+`kvault_write_entity` returns ancestor context for propagation.
 
-### Why Filesystem Search (not SQLite)?
+## Daily Artifact Flow
 
-**Decision**: Search scans `_summary.md` files directly. SQLite is used only for observability logs.
+`kvault_generate_daily_artifact` (or `kvault artifact daily`) composes from:
 
-**Rationale**:
-- At typical KB sizes (< 1,000 entities), filesystem scan is fast (< 200ms)
-- Eliminates stale-index bugs entirely — no rebuild step needed
-- One fewer moving part; search results are always consistent with disk
-- SQLite `.kvault/logs.db` is still used for structured audit logging
+- root summary
+- people summary
+- projects summary
+- recent journal sections
 
-### Why Filesystem over Database for Entities?
+Artifact output path:
+`.kvault/artifacts/daily/YYYY-MM-DD.md`
 
-**Decision**: Entities are plain Markdown files, not database rows.
+## Runtime Boundaries
 
-**Rationale**:
-- Git-friendly (version control, diffs, PRs)
-- Human-readable without tooling
-- Agent can read/write with standard file tools as fallback
-- Hierarchical directory structure mirrors the semantic hierarchy
+What belongs in `kvault`:
 
----
+- canonical data model and on-disk invariants
+- tool manifest + MCP behavior
+- reusable research/reconciliation logic
+- validation and artifact generation
+
+What belongs in host runtimes (e.g. moss/OpenClaw):
+
+- workspace-specific permissions/tool routing
+- cron scheduling/inbox queue orchestration
+- persona prompts and delivery policy
 
 ## Testing
 
-### Test Structure
+Primary test suites live under `tests/` and cover:
 
-```
-tests/
-├── conftest.py                  # Rich shared fixtures (sample_kb, initialized_kb, empty_kb)
-├── fixtures/
-│   └── sample_kb/               # 5-entity representative KB for E2E tests
-│
-├── E2E Tests
-│   └── test_e2e_workflows.py    # Complete 4-step workflow pipelines
-│
-├── Feature Tests
-│   ├── test_check.py            # kvault check CLI + propagation staleness detection
-│   ├── test_frontmatter.py      # YAML frontmatter parsing
-│   └── test_storage.py          # SimpleStorage filesystem + scan_entities
-│
-└── Regression Tests
-    └── test_pressure_fixes.py   # Pressure test regression coverage
-```
+- core modules
+- MCP handlers and regressions
+- end-to-end write/propagation paths
+- CLI checks and artifacts
 
-**~80 tests, runs in < 1s.**
+Run:
 
 ```bash
-pytest tests/                                     # Run all
-pytest tests/test_e2e*.py -q                      # Quick E2E validation
-pytest tests/test_mcp*.py -v                      # MCP layer tests
-pytest tests/ --ignore=tests/test_orchestrator.py  # Skip flaky orchestrator tests
-pytest --cov=kvault --cov-report=term tests/       # With coverage
+pytest -q
 ```
 
----
+## Version Notes
 
-## Version History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 0.1.0 | 2026-01-05 | Initial architecture |
-| 0.2.0 | 2026-01-23 | MCP server, YAML frontmatter, 20 tools |
-| 0.3.0 | 2026-02-06 | Multi-tool support (Codex, Cursor, VS Code), integrity hook |
-| 0.4.0 | 2026-02-07 | Removed SQLite index, filesystem-based search, 17 tools, 5-step workflow, propagation staleness detection |
-| 0.5.0 | 2026-02-07 | Removed search/research tools (agents use own Grep/Glob), 15 tools, read_entity includes parent summary |
+- 0.6.1 introduced MCP path hardening and manifest/status reliability.
+- 0.6.2 (current workspace changes) adds shared research primitives and removes
+  stale architecture/docs references to non-existent orchestrator components.

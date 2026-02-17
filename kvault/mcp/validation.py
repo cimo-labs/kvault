@@ -1,6 +1,6 @@
 """Business rules and validation for kvault MCP server.
 
-Shared validation logic extracted from the CLI orchestrator.
+Shared validation logic for MCP tool handlers and CLI-facing workflows.
 """
 
 import re

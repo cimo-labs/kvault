@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledgevault"
-version = "0.6.1"
+version = "0.6.2"
 description = "Personal knowledge base that runs inside any MCP-compatible AI tool — structured, navigable, zero extra cost"
 readme = "README.md"
 license = {text = "MIT"}
@@ -40,8 +40,7 @@ dev = [
     "ruff>=0.1.0",
     "pre-commit>=3.0",
 ]
-# Optional: Agent SDK for full programmatic control with hooks
-# Falls back to CLI subprocess mode if not installed
+# Optional: Agent SDK dependencies for downstream automation integrations
 sdk = [
     "claude-code-sdk>=0.1.0",
 ]

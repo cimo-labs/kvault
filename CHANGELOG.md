@@ -2,6 +2,23 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.6.2 - 2026-02-17
+
+### Added
+
+- Added shared research primitives in `kvault.core.research`:
+  - `EntityResearcher`
+  - `ResearchCandidate`
+- Added `kvault log summary` CLI command for observability session summaries.
+- Added tests for research primitives and log CLI behavior.
+
+### Changed
+
+- `ObservabilityLogger.get_session_summary()` now defaults to the latest logged session.
+- Added `ObservabilityLogger.list_sessions()` helper.
+- Refactored ProTec adapter to reuse `kvault.core.research.EntityResearcher` instead of local duplicate logic.
+- Reconciled architecture and maintainer docs with the canonical MCP manifest and current module layout.
+
 ## 0.6.1 - 2026-02-17
 
 ### Security

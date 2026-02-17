@@ -1,78 +1,51 @@
 # kvault Package
 
-Main Python package for the personal knowledge base framework.
+Main Python package for `knowledgevault`.
 
 ## Module Structure
 
 ```
 kvault/
-├── __init__.py          # Package exports
-├── cli/                 # Command-line interface
-├── core/                # Storage, frontmatter, observability
-├── mcp/                 # MCP server (16 tools for Claude Code, Codex, etc.)
-├── orchestrator/        # Headless workflow runner (5-step pipeline)
-└── templates/           # Default templates for new KBs
+├── __init__.py
+├── cli/                 # kvault init/check/artifact/log commands
+├── core/                # storage, frontmatter, research, observability, artifacts
+├── mcp/                 # MCP server + canonical manifest (16 tools)
+└── templates/           # default KB templates
 ```
 
-## Package Exports
+## Primary Exports
 
 ```python
 from kvault import (
-    # Core
     SimpleStorage,
     normalize_entity_id,
     scan_entities,
     count_entities,
     list_entity_records,
     EntityRecord,
-    # Frontmatter
     parse_frontmatter,
     build_frontmatter,
     merge_frontmatter,
+    EntityResearcher,
+    ResearchCandidate,
+    generate_daily_artifact,
+    DailyArtifactResult,
+    parse_iso_date,
 )
 ```
 
-## Layer Architecture
+## Interface Layers
 
-```
-┌─────────────────────────────────────────────┐
-│              MCP Server (Preferred)          │
-│  16 tools: kvault_init, kvault_status, ...  │
-│  kvault-mcp entry point                     │
-└─────────────────────────────────────────────┘
-                      │
-┌─────────────────────────────────────────────┐
-│          Orchestrator Layer                  │
-│  HeadlessOrchestrator → 5-step workflow     │
-└─────────────────────────────────────────────┘
-                      │
-┌─────────────────────────────────────────────┐
-│              Core Layer                      │
-│  SimpleStorage │ Search      │ Frontmatter  │
-│  Observability │ (filesystem)│              │
-└─────────────────────────────────────────────┘
-```
-
-## Key Dependencies
-
-- **pydantic**: Configuration validation
-- **pyyaml**: YAML frontmatter parsing
-- **click**: CLI framework
-- **mcp**: MCP server protocol (optional, Python 3.10+)
+- MCP server (`kvault-mcp`) is the preferred runtime interface.
+- Core modules provide reusable library behavior.
+- CLI commands are local operational wrappers.
 
 ## CLI Quick Start
 
 ```bash
-# Create a new knowledge base
 kvault init my_kb --name "Your Name"
-
-# Validate integrity
 kvault check --kb-root my_kb
-
-# Generate a daily artifact
-kvault artifact daily --kb-root my_kb --date 2026-02-15
-
-# Observability
+kvault artifact daily --kb-root my_kb --date 2026-02-17
 kvault log summary --db my_kb/.kvault/logs.db
 ```
 
@@ -80,6 +53,5 @@ kvault log summary --db my_kb/.kvault/logs.db
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/
-mypy kvault/
+pytest -q
 ```

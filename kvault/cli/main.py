@@ -1,5 +1,6 @@
-"""kvault CLI — init, check, and artifact commands."""
+"""kvault CLI — init/check/artifact/log commands."""
 
+import json
 from datetime import date
 from importlib.resources import files as resource_files
 from pathlib import Path
@@ -157,6 +158,63 @@ def generate_daily(
     if print_stdout:
         click.echo()
         click.echo(result.content)
+
+
+@cli.group("log")
+def log_group() -> None:
+    """Inspect kvault observability logs."""
+
+
+@log_group.command("summary")
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(path_type=Path),
+    default=Path(".kvault/logs.db"),
+    show_default=True,
+    help="Path to observability SQLite database",
+)
+@click.option(
+    "--session-id",
+    default=None,
+    help="Optional session id. Defaults to the latest session in the database.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help="Print summary as JSON.",
+)
+def log_summary(db_path: Path, session_id: Optional[str], as_json: bool) -> None:
+    """Show high-level stats for an observability session."""
+    db_path = db_path.resolve()
+    if not db_path.exists():
+        raise click.ClickException(f"Log database does not exist: {db_path}")
+
+    logger = ObservabilityLogger(db_path)
+    summary = logger.get_session_summary(session_id=session_id)
+
+    if as_json:
+        click.echo(json.dumps(summary, indent=2, sort_keys=True))
+        return
+
+    click.echo(f"Session: {summary['session_id']}")
+    click.echo(f"Total logs: {summary['total_logs']}")
+    click.echo(f"Errors: {summary['error_count']}")
+
+    click.echo("Phase counts:")
+    if summary["phase_counts"]:
+        for phase, count in sorted(summary["phase_counts"].items()):
+            click.echo(f"  - {phase}: {count}")
+    else:
+        click.echo("  - (none)")
+
+    click.echo("Action counts:")
+    if summary["action_counts"]:
+        for action, count in sorted(summary["action_counts"].items()):
+            click.echo(f"  - {action}: {count}")
+    else:
+        click.echo("  - (none)")
 
 
 if __name__ == "__main__":

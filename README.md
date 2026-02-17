@@ -213,13 +213,17 @@ kvault also exposes a Python API for programmatic use:
 
 ```python
 from pathlib import Path
-from kvault import SimpleStorage, scan_entities
+from kvault import EntityResearcher, SimpleStorage, scan_entities
 
 kg_root = Path("my_kb")
 storage = SimpleStorage(kg_root)
+researcher = EntityResearcher(kg_root)
 
 # Scan all entities
 entities = scan_entities(kg_root)
+
+# Reusable dedup/reconciliation suggestions
+action, target_path, confidence = researcher.suggest_action("Universal Robots", aliases=["UR"])
 
 # Navigate hierarchy
 ancestors = storage.get_ancestors("people/contacts/sarah_chen")

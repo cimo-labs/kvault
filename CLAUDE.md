@@ -1,167 +1,86 @@
-# kvault - Personal Knowledge Base for Claude Code
+# kvault - Maintainer Notes
 
 ## Overview
 
-kvault is a personal knowledge base that runs inside Claude Code (or OpenAI Codex). It provides entity storage, hierarchical navigation, and 14 MCP tools for structured agent memory.
+`kvault` is an MCP-first knowledge base library. The canonical runtime contract is:
 
-## Quick Start
+- manifest-driven MCP server (`kvault/mcp/manifest.py`)
+- filesystem storage with frontmatter summaries
+- reusable core modules in `kvault/core`
+- thin CLI wrappers in `kvault/cli`
 
-```bash
-pip install -e ".[dev]"  # Install with dev dependencies
-pytest                    # Run tests
-```
+Current MCP tool count: **16**.
 
-## Architecture
+## Repository Layout
 
 ```
 kvault/
-├── core/           # Storage, frontmatter, observability
-├── orchestrator/   # Headless workflow runner
-└── cli/            # Command-line interface
+├── kvault/
+│   ├── cli/
+│   ├── core/
+│   ├── mcp/
+│   └── templates/
+└── tests/
 ```
 
-## Key Components
+## Critical Invariants
 
-### SimpleStorage + scan_entities (core/storage.py)
-File-based entity storage with read/write operations and entity scanning.
+1. `manifest.py` is the single source of truth for tool schemas/names.
+2. `kvault_status` must report manifest version/count consistently.
+3. Entities are written as `_summary.md` with frontmatter (legacy `_meta.json` read fallback only).
+4. Path handling must never allow escape outside configured KB root.
+
+## Core APIs
 
 ```python
-from kvault.core.storage import SimpleStorage, scan_entities
+from kvault.core import (
+    parse_frontmatter,
+    build_frontmatter,
+    merge_frontmatter,
+    EntityResearcher,
+    ResearchCandidate,
+    DailyArtifactResult,
+    generate_daily_artifact,
+)
 
-storage = SimpleStorage(kg_root)
-entities = scan_entities(kg_root)         # Full entity scan
+from kvault.core.storage import (
+    SimpleStorage,
+    EntityRecord,
+    normalize_entity_id,
+    scan_entities,
+    count_entities,
+    list_entity_records,
+)
 ```
-
-### HeadlessOrchestrator (orchestrator/runner.py)
-Spawns Claude subprocess to execute the 5-step workflow autonomously.
-
-```python
-from kvault.orchestrator import HeadlessOrchestrator, OrchestratorConfig
-config = OrchestratorConfig(kg_root=Path("."))
-orchestrator = HeadlessOrchestrator(config)
-result = orchestrator.ingest(content="...", source="manual")
-```
-
-## Entity Format (YAML Frontmatter)
-
-**Preferred format**: Single `_summary.md` file with YAML frontmatter.
-
-```markdown
----
-created: 2026-01-23
-updated: 2026-01-23
-source: imessage:abc123
-aliases: [John, john@example.com, +14155551234]
-phone: +14155551234
-email: john@example.com
-relationship_type: colleague
-context: ex-Stitch Fix
----
-
-# John Doe
-
-**Relationship:** Colleague
-
-## Background
-[content]
-```
-
-**Required fields**: `created`, `updated`, `source`, `aliases`
-**Optional fields**: `phone`, `email`, `relationship_type`, `context`, `related_to`, `last_interaction`, `status`
-
-**Legacy format**: Separate `_meta.json` files are still supported for backward compatibility but should not be used for new entities.
-
-## The 2-Call Write Workflow
-
-All knowledge graph updates follow this pattern:
-
-1. **NAVIGATE** — Browse the tree, read parent summaries to find existing entities (use Grep/Glob/Read)
-2. **WRITE (Call 1)** — `kvault_write_entity(..., reasoning="...")` → returns ancestor summaries + auto-logs journal
-3. **PROPAGATE (Call 2)** — `kvault_update_summaries(updates=[...])` → batch-update all ancestor summaries
-
-The old 4-step workflow (write → propagate_all → write_summary × N → write_journal) is replaced by 2 MCP calls.
-`kvault_read_entity` includes the parent summary for sibling context.
 
 ## CLI Commands
 
 ```bash
-# Observability
-kvault log summary --db .kvault/logs.db
-
-# Daily summary artifact
-kvault artifact daily --kb-root . --date 2026-02-15
-
-# MCP Server
-kvault-mcp  # Start MCP server for Claude Code
+kvault init <path>
+kvault check --kb-root <path>
+kvault artifact daily --kb-root <path> [--date YYYY-MM-DD] [--force]
+kvault log summary --db <path/to/.kvault/logs.db> [--session-id <id>] [--json]
+kvault-mcp
 ```
 
-## MCP Server (Preferred)
-
-The MCP server provides direct tool access for any MCP-compatible AI tool (Claude Code, Codex, Cursor, VS Code + Copilot, etc.).
-
-### Installation
+## Testing
 
 ```bash
-pip install knowledgevault[mcp]
+pytest -q
 ```
 
-### Configuration (.claude/settings.json)
+Prefer adding tests in `tests/` whenever changing:
 
-```json
-{
-  "mcpServers": {
-    "kvault": {
-      "command": "kvault-mcp",
-      "env": {}
-    }
-  }
-}
-```
+- MCP handler behavior
+- validation/path logic
+- research/matching heuristics
+- CLI output/flags
 
-### Tools (14 total)
+## Release Hygiene
 
-**Entity:** `kvault_read_entity` (includes parent summary), `kvault_write_entity` (returns ancestors, auto-journals), `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
-**Summary:** `kvault_read_summary`, `kvault_write_summary`, `kvault_update_summaries` (batch), `kvault_get_parent_summaries`, `kvault_propagate_all`
-**Workflow:** `kvault_write_journal`
-**Artifacts:** `kvault_generate_daily_artifact`
-**Validation:** `kvault_validate_kb`
-**Init:** `kvault_init`
+Before publishing:
 
-### Key Differences from CLI Orchestrator
-
-| CLI Orchestrator | MCP Server |
-|------------------|------------|
-| Single subprocess, parses output | Individual tool calls |
-| 10-15 min timeout | No timeout concerns |
-| Regex-based path extraction | Structured JSON responses |
-| Single session | Session state management |
-
-## Important Patterns
-
-### Entity Matching
-Always verify identifiers (phone, email) EXACTLY before claiming entity match. Never merge entities based on name similarity alone.
-
-### Frontmatter Parsing
-```python
-from kvault.core.frontmatter import parse_frontmatter, build_frontmatter
-
-content = open("_summary.md").read()
-meta, body = parse_frontmatter(content)  # Returns (dict, str)
-```
-
-## Development
-
-```bash
-ruff check . && black . && mypy .  # Lint, format, type-check
-pytest -v                           # Run tests with verbose output
-```
-
-**Before committing:** Always run `black kvault/ tests/` to ensure CI passes. CI runs `black --check` and will reject unformatted code.
-
-## Do Not
-
-- Create separate `_meta.json` files (use frontmatter instead)
-- Merge entities without exact identifier match
-- Skip the PROPAGATE step (summaries must stay in sync)
-- Modify entity files without going through the workflow
-- Commit without running `black` first
+1. Update docs for any API/manifest changes.
+2. Run full tests.
+3. Ensure `CHANGELOG.md` and package version stay in sync.
+4. Verify MCP manifest count + docs references are consistent.

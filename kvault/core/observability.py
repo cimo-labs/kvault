@@ -47,7 +47,7 @@ class ObservabilityLogger:
         "rebuild",
         "refactor",
         "error",
-        # Orchestrator-specific phases
+        # Legacy step phases retained for backward-compatible log ingestion
         "cli_raw",  # Full CLI output
         "step_research",
         "step_decide",
@@ -73,7 +73,8 @@ class ObservabilityLogger:
     def _init_db(self) -> None:
         """Create tables if they don't exist."""
         with sqlite3.connect(self.db_path) as conn:
-            conn.executescript("""
+            conn.executescript(
+                """
                 -- Main logs table
                 CREATE TABLE IF NOT EXISTS logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,7 +104,8 @@ class ObservabilityLogger:
                        json_extract(data, '$.confidence') as confidence,
                        json_extract(data, '$.reasoning') as reasoning
                 FROM logs WHERE phase = 'decide';
-            """)
+            """
+            )
 
     def _new_session(self) -> str:
         """Generate a new session ID."""
@@ -431,6 +433,21 @@ class ObservabilityLogger:
                 for row in rows
             ]
 
+    def list_sessions(self, limit: int = 20) -> List[str]:
+        """List recent session IDs by most recent activity."""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT session
+                FROM logs
+                GROUP BY session
+                ORDER BY MAX(id) DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [str(row[0]) for row in rows]
+
     def get_session_summary(self, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Get summary statistics for a session.
 
@@ -440,9 +457,12 @@ class ObservabilityLogger:
         Returns:
             Dictionary with summary statistics
         """
-        session_id = session_id or self.session_id
-
         with sqlite3.connect(self.db_path) as conn:
+            resolved_session_id = session_id
+            if resolved_session_id is None:
+                row = conn.execute("SELECT session FROM logs ORDER BY id DESC LIMIT 1").fetchone()
+                resolved_session_id = str(row[0]) if row else self.session_id
+
             # Phase counts
             phase_counts = {}
             for row in conn.execute(
@@ -451,7 +471,7 @@ class ObservabilityLogger:
                 FROM logs WHERE session = ?
                 GROUP BY phase
                 """,
-                (session_id,),
+                (resolved_session_id,),
             ):
                 phase_counts[row[0]] = row[1]
 
@@ -464,7 +484,7 @@ class ObservabilityLogger:
                 WHERE session = ? AND phase = 'decide'
                 GROUP BY json_extract(data, '$.action')
                 """,
-                (session_id,),
+                (resolved_session_id,),
             ):
                 if row[0]:
                     action_counts[row[0]] = row[1]
@@ -473,7 +493,7 @@ class ObservabilityLogger:
             error_count = phase_counts.get("error", 0)
 
             return {
-                "session_id": session_id,
+                "session_id": resolved_session_id,
                 "phase_counts": phase_counts,
                 "action_counts": action_counts,
                 "error_count": error_count,

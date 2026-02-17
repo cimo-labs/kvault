@@ -10,7 +10,7 @@ tests/
 ├── fixtures/
 │   └── sample_kb/           # 5-entity representative KB for E2E tests
 ├── test_check.py            # kvault check CLI + propagation staleness detection
-├── test_e2e_workflows.py    # Complete 4-step workflow pipelines
+├── test_e2e_workflows.py    # End-to-end write/propagation workflow pipelines
 ├── test_frontmatter.py      # YAML frontmatter parsing
 ├── test_pressure_fixes.py   # Pressure test regression coverage
 └── test_storage.py          # SimpleStorage filesystem + scan_entities
@@ -63,4 +63,4 @@ def empty_kb(tmp_path):
 
 ## Stats
 
-**~80 tests, runs in < 1s.**
+**~100+ tests, runs in < 2s.**

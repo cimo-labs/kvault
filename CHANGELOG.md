@@ -2,6 +2,24 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.6.3 - 2026-02-17
+
+### Security
+
+- Added optional KB-root pinning guard for MCP init:
+  - `kvault_init` now enforces `KVAULT_ALLOWED_ROOTS` when configured.
+  - Returns structured `validation_error` if requested `kg_root` is outside allowed roots.
+- `kvault_status` now reports configured `allowed_kg_roots` when root pinning is enabled.
+
+### Compatibility & Docs
+
+- Aligned README workflow language with staged MCP flow (research -> decide -> execute -> propagate -> log -> rebuild/validate).
+- Added packaging excludes for Python cache artifacts (`__pycache__`, `*.py[cod]`) to keep builds clean.
+
+### Testing
+
+- Added MCP root guard coverage in `tests/test_mcp_pre_ui_hardening.py`.
+
 ## 0.6.2 - 2026-02-17
 
 ### Added

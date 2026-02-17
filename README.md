@@ -121,12 +121,14 @@ The pattern is always the same: drop the data into `sources/`, tell your agent t
 
 ## What happens next
 
-Every time your agent processes new information, it follows a 4-step workflow:
+Every time your agent processes new information, it follows a staged workflow:
 
-1. **Navigate** — Browse the tree, read parent summaries to understand what exists
-2. **Write** — Create/update entity with YAML frontmatter (`_summary.md`)
-3. **Propagate** — Update all ancestor `_summary.md` files so summaries stay in sync
-4. **Log** — Add entry to `journal/YYYY-MM/log.md`
+1. **Research** — Browse the tree and read parent summaries to understand what exists
+2. **Decide** — Determine whether to create/update/merge/move entities
+3. **Execute** — Create or update entities with YAML frontmatter (`_summary.md`)
+4. **Propagate** — Update all ancestor `_summary.md` files so summaries stay in sync
+5. **Log** — Add entry to `journal/YYYY-MM/log.md` (or pass `reasoning` to auto-log on write)
+6. **Rebuild/Validate** — Optionally run consistency checks (`kvault_validate_kb`)
 
 Your agent uses its own Grep/Glob/Read tools for searching. Parent summaries at each level act as curated indexes — when reading any entity, kvault automatically includes the parent summary so the agent sees sibling context for free.
 
@@ -206,6 +208,18 @@ Every directory with a `_summary.md` is a node. Summaries at each level capture 
 | **Validation** | `kvault_validate_kb` |
 
 `kvault_read_entity` returns entity content **plus** the parent `_summary.md` — giving the agent sibling context for free. `kvault_write_entity` returns ancestor summaries and pipeline hints so agents know exactly what to propagate next.
+
+## Optional root pinning (multi-tenant hardening)
+
+For shared runtimes, you can pin allowed init roots:
+
+```bash
+export KVAULT_ALLOWED_ROOTS="/Users/mossbot/personal_kb"
+kvault-mcp
+```
+
+When `KVAULT_ALLOWED_ROOTS` is set, `kvault_init(kg_root=...)` only accepts exact
+roots in that list (comma-separated for multiple roots).
 
 ## Python API
 

@@ -89,3 +89,30 @@ def test_log_phase_accepts_valid_phase_and_rejects_invalid(initialized_kb):
     assert bad["success"] is False
     assert bad["error_code"] == "validation_error"
 
+
+def test_init_rejects_disallowed_root_when_guard_configured(monkeypatch, tmp_path):
+    """KVAULT_ALLOWED_ROOTS should block init outside configured roots."""
+    allowed = tmp_path / "allowed"
+    blocked = tmp_path / "blocked"
+    allowed.mkdir()
+    blocked.mkdir()
+
+    monkeypatch.setenv("KVAULT_ALLOWED_ROOTS", str(allowed))
+
+    ok = handle_kvault_init(str(allowed))
+    assert ok["kg_root"] == str(allowed.resolve())
+
+    bad = handle_kvault_init(str(blocked))
+    assert bad["success"] is False
+    assert bad["error_code"] == "validation_error"
+    assert "is not allowed" in bad["error"]
+
+
+def test_init_accepts_any_root_when_guard_not_configured(monkeypatch, tmp_path):
+    """Without KVAULT_ALLOWED_ROOTS, init should keep existing behavior."""
+    monkeypatch.delenv("KVAULT_ALLOWED_ROOTS", raising=False)
+    root = tmp_path / "kb"
+    root.mkdir()
+
+    result = handle_kvault_init(str(root))
+    assert result["kg_root"] == str(root.resolve())

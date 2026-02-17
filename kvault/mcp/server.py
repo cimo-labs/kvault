@@ -10,6 +10,7 @@ Key workflow:
 """
 
 import json
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -49,6 +50,7 @@ _storage: Optional[SimpleStorage] = None
 _logger: Optional[ObservabilityLogger] = None
 
 _NOT_INIT_MSG = "kvault MCP server not initialized. Call kvault_init first."
+_ALLOWED_ROOTS_ENV = "KVAULT_ALLOWED_ROOTS"
 
 
 def _ensure_initialized() -> None:
@@ -75,7 +77,12 @@ def _init_infrastructure(kg_root: str) -> Dict[str, Any]:
     """Initialize kvault infrastructure for a given root."""
     global _kg_root, _storage, _logger
 
-    _kg_root = Path(kg_root).resolve()
+    resolved_root = Path(kg_root).resolve()
+    init_error = _validate_allowed_root(resolved_root)
+    if init_error:
+        raise ValueError(init_error)
+
+    _kg_root = resolved_root
 
     kvault_dir = _kg_root / ".kvault"
     kvault_dir.mkdir(parents=True, exist_ok=True)
@@ -98,6 +105,34 @@ def _init_infrastructure(kg_root: str) -> Dict[str, Any]:
         "hierarchy": hierarchy,
         "entity_count": count_entities(_kg_root),
     }
+
+
+def _configured_allowed_roots() -> List[Path]:
+    """Return allowed KB roots from KVAULT_ALLOWED_ROOTS (if configured)."""
+    raw = os.environ.get(_ALLOWED_ROOTS_ENV, "").strip()
+    if not raw:
+        return []
+
+    normalized = raw.replace(os.pathsep, ",")
+    tokens = [token.strip() for token in normalized.split(",") if token.strip()]
+    return [Path(token).resolve() for token in tokens]
+
+
+def _validate_allowed_root(candidate_root: Path) -> Optional[str]:
+    """Validate candidate root against configured allowed roots (if any)."""
+    allowed = _configured_allowed_roots()
+    if not allowed:
+        return None
+
+    candidate = candidate_root.resolve()
+    if any(candidate == allowed_root for allowed_root in allowed):
+        return None
+
+    allowed_str = ", ".join(str(root) for root in allowed)
+    return (
+        f"kg_root '{candidate}' is not allowed by {_ALLOWED_ROOTS_ENV}. "
+        f"Allowed roots: {allowed_str}"
+    )
 
 
 def _build_hierarchy_tree(root: Path, max_depth: int = 3) -> str:
@@ -470,7 +505,17 @@ def handle_kvault_init(kg_root: str) -> Dict[str, Any]:
     This should be called first to set up the knowledge graph.
     Returns hierarchy tree, root summary, and entity count.
     """
-    result = _init_infrastructure(kg_root)
+    try:
+        result = _init_infrastructure(kg_root)
+    except ValueError as exc:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            str(exc),
+            hint=(
+                f"Use an allowed path or configure {_ALLOWED_ROOTS_ENV} "
+                "with one or more comma-separated absolute roots."
+            ),
+        )
 
     # Create session
     session_mgr = get_session_manager()
@@ -511,6 +556,9 @@ def handle_kvault_status(
         "tool_manifest": manifest,
         "active_sessions": sessions,
     }
+    allowed_roots = _configured_allowed_roots()
+    if allowed_roots:
+        result["allowed_kg_roots"] = [str(root) for root in allowed_roots]
 
     if selected_session:
         result["session"] = selected_session.to_dict()

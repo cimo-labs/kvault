@@ -29,6 +29,7 @@ kvault/
 2. `kvault_status` must report manifest version/count consistently.
 3. Entities are written as `_summary.md` with frontmatter (legacy `_meta.json` read fallback only).
 4. Path handling must never allow escape outside configured KB root.
+5. If `KVAULT_ALLOWED_ROOTS` is configured, `kvault_init` must reject non-allowed roots.
 
 ## Core APIs
 

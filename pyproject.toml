@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledgevault"
-version = "0.6.2"
+version = "0.6.3"
 description = "Personal knowledge base that runs inside any MCP-compatible AI tool — structured, navigable, zero extra cost"
 readme = "README.md"
 license = {text = "MIT"}
@@ -65,6 +65,9 @@ include = ["kvault*"]
 
 [tool.setuptools.package-data]
 kvault = ["templates/**/*", "py.typed"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["__pycache__/*", "*.py[cod]"]
 
 [tool.black]
 line-length = 100

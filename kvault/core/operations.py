@@ -1,0 +1,637 @@
+"""Stateless operations layer for kvault.
+
+All functions take ``kg_root: Path`` as first argument — no globals, no
+sessions.  Used by both the MCP server and CLI commands.
+
+Key workflow (2-call write):
+  1. write_entity(kg_root, path, ...) → ancestors + optional auto-journal
+  2. update_summaries(kg_root, updates) → batch propagation
+"""
+
+import json
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from kvault.core.frontmatter import build_frontmatter, parse_frontmatter
+from kvault.core.storage import (
+    SimpleStorage,
+    count_entities,
+    list_entity_records,
+    scan_entities,
+)
+from kvault.core.validation import (
+    ErrorCode,
+    error_response,
+    format_journal_entry,
+    get_journal_path,
+    normalize_path,
+    validate_entity_path,
+)
+
+_ALLOWED_ROOTS_ENV = "KVAULT_ALLOWED_ROOTS"
+
+
+# ---------------------------------------------------------------------------
+# Security helpers
+# ---------------------------------------------------------------------------
+
+
+def configured_allowed_roots() -> List[Path]:
+    """Return allowed KB roots from KVAULT_ALLOWED_ROOTS (if configured)."""
+    raw = os.environ.get(_ALLOWED_ROOTS_ENV, "").strip()
+    if not raw:
+        return []
+    normalized = raw.replace(os.pathsep, ",")
+    tokens = [token.strip() for token in normalized.split(",") if token.strip()]
+    return [Path(token).resolve() for token in tokens]
+
+
+def validate_allowed_root(candidate_root: Path) -> Optional[str]:
+    """Validate *candidate_root* against KVAULT_ALLOWED_ROOTS.
+
+    Returns an error message string if blocked, or ``None`` if OK.
+    """
+    allowed = configured_allowed_roots()
+    if not allowed:
+        return None
+    candidate = candidate_root.resolve()
+    if any(candidate == r for r in allowed):
+        return None
+    allowed_str = ", ".join(str(r) for r in allowed)
+    return (
+        f"kg_root '{candidate}' is not allowed by {_ALLOWED_ROOTS_ENV}. "
+        f"Allowed roots: {allowed_str}"
+    )
+
+
+def validate_within_root(kg_root: Path, path: str) -> bool:
+    """Return True if *path* resolves inside *kg_root*."""
+    resolved = (kg_root / path).resolve()
+    root_resolved = kg_root.resolve()
+    try:
+        resolved.relative_to(root_resolved)
+        return True
+    except ValueError:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Hierarchy / tree helpers
+# ---------------------------------------------------------------------------
+
+
+def build_hierarchy_tree(root: Path, max_depth: int = 3) -> str:
+    """Build a text tree representation of the KB hierarchy."""
+    lines: List[str] = []
+
+    def _walk(path: Path, prefix: str = "", depth: int = 0) -> None:
+        if depth > max_depth:
+            return
+        if path.name.startswith("."):
+            return
+        try:
+            subdirs = sorted(
+                p for p in path.iterdir() if p.is_dir() and not p.name.startswith(".")
+            )
+        except PermissionError:
+            return
+        for i, subdir in enumerate(subdirs):
+            is_last = i == len(subdirs) - 1
+            connector = "└── " if is_last else "├── "
+            extension = "    " if is_last else "│   "
+            has_summary = (subdir / "_summary.md").exists()
+            marker = " ✓" if has_summary else ""
+            lines.append(f"{prefix}{connector}{subdir.name}/{marker}")
+            _walk(subdir, prefix + extension, depth + 1)
+
+    has_root_summary = (root / "_summary.md").exists()
+    lines.append(f"./{' ✓' if has_root_summary else ''}")
+    _walk(root, "", 0)
+    return "\n".join(lines)
+
+
+def derive_display_alias(entity_path: str) -> str:
+    """Derive a human-friendly alias from the entity leaf path."""
+    leaf = entity_path.split("/")[-1]
+    return leaf.replace("_", " ").strip().title() or leaf
+
+
+# ---------------------------------------------------------------------------
+# KB info (replaces _init_infrastructure output)
+# ---------------------------------------------------------------------------
+
+
+def get_kb_info(kg_root: Path) -> Dict[str, Any]:
+    """Return hierarchy, entity count, and root summary for *kg_root*."""
+    root_summary_path = kg_root / "_summary.md"
+    root_summary = root_summary_path.read_text() if root_summary_path.exists() else ""
+    return {
+        "kg_root": str(kg_root),
+        "root_summary": root_summary,
+        "hierarchy": build_hierarchy_tree(kg_root),
+        "entity_count": count_entities(kg_root),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Read operations
+# ---------------------------------------------------------------------------
+
+
+def _read_entity_raw(kg_root: Path, entity_path: str) -> Optional[Dict[str, Any]]:
+    """Read entity's ``_summary.md``, returning meta + content.
+
+    Falls back to legacy ``_meta.json`` for metadata if no frontmatter.
+    """
+    if not validate_within_root(kg_root, entity_path):
+        return None
+    full_path = kg_root / entity_path
+    summary_path = full_path / "_summary.md"
+    if not summary_path.exists():
+        return None
+    content = summary_path.read_text()
+    meta, body = parse_frontmatter(content)
+    if not meta:
+        meta_path = full_path / "_meta.json"
+        if meta_path.exists():
+            with open(meta_path) as f:
+                meta = json.load(f)
+    return {
+        "path": entity_path,
+        "meta": meta,
+        "content": body if meta else content,
+        "has_frontmatter": bool(meta) and summary_path.exists(),
+    }
+
+
+def read_entity(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
+    """Read entity with parent summary for sibling context."""
+    entity_data = _read_entity_raw(kg_root, path)
+    if not entity_data:
+        return None
+    storage = SimpleStorage(kg_root)
+    ancestors = storage.get_ancestors(path)
+    if ancestors:
+        parent_summary_path = kg_root / ancestors[0] / "_summary.md"
+        if parent_summary_path.exists():
+            entity_data["parent_summary"] = parent_summary_path.read_text()
+            entity_data["parent_path"] = ancestors[0]
+    return entity_data
+
+
+def read_summary(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
+    """Read ``_summary.md`` at *path*."""
+    path = normalize_path(path)
+    if not validate_within_root(kg_root, path):
+        return None
+    summary_path = kg_root / path / "_summary.md"
+    if not summary_path.exists():
+        summary_path = kg_root / path
+        if not summary_path.exists() or not path.endswith(".md"):
+            return None
+    content = summary_path.read_text()
+    meta, body = parse_frontmatter(content)
+    return {
+        "path": path,
+        "meta": meta,
+        "content": body if meta else content,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Write operations
+# ---------------------------------------------------------------------------
+
+
+def _resolve_entity_meta(
+    kg_root: Path,
+    entity_path: str,
+    incoming_meta: Optional[Dict[str, Any]],
+    create: bool,
+    journal_source: Optional[str] = None,
+    default_source: str = "auto:cli",
+) -> Dict[str, Any]:
+    """Merge incoming meta with existing meta and safe defaults."""
+    meta: Dict[str, Any] = dict(incoming_meta or {})
+    existing_meta: Dict[str, Any] = {}
+
+    existing = _read_entity_raw(kg_root, entity_path)
+    if existing and isinstance(existing.get("meta"), dict):
+        existing_meta = dict(existing["meta"])
+
+    merged: Dict[str, Any] = dict(existing_meta)
+    merged.update(meta)
+
+    if not merged.get("source"):
+        merged["source"] = journal_source or existing_meta.get("source") or default_source
+        merged["_autofilled_source"] = True
+
+    aliases = merged.get("aliases")
+    if aliases is None and isinstance(existing_meta.get("aliases"), list):
+        aliases = list(existing_meta["aliases"])
+    if aliases is None:
+        aliases = []
+    if not isinstance(aliases, list):
+        raise ValueError("frontmatter field 'aliases' must be a list")
+    if create and len(aliases) == 0:
+        aliases = [derive_display_alias(entity_path)]
+        merged["_autofilled_aliases"] = True
+    merged["aliases"] = aliases
+    return merged
+
+
+def write_entity(
+    kg_root: Path,
+    path: str,
+    content: str,
+    meta: Optional[Dict[str, Any]] = None,
+    create: bool = False,
+    reasoning: Optional[str] = None,
+    journal_source: Optional[str] = None,
+    default_source: str = "auto:cli",
+) -> Dict[str, Any]:
+    """Write entity with YAML frontmatter.
+
+    Returns result dict with path, ancestors, and journal info.
+    """
+    storage = SimpleStorage(kg_root)
+
+    path = normalize_path(path)
+    is_valid, err_msg = validate_entity_path(path)
+    if not is_valid:
+        return error_response(ErrorCode.VALIDATION_ERROR, err_msg or "Invalid path")
+
+    full_path = kg_root / path
+    summary_path = full_path / "_summary.md"
+
+    # Check existence
+    if create and full_path.exists():
+        return error_response(
+            ErrorCode.ALREADY_EXISTS,
+            f"Entity already exists: {path}",
+            hint="Use create=false to update existing entity",
+        )
+    if not create and not full_path.exists():
+        return error_response(
+            ErrorCode.NOT_FOUND,
+            f"Entity doesn't exist: {path}",
+            hint="Use create=true to create new entity",
+        )
+
+    if meta is not None and not isinstance(meta, dict):
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            "frontmatter field 'meta' must be an object when provided",
+            hint="Pass meta as a JSON object, or omit it to reuse/apply defaults",
+        )
+
+    try:
+        meta = _resolve_entity_meta(
+            kg_root=kg_root,
+            entity_path=path,
+            incoming_meta=meta,
+            create=create,
+            journal_source=journal_source,
+            default_source=default_source,
+        )
+    except ValueError as exc:
+        return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
+
+    autofilled_source = bool(meta.pop("_autofilled_source", False))
+    autofilled_aliases = bool(meta.pop("_autofilled_aliases", False))
+
+    if not isinstance(meta.get("source"), str) or not str(meta.get("source")).strip():
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            "Missing required frontmatter field: source",
+            details={"missing_fields": ["source"]},
+            hint="Provide a source identifier (e.g., 'manual', 'imessage:thread_id')",
+        )
+    if not isinstance(meta.get("aliases"), list):
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            "Missing required frontmatter field: aliases",
+            details={"missing_fields": ["aliases"]},
+            hint="Provide aliases as a list (can be empty: [])",
+        )
+
+    # Auto-set 'name' from first alias
+    if "name" not in meta and meta.get("aliases"):
+        for alias in meta["aliases"]:
+            if isinstance(alias, str) and "@" not in alias and not alias.startswith("+"):
+                meta["name"] = alias
+                break
+        if "name" not in meta and meta["aliases"]:
+            first = meta["aliases"][0]
+            if isinstance(first, str):
+                meta["name"] = first
+
+    # Date fields
+    today = datetime.now().strftime("%Y-%m-%d")
+    if create:
+        meta["created"] = today
+    meta["updated"] = today
+
+    # Write
+    frontmatter = build_frontmatter(meta)
+    full_content = frontmatter + content
+    full_path.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(full_content)
+
+    # Remove legacy _meta.json
+    meta_json_path = full_path / "_meta.json"
+    if meta_json_path.exists():
+        meta_json_path.unlink()
+
+    result: Dict[str, Any] = {
+        "success": True,
+        "path": path,
+        "created": create,
+    }
+    if autofilled_source or autofilled_aliases:
+        result["meta_autofilled"] = {
+            "source": autofilled_source,
+            "aliases": autofilled_aliases,
+        }
+
+    # Fetch ancestor summaries for propagation
+    ancestor_paths = storage.get_ancestors(path)
+    ancestor_paths.append(".")
+    propagation_targets = []
+    for ancestor in ancestor_paths:
+        summary_data = read_summary(kg_root, ancestor)
+        if summary_data:
+            propagation_targets.append(
+                {
+                    "path": ancestor,
+                    "current_content": summary_data.get("content", ""),
+                    "has_meta": bool(summary_data.get("meta")),
+                }
+            )
+    result["ancestors"] = propagation_targets
+    result["propagation_required"] = len(propagation_targets) > 0
+
+    # Auto-journal if reasoning provided
+    if reasoning:
+        action_type = "create" if create else "update"
+        source = journal_source or meta.get("source", "unknown")
+        journal_result = write_journal(
+            kg_root,
+            actions=[
+                {
+                    "action_type": action_type,
+                    "path": path,
+                    "reasoning": reasoning,
+                }
+            ],
+            source=source,
+        )
+        result["journal_logged"] = journal_result.get("success", False)
+        result["journal_path"] = journal_result.get("journal_path")
+    else:
+        result["journal_logged"] = False
+
+    return result
+
+
+def write_summary(
+    kg_root: Path,
+    path: str,
+    content: str,
+    meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Write a single ``_summary.md``."""
+    path = normalize_path(path)
+    if not validate_within_root(kg_root, path):
+        return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
+    dir_path = kg_root / path
+    summary_path = dir_path / "_summary.md"
+    dir_path.mkdir(parents=True, exist_ok=True)
+    if meta:
+        full_content = build_frontmatter(meta) + content
+    else:
+        full_content = content
+    summary_path.write_text(full_content)
+    return {"success": True, "path": path}
+
+
+def update_summaries(
+    kg_root: Path,
+    updates: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Batch-update multiple summary files."""
+    updated: List[str] = []
+    errors: List[Dict[str, Any]] = []
+    for item in updates:
+        p = item.get("path")
+        c = item.get("content")
+        m = item.get("meta")
+        if not p or c is None:
+            errors.append({"path": p or "<missing>", "error": "Missing path or content"})
+            continue
+        try:
+            r = write_summary(kg_root, path=p, content=c, meta=m)
+            if r.get("success"):
+                updated.append(p)
+            else:
+                errors.append({"path": p, "error": r.get("error", "Unknown error")})
+        except Exception as e:
+            errors.append({"path": p, "error": str(e)})
+    result: Dict[str, Any] = {
+        "success": len(updated) > 0 or len(updates) == 0,
+        "updated": updated,
+        "count": len(updated),
+    }
+    if errors:
+        result["errors"] = errors
+    return result
+
+
+# ---------------------------------------------------------------------------
+# List / delete / move
+# ---------------------------------------------------------------------------
+
+
+def list_entities(kg_root: Path, category: Optional[str] = None) -> List[Dict[str, Any]]:
+    """List entities, optionally filtered by category."""
+    entries = list_entity_records(kg_root, category=category)
+    return [
+        {
+            "path": e.path,
+            "name": e.name,
+            "category": e.category,
+            "last_updated": e.last_updated,
+        }
+        for e in entries
+    ]
+
+
+def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:
+    """Delete an entity directory."""
+    path = normalize_path(path)
+    if not validate_within_root(kg_root, path):
+        return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
+    full_path = kg_root / path
+    if not full_path.exists():
+        return error_response(ErrorCode.NOT_FOUND, f"Entity doesn't exist: {path}")
+    shutil.rmtree(full_path)
+    return {"success": True, "path": path, "deleted": True}
+
+
+def move_entity(kg_root: Path, source_path: str, target_path: str) -> Dict[str, Any]:
+    """Move an entity to a new path."""
+    source_path = normalize_path(source_path)
+    target_path = normalize_path(target_path)
+
+    is_valid, err_msg = validate_entity_path(source_path)
+    if not is_valid:
+        return error_response(ErrorCode.VALIDATION_ERROR, f"Invalid source path: {err_msg}")
+    is_valid, err_msg = validate_entity_path(target_path)
+    if not is_valid:
+        return error_response(ErrorCode.VALIDATION_ERROR, f"Invalid target path: {err_msg}")
+    if not validate_within_root(kg_root, source_path):
+        return error_response(ErrorCode.VALIDATION_ERROR, "Source path escapes KB root")
+    if not validate_within_root(kg_root, target_path):
+        return error_response(ErrorCode.VALIDATION_ERROR, "Target path escapes KB root")
+
+    source_full = kg_root / source_path
+    target_full = kg_root / target_path
+    if not source_full.exists():
+        return error_response(ErrorCode.NOT_FOUND, f"Source doesn't exist: {source_path}")
+    if target_full.exists():
+        return error_response(ErrorCode.ALREADY_EXISTS, f"Target already exists: {target_path}")
+
+    target_full.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source_full), str(target_full))
+    return {"success": True, "source": source_path, "target": target_path}
+
+
+# ---------------------------------------------------------------------------
+# Ancestors
+# ---------------------------------------------------------------------------
+
+
+def get_ancestors(kg_root: Path, path: str) -> Dict[str, Any]:
+    """Get all ancestor summaries for propagation."""
+    path = normalize_path(path)
+    storage = SimpleStorage(kg_root)
+    ancestors = storage.get_ancestors(path)
+
+    propagation_targets = []
+    for ancestor in ancestors:
+        summary_data = read_summary(kg_root, ancestor)
+        if summary_data:
+            propagation_targets.append(
+                {
+                    "path": ancestor,
+                    "current_content": summary_data.get("content", ""),
+                    "has_meta": bool(summary_data.get("meta")),
+                }
+            )
+
+    root_summary = read_summary(kg_root, ".")
+    if root_summary:
+        propagation_targets.append(
+            {
+                "path": ".",
+                "current_content": root_summary.get("content", ""),
+                "has_meta": bool(root_summary.get("meta")),
+            }
+        )
+
+    return {
+        "success": True,
+        "ancestors": propagation_targets,
+        "count": len(propagation_targets),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Journal
+# ---------------------------------------------------------------------------
+
+
+def write_journal(
+    kg_root: Path,
+    actions: List[Dict[str, Any]],
+    source: str,
+    date: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Write a journal entry."""
+    dt = datetime.now()
+    if date:
+        try:
+            dt = datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            pass
+
+    journal_rel_path = get_journal_path(dt)
+    journal_full_path = kg_root / journal_rel_path
+    journal_full_path.parent.mkdir(parents=True, exist_ok=True)
+
+    entry = format_journal_entry(actions, source, dt)
+    if journal_full_path.exists():
+        existing = journal_full_path.read_text()
+        entry = existing.rstrip() + "\n\n" + entry
+    else:
+        header = f"# Journal - {dt.strftime('%B %Y')}\n\n"
+        entry = header + entry
+
+    journal_full_path.write_text(entry)
+    return {
+        "success": True,
+        "journal_path": journal_rel_path,
+        "actions_logged": len(actions),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Validate
+# ---------------------------------------------------------------------------
+
+
+def validate_kb(kg_root: Path) -> Dict[str, Any]:
+    """Check KB integrity and report issues."""
+    issues: List[Dict[str, Any]] = []
+    entities = scan_entities(kg_root)
+
+    for entity in entities:
+        entity_data = _read_entity_raw(kg_root, entity.path)
+        if entity_data:
+            content = entity_data.get("content", "")
+            if "Context TBD" in content or "TBD" in content:
+                issues.append(
+                    {
+                        "type": "incomplete_entity",
+                        "severity": "info",
+                        "path": entity.path,
+                        "message": "Entity has placeholder content that needs enrichment",
+                        "fix": "Update entity with complete context information",
+                    }
+                )
+            if not entity_data.get("has_frontmatter"):
+                issues.append(
+                    {
+                        "type": "missing_frontmatter",
+                        "severity": "warning",
+                        "path": entity.path,
+                        "message": "Entity uses legacy _meta.json instead of YAML frontmatter",
+                        "fix": "Rewrite entity with kvault write to migrate to frontmatter",
+                    }
+                )
+
+    severity_order = {"error": 0, "warning": 1, "info": 2}
+    issues.sort(key=lambda x: severity_order.get(x["severity"], 99))
+    return {
+        "valid": len([i for i in issues if i["severity"] in ("error", "warning")]) == 0,
+        "issue_count": len(issues),
+        "issues": issues,
+        "summary": {
+            "errors": len([i for i in issues if i["severity"] == "error"]),
+            "warnings": len([i for i in issues if i["severity"] == "warning"]),
+            "info": len([i for i in issues if i["severity"] == "info"]),
+        },
+    }

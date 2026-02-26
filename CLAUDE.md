@@ -2,36 +2,50 @@
 
 ## Overview
 
-`kvault` is an MCP-first knowledge base library. The canonical runtime contract is:
+`kvault` is a CLI-first knowledge base library. The canonical runtime interface is:
 
-- manifest-driven MCP server (`kvault/mcp/manifest.py`)
-- filesystem storage with frontmatter summaries
-- reusable core modules in `kvault/core`
-- thin CLI wrappers in `kvault/cli`
-
-Current MCP tool count: **16**.
+- CLI commands via `kvault` entry point (`kvault/cli/`)
+- stateless operations layer (`kvault/core/operations.py`)
+- filesystem storage with frontmatter summaries (`kvault/core/`)
+- tests calling operations directly (no MCP layer)
 
 ## Repository Layout
 
 ```
 kvault/
 ├── kvault/
-│   ├── cli/
-│   ├── core/
-│   ├── mcp/
-│   └── templates/
+│   ├── cli/         # CLI commands (primary interface)
+│   ├── core/        # Operations, storage, validation, frontmatter
+│   ├── templates/   # KB init templates (CLAUDE.md)
+│   └── py.typed     # PEP 561 marker
 └── tests/
 ```
 
 ## Critical Invariants
 
-1. `manifest.py` is the single source of truth for tool schemas/names.
-2. `kvault_status` must report manifest version/count consistently.
-3. Entities are written as `_summary.md` with frontmatter (legacy `_meta.json` read fallback only).
-4. Path handling must never allow escape outside configured KB root.
-5. If `KVAULT_ALLOWED_ROOTS` is configured, `kvault_init` must reject non-allowed roots.
+1. `operations.py` is the shared business logic layer — both CLI and MCP use it.
+2. Entities are written as `_summary.md` with frontmatter (legacy `_meta.json` read fallback only).
+3. Path handling must never allow escape outside configured KB root.
+4. If `KVAULT_ALLOWED_ROOTS` is configured, operations must reject non-allowed roots.
+5. CLI uses `default_source="auto:cli"`.
 
 ## Core APIs
+
+```python
+from kvault.core import operations as ops
+
+# Stateless — all functions take kg_root: Path as first arg
+ops.read_entity(kg_root, path)
+ops.write_entity(kg_root, path, content, meta=..., create=..., reasoning=...)
+ops.update_summaries(kg_root, updates)
+ops.list_entities(kg_root, category=...)
+ops.delete_entity(kg_root, path)
+ops.move_entity(kg_root, source, target)
+ops.get_ancestors(kg_root, path)
+ops.write_journal(kg_root, actions, source)
+ops.validate_kb(kg_root)
+ops.get_kb_info(kg_root)
+```
 
 ```python
 from kvault.core import (
@@ -57,11 +71,35 @@ from kvault.core.storage import (
 ## CLI Commands
 
 ```bash
-kvault init <path>
-kvault check --kb-root <path>
-kvault artifact daily --kb-root <path> [--date YYYY-MM-DD] [--force]
-kvault log summary --db <path/to/.kvault/logs.db> [--session-id <id>] [--json]
-kvault-mcp
+# Entity operations
+kvault read <path> [--json]
+kvault write <path> [--create] [--reasoning TEXT] [--json] < content.md
+kvault list [category] [--json]
+kvault delete <path> [--force] [--json]
+kvault move <source> <target> [--json]
+
+# Summary operations
+kvault read-summary <path> [--json]
+kvault write-summary <path> [--json] < content.md
+kvault update-summaries [--json] < updates.json
+kvault ancestors <path> [--json]
+
+# Journal
+kvault journal --source TEXT [--date YYYY-MM-DD] [--json] < actions.json
+
+# Status & validation
+kvault status [--json]
+kvault tree [--depth N]
+kvault validate [--json]
+kvault check [--kb-root PATH]
+
+# Init & artifacts
+kvault init <path> [--name NAME]
+kvault artifact daily [--kb-root PATH] [--date YYYY-MM-DD] [--force]
+kvault log summary [--db PATH] [--session-id ID] [--json]
+
+# Version
+kvault status --json
 ```
 
 ## Testing
@@ -72,16 +110,16 @@ pytest -q
 
 Prefer adding tests in `tests/` whenever changing:
 
-- MCP handler behavior
+- operations layer behavior
 - validation/path logic
+- CLI commands/output
 - research/matching heuristics
-- CLI output/flags
 
 ## Release Hygiene
 
 Before publishing:
 
-1. Update docs for any API/manifest changes.
+1. Update docs for any API/CLI changes.
 2. Run full tests.
 3. Ensure `CHANGELOG.md` and package version stay in sync.
-4. Verify MCP manifest count + docs references are consistent.
+4. Update templates/CLAUDE.md for agent-facing changes.

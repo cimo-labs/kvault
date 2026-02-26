@@ -14,10 +14,10 @@
    fix every PROPAGATE and LOG warning before doing anything else.
 
 3. **JOURNAL EVERY SESSION.** If you modified any entity today, `journal/YYYY-MM/log.md`
-   must have an entry for today before the session ends. (Auto-logged if you pass `reasoning` to `kvault_write_entity`.)
+   must have an entry for today before the session ends. (Auto-logged if you pass `--reasoning` to `kvault write`.)
 
 4. **FRONTMATTER REQUIRED.** Every entity needs `source` and `aliases` in YAML frontmatter.
-   `created` and `updated` are set automatically by MCP tools.
+   `created` and `updated` are set automatically by kvault.
 
 5. **CHECK BEFORE WRITE.** Always browse the tree and read parent summaries before creating new entities.
    Use Grep/Glob/Read to check for existing entities. Never create duplicates.
@@ -50,14 +50,14 @@ Customize this section with your details.
 
 ---
 
-## Workflow (2-call write)
+## Writing to the Knowledge Base (2-call workflow)
 
 ### 1. NAVIGATE — Find what exists and decide
-Browse the tree and read parent summaries. Use your own Grep/Glob/Read tools:
-```
-kvault_init(kg_root=".")              # Get hierarchy tree
-kvault_read_entity(path="...")        # Returns entity + parent summary (sibling context)
-kvault_list_entities(category="...")  # List entities in a category
+Browse the tree and read parent summaries. Use Grep/Glob/Read tools and kvault CLI:
+```bash
+kvault status --json                       # Get hierarchy tree
+kvault read <path> --json                  # Returns entity + parent summary (sibling context)
+kvault list [category] --json              # List entities in a category
 ```
 
 Then decide:
@@ -69,27 +69,32 @@ Then decide:
 | Doesn't exist, is trivial | **LOG** in journal only |
 
 ### 2. WRITE — Create/update (Call 1)
+```bash
+kvault write <path> --create --reasoning "why" --json <<'EOF'
+---
+source: meeting_2026-02-25
+aliases: [Alice Smith, alice@acme.com]
+---
+
+# Alice Smith
+
+Context and notes here.
+EOF
 ```
-kvault_write_entity(
-  path="people/friends/alice",
-  meta={...},
-  content="...",
-  create=true,
-  reasoning="Met at conference"    ← auto-logs journal
-)
-→ {ancestors: [{path, current_content}, ...], journal_logged: true}
-```
+Output: `{"success": true, "ancestors": [{path, current_content, has_meta}, ...], "journal_logged": true}`
 
 ### 3. PROPAGATE — Batch-update ancestors (Call 2)
+Read the `ancestors` array from Call 1's output. For each ancestor, compose an updated summary
+incorporating the new entity, then batch-update:
+```bash
+kvault update-summaries --json <<'EOF'
+[
+  {"path": "people/friends", "content": "# Friends\n\nUpdated..."},
+  {"path": "people", "content": "# People\n\nUpdated..."},
+  {"path": ".", "content": "# Root\n\nUpdated..."}
+]
+EOF
 ```
-kvault_update_summaries(updates=[
-  {path: "people/friends", content: "...updated..."},
-  {path: "people", content: "...updated..."},
-  {path: ".", content: "...updated..."}
-])
-```
-
-Read each ancestor's `current_content` from the write_entity response, update it, then pass all updates in one call.
 
 ---
 
@@ -113,17 +118,20 @@ Context and notes here.
 
 ---
 
-## MCP Tools Reference (14)
+## CLI Commands Reference
 
-**Entity:** `kvault_read_entity` (includes parent summary), `kvault_write_entity` (returns ancestors, auto-journals), `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity`
-**Summary:** `kvault_read_summary`, `kvault_write_summary`, `kvault_update_summaries` (batch), `kvault_get_parent_summaries`, `kvault_propagate_all`
-**Workflow:** `kvault_write_journal`
-**Artifacts:** `kvault_generate_daily_artifact`
-**Validation:** `kvault_validate_kb`
-**Init:** `kvault_init`
+**Entity:** `kvault read`, `kvault write` (stdin), `kvault list`, `kvault delete`, `kvault move`
+**Summary:** `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors`
+**Journal:** `kvault journal --source TEXT` (stdin JSON)
+**Validation:** `kvault validate`, `kvault check`
+**Status:** `kvault status`, `kvault tree`
+
+All commands support `--json` for machine-readable output. Use `--kb-root` to specify the KB root
+(auto-detected from cwd by default).
 
 ---
 
 ## Session Startup
 
-Call `kvault_init(kg_root=".")` once at the start of any KB session.
+No init call needed. kvault CLI auto-detects the KB root from the current directory.
+Just `cd` into (or use `--kb-root` to point at) the knowledge base and start working.

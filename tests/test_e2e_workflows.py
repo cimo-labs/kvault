@@ -1,6 +1,6 @@
-"""End-to-end workflow tests for kvault MCP handlers.
+"""End-to-end workflow tests for kvault operations.
 
-Tests complete user workflows (the 5-step pipeline) against the sample KB fixture.
+Tests complete user workflows (the 2-call pipeline) against the sample KB fixture.
 Following CJE's testing philosophy: test what users actually do, with real-ish data.
 """
 
@@ -8,19 +8,7 @@ import pytest
 from pathlib import Path
 from tests.conftest import SAMPLE_KB_ENTITY_COUNT
 
-from kvault.mcp.server import (
-    handle_kvault_init,
-    handle_kvault_write_entity,
-    handle_kvault_read_entity,
-    handle_kvault_delete_entity,
-    handle_kvault_move_entity,
-    handle_kvault_propagate_all,
-    handle_kvault_write_journal,
-    handle_kvault_write_summary,
-    handle_kvault_update_summaries,
-    handle_kvault_list_entities,
-    handle_kvault_validate_kb,
-)
+from kvault.core import operations as ops
 
 # ============================================================================
 # Create Workflow
@@ -33,26 +21,28 @@ class TestCreateWorkflow:
     def test_create_new_entity_full_workflow(self, initialized_kb):
         """Complete workflow: create → propagate → journal."""
         # 1. Write new entity
-        result = handle_kvault_write_entity(
+        result = ops.write_entity(
+            initialized_kb,
             path="people/work/dave_wilson",
+            content="# Dave Wilson\n\nMet at AI conference. Works on eval systems.\n",
             meta={
                 "source": "conference",
                 "aliases": ["Dave Wilson", "dave@newcorp.com"],
                 "email": "dave@newcorp.com",
                 "relationship_type": "colleague",
             },
-            content="# Dave Wilson\n\nMet at AI conference. Works on eval systems.\n",
             create=True,
         )
         assert result["success"]
 
         # 2. Propagate — get ancestors and verify chain
-        result = handle_kvault_propagate_all("people/work/dave_wilson")
+        result = ops.get_ancestors(initialized_kb, "people/work/dave_wilson")
         assert result["success"]
         assert result["count"] >= 2  # people/work + people + root
 
         # 3. Journal — log the action
-        result = handle_kvault_write_journal(
+        result = ops.write_journal(
+            initialized_kb,
             actions=[
                 {
                     "action_type": "create",
@@ -66,25 +56,26 @@ class TestCreateWorkflow:
         assert result["actions_logged"] == 1
 
         # 4. Verify — entity is readable
-        entity = handle_kvault_read_entity("people/work/dave_wilson")
+        entity = ops.read_entity(initialized_kb, "people/work/dave_wilson")
         assert entity is not None
         assert "Dave Wilson" in entity["content"]
 
     def test_create_sets_name_from_alias(self, empty_kb):
         """write_entity should auto-set 'name' from first non-email alias."""
-        handle_kvault_write_entity(
+        ops.write_entity(
+            empty_kb,
             path="people/test_person",
-            meta={"source": "test", "aliases": ["test@example.com", "Test Person"]},
             content="# Test Person\n",
+            meta={"source": "test", "aliases": ["test@example.com", "Test Person"]},
             create=True,
         )
 
-        entity = handle_kvault_read_entity("people/test_person")
+        entity = ops.read_entity(empty_kb, "people/test_person")
         assert entity["meta"]["name"] == "Test Person"
 
     def test_read_entity_includes_parent_summary(self, initialized_kb):
         """read_entity should include parent summary for sibling context."""
-        entity = handle_kvault_read_entity("people/friends/alice_smith")
+        entity = ops.read_entity(initialized_kb, "people/friends/alice_smith")
         assert entity is not None
         assert "parent_summary" in entity
         assert "parent_path" in entity
@@ -101,24 +92,26 @@ class TestUpdateWorkflow:
 
     def test_update_existing_entity(self, initialized_kb):
         """Update entity content while preserving metadata."""
-        result = handle_kvault_write_entity(
+        result = ops.write_entity(
+            initialized_kb,
             path="people/friends/alice_smith",
-            meta={"source": "manual", "aliases": ["Alice Smith", "alice@acme.com", "Ali"]},
             content="# Alice Smith\n\nUpdated: now VP of Data Science at Acme.\n",
+            meta={"source": "manual", "aliases": ["Alice Smith", "alice@acme.com", "Ali"]},
             create=False,
         )
         assert result["success"]
 
         # Verify content updated
-        entity = handle_kvault_read_entity("people/friends/alice_smith")
+        entity = ops.read_entity(initialized_kb, "people/friends/alice_smith")
         assert "VP of Data Science" in entity["content"]
 
     def test_update_nonexistent_returns_error(self, initialized_kb):
         """Updating a nonexistent entity should fail with NOT_FOUND."""
-        result = handle_kvault_write_entity(
+        result = ops.write_entity(
+            initialized_kb,
             path="people/nobody",
-            meta={"source": "manual", "aliases": []},
             content="# Nobody\n",
+            meta={"source": "manual", "aliases": []},
             create=False,
         )
         assert not result.get("success")
@@ -136,23 +129,23 @@ class TestDeleteWorkflow:
     def test_delete_removes_from_disk(self, initialized_kb):
         """Deleting an entity should remove files from disk."""
         # Verify entity exists
-        entity = handle_kvault_read_entity("people/work/bob_jones")
+        entity = ops.read_entity(initialized_kb, "people/work/bob_jones")
         assert entity is not None
 
         # Delete
-        result = handle_kvault_delete_entity("people/work/bob_jones")
+        result = ops.delete_entity(initialized_kb, "people/work/bob_jones")
         assert result["success"]
 
         # Verify gone from disk
         assert not (initialized_kb / "people" / "work" / "bob_jones").exists()
 
         # Verify gone from read
-        entity = handle_kvault_read_entity("people/work/bob_jones")
+        entity = ops.read_entity(initialized_kb, "people/work/bob_jones")
         assert entity is None
 
     def test_delete_nonexistent_returns_error(self, initialized_kb):
         """Deleting a nonexistent entity should fail."""
-        result = handle_kvault_delete_entity("people/nobody")
+        result = ops.delete_entity(initialized_kb, "people/nobody")
         assert not result.get("success")
         assert result["error_code"] == "not_found"
 
@@ -167,7 +160,8 @@ class TestMoveWorkflow:
 
     def test_move_updates_path(self, initialized_kb):
         """Moving an entity should update filesystem."""
-        result = handle_kvault_move_entity(
+        result = ops.move_entity(
+            initialized_kb,
             "people/work/bob_jones",
             "people/friends/bob_jones",
         )
@@ -180,12 +174,13 @@ class TestMoveWorkflow:
         assert (initialized_kb / "people" / "friends" / "bob_jones" / "_summary.md").exists()
 
         # Readable at new path
-        entity = handle_kvault_read_entity("people/friends/bob_jones")
+        entity = ops.read_entity(initialized_kb, "people/friends/bob_jones")
         assert entity is not None
 
     def test_move_to_existing_blocked(self, initialized_kb):
         """Moving to an existing entity path should fail."""
-        result = handle_kvault_move_entity(
+        result = ops.move_entity(
+            initialized_kb,
             "people/friends/alice_smith",
             "people/work/sarah_chen",
         )
@@ -195,17 +190,18 @@ class TestMoveWorkflow:
     def test_move_preserves_content(self, initialized_kb):
         """Content and metadata should survive a move."""
         # Read original
-        original = handle_kvault_read_entity("people/work/bob_jones")
+        original = ops.read_entity(initialized_kb, "people/work/bob_jones")
         original_content = original["content"]
 
         # Move
-        handle_kvault_move_entity(
+        ops.move_entity(
+            initialized_kb,
             "people/work/bob_jones",
             "people/friends/bob_jones",
         )
 
         # Read at new location
-        moved = handle_kvault_read_entity("people/friends/bob_jones")
+        moved = ops.read_entity(initialized_kb, "people/friends/bob_jones")
         assert moved is not None
         assert moved["content"] == original_content
 
@@ -219,8 +215,8 @@ class TestPropagationWorkflow:
     """Test summary propagation."""
 
     def test_propagate_returns_correct_ancestors(self, initialized_kb):
-        """propagate_all should return the full ancestor chain."""
-        result = handle_kvault_propagate_all("people/friends/alice_smith")
+        """get_ancestors should return the full ancestor chain."""
+        result = ops.get_ancestors(initialized_kb, "people/friends/alice_smith")
         assert result["success"]
 
         # Should include: people/friends, people, root (.)
@@ -232,7 +228,8 @@ class TestPropagationWorkflow:
 
     def test_write_summary_updates_category(self, initialized_kb):
         """Writing a category summary should succeed."""
-        result = handle_kvault_write_summary(
+        result = ops.write_summary(
+            initialized_kb,
             path="people/friends",
             content="# Friends\n\nUpdated: Alice, José, and new contacts.\n",
         )
@@ -248,22 +245,22 @@ class TestValidationWorkflow:
     """Test KB validation after various operations."""
 
     def test_clean_kb_validates(self, initialized_kb):
-        """A properly indexed sample KB should have no index_missing issues."""
-        result = handle_kvault_validate_kb()
+        """A properly structured sample KB should have no index_missing issues."""
+        result = ops.validate_kb(initialized_kb)
         index_missing = [i for i in result.get("issues", []) if i["type"] == "index_missing"]
         # Subcategory dirs (friends/, work/) should NOT be flagged
         assert len(index_missing) == 0, f"Unexpected index_missing: {index_missing}"
 
     def test_new_entity_immediately_valid(self, initialized_kb):
         """Creating an entity should pass validation immediately (no rebuild needed)."""
-        handle_kvault_write_entity(
+        ops.write_entity(
+            initialized_kb,
             path="people/friends/new_person",
-            meta={"source": "test", "aliases": ["New Person"]},
             content="# New Person\n",
+            meta={"source": "test", "aliases": ["New Person"]},
             create=True,
         )
-        # No index means no stale-state issues — new entity is immediately valid
-        result = handle_kvault_validate_kb()
+        result = ops.validate_kb(initialized_kb)
         assert result["valid"] is True or all(
             i["severity"] == "info" for i in result.get("issues", [])
         )
@@ -279,13 +276,14 @@ class TestEnhancedWriteEntity:
 
     def test_write_entity_returns_ancestors(self, initialized_kb):
         """write_entity should return ancestors with current content."""
-        result = handle_kvault_write_entity(
+        result = ops.write_entity(
+            initialized_kb,
             path="people/work/dave_wilson",
+            content="# Dave Wilson\n\nMet at AI conference.\n",
             meta={
                 "source": "conference",
                 "aliases": ["Dave Wilson", "dave@newcorp.com"],
             },
-            content="# Dave Wilson\n\nMet at AI conference.\n",
             create=True,
         )
         assert result["success"]
@@ -301,13 +299,14 @@ class TestEnhancedWriteEntity:
 
     def test_write_entity_auto_journal(self, initialized_kb):
         """Providing reasoning should auto-log a journal entry."""
-        result = handle_kvault_write_entity(
+        result = ops.write_entity(
+            initialized_kb,
             path="people/work/eve_martinez",
+            content="# Eve Martinez\n\nML researcher.\n",
             meta={
                 "source": "conference",
                 "aliases": ["Eve Martinez"],
             },
-            content="# Eve Martinez\n\nML researcher.\n",
             create=True,
             reasoning="Met at NeurIPS poster session",
         )
@@ -322,13 +321,14 @@ class TestEnhancedWriteEntity:
 
     def test_write_entity_without_reasoning_no_journal(self, initialized_kb):
         """Without reasoning, no journal should be logged (backward compat)."""
-        result = handle_kvault_write_entity(
+        result = ops.write_entity(
+            initialized_kb,
             path="people/work/frank_lee",
+            content="# Frank Lee\n\nEngineer.\n",
             meta={
                 "source": "manual",
                 "aliases": ["Frank Lee"],
             },
-            content="# Frank Lee\n\nEngineer.\n",
             create=True,
         )
         assert result["success"]
@@ -336,13 +336,14 @@ class TestEnhancedWriteEntity:
 
     def test_write_entity_journal_uses_custom_source(self, initialized_kb):
         """journal_source should override meta.source for journal entries."""
-        result = handle_kvault_write_entity(
+        result = ops.write_entity(
+            initialized_kb,
             path="people/work/grace_kim",
+            content="# Grace Kim\n\nDesigner.\n",
             meta={
                 "source": "email",
                 "aliases": ["Grace Kim"],
             },
-            content="# Grace Kim\n\nDesigner.\n",
             create=True,
             reasoning="Referred by colleague",
             journal_source="referral",
@@ -360,15 +361,16 @@ class TestEnhancedWriteEntity:
 
 
 class TestBatchUpdateSummaries:
-    """Test the kvault_update_summaries batch tool."""
+    """Test the update_summaries batch operation."""
 
     def test_batch_update_summaries(self, initialized_kb):
         """Should update multiple summaries in one call."""
-        result = handle_kvault_update_summaries(
+        result = ops.update_summaries(
+            initialized_kb,
             updates=[
                 {"path": "people/work", "content": "# Work Contacts\n\nUpdated batch.\n"},
                 {"path": "people", "content": "# People\n\nUpdated batch.\n"},
-            ]
+            ],
         )
         assert result["success"]
         assert result["count"] == 2
@@ -381,12 +383,13 @@ class TestBatchUpdateSummaries:
 
     def test_batch_update_partial_failure(self, initialized_kb):
         """One bad update shouldn't block others."""
-        result = handle_kvault_update_summaries(
+        result = ops.update_summaries(
+            initialized_kb,
             updates=[
                 {"path": "people/work", "content": "# Work Contacts\n\nGood update.\n"},
                 {"path": None, "content": "bad"},  # Missing path
                 {"path": "people", "content": "# People\n\nAlso good.\n"},
-            ]
+            ],
         )
         assert result["success"]  # At least some succeeded
         assert result["count"] == 2
@@ -394,21 +397,22 @@ class TestBatchUpdateSummaries:
 
     def test_batch_update_empty_list(self, initialized_kb):
         """Empty updates list should succeed with count 0."""
-        result = handle_kvault_update_summaries(updates=[])
+        result = ops.update_summaries(initialized_kb, updates=[])
         assert result["success"]
         assert result["count"] == 0
 
     def test_full_2call_workflow(self, initialized_kb):
         """Integration: write_entity + update_summaries = complete 2-call workflow."""
         # Call 1: Write entity with reasoning
-        write_result = handle_kvault_write_entity(
+        write_result = ops.write_entity(
+            initialized_kb,
             path="people/work/hank_brown",
+            content="# Hank Brown\n\nFounder of startup.io. Met at YC Demo Day.\n",
             meta={
                 "source": "conference",
                 "aliases": ["Hank Brown", "hank@startup.io"],
                 "email": "hank@startup.io",
             },
-            content="# Hank Brown\n\nFounder of startup.io. Met at YC Demo Day.\n",
             create=True,
             reasoning="Met at YC Demo Day, potential CJE adopter",
         )
@@ -423,12 +427,12 @@ class TestBatchUpdateSummaries:
             updated = existing.rstrip() + "\n\n- Added Hank Brown (startup.io founder)\n"
             updates.append({"path": ancestor["path"], "content": updated})
 
-        summary_result = handle_kvault_update_summaries(updates=updates)
+        summary_result = ops.update_summaries(initialized_kb, updates=updates)
         assert summary_result["success"]
         assert summary_result["count"] == len(write_result["ancestors"])
 
         # Verify: entity readable, summaries updated, journal exists
-        entity = handle_kvault_read_entity("people/work/hank_brown")
+        entity = ops.read_entity(initialized_kb, "people/work/hank_brown")
         assert entity is not None
         assert "startup.io" in entity["content"]
 
@@ -437,11 +441,12 @@ class TestBatchUpdateSummaries:
 
 
 class TestPathSafety:
-    """Test path traversal protections in MCP handlers."""
+    """Test path traversal protections in operations."""
 
     def test_write_summary_rejects_root_escape(self, initialized_kb):
         """write_summary should block paths that escape KB root."""
-        result = handle_kvault_write_summary(
+        result = ops.write_summary(
+            initialized_kb,
             path="../escaped_dir",
             content="# Escape Attempt\n",
         )
@@ -456,7 +461,8 @@ class TestPathSafety:
         outside_dir.mkdir()
         (outside_dir / "_summary.md").write_text("# Outside\n")
 
-        result = handle_kvault_move_entity(
+        result = ops.move_entity(
+            initialized_kb,
             source_path="../outside_src",
             target_path="people/friends/outside_src",
         )
@@ -469,7 +475,8 @@ class TestPathSafety:
 
     def test_move_entity_rejects_invalid_target_path(self, initialized_kb):
         """move_entity should reject traversal-like target paths."""
-        result = handle_kvault_move_entity(
+        result = ops.move_entity(
+            initialized_kb,
             source_path="people/work/bob_jones",
             target_path="../outside_target",
         )
@@ -480,8 +487,9 @@ class TestPathSafety:
 
     def test_update_summaries_rejects_root_escape(self, initialized_kb):
         """update_summaries should not allow writes outside KB root."""
-        result = handle_kvault_update_summaries(
-            updates=[{"path": "../escaped_batch", "content": "# Nope\n"}]
+        result = ops.update_summaries(
+            initialized_kb,
+            updates=[{"path": "../escaped_batch", "content": "# Nope\n"}],
         )
         assert not result["success"]
         assert len(result.get("errors", [])) == 1

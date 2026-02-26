@@ -3,7 +3,7 @@
 Fixture Architecture (following CJE patterns):
 - sample_kb_path: Read-only path to the sample KB fixture
 - sample_kb: Writable copy of sample KB in tmp dir
-- initialized_kb: Sample KB with MCP server initialized + index built
+- initialized_kb: Sample KB with .kvault dir ready for operations
 - empty_kb: Fresh KB with category structure but no entities
 - tmp_kg_path: Bare temporary directory (legacy)
 - tmp_db_path: Temporary database path (legacy)
@@ -47,15 +47,11 @@ def sample_kb(tmp_path, sample_kb_path):
 
 @pytest.fixture
 def initialized_kb(sample_kb):
-    """Sample KB with MCP server initialized and index built.
+    """Sample KB ready for operations testing.
 
-    Ready for search, CRUD, and workflow tests.
-    Note: This sets global MCP state — tests using this fixture
-    should not also call handle_kvault_init with a different path.
+    Creates .kvault/ directory for observability logs.
     """
-    from kvault.mcp.server import handle_kvault_init
-
-    result = handle_kvault_init(str(sample_kb))
+    (sample_kb / ".kvault").mkdir(parents=True, exist_ok=True)
     return sample_kb
 
 
@@ -64,19 +60,16 @@ def empty_kb(tmp_path):
     """Fresh KB with category structure but no entities.
 
     Has people/ and projects/ categories ready for entity creation.
-    MCP server is initialized.
     """
-    from kvault.mcp.server import handle_kvault_init
-
     kb = tmp_path / "kb"
     kb.mkdir()
+    (kb / ".kvault").mkdir(parents=True, exist_ok=True)
     (kb / "_summary.md").write_text("# Test KB\n\nEmpty knowledge base for testing.\n")
     (kb / "people").mkdir()
     (kb / "people" / "_summary.md").write_text("# People\n\nAll contacts.\n")
     (kb / "projects").mkdir()
     (kb / "projects" / "_summary.md").write_text("# Projects\n\nAll projects.\n")
 
-    handle_kvault_init(str(kb))
     return kb
 
 

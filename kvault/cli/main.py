@@ -1,4 +1,4 @@
-"""kvault CLI — init/check/artifact/log commands."""
+"""kvault CLI — CLI-first knowledge base for AI agents."""
 
 import json
 from datetime import date
@@ -8,9 +8,15 @@ from typing import Dict, Optional
 
 import click
 
+from kvault.cli._helpers import find_kb_root, output_json, resolve_kb_root
 from kvault.cli.check import check_kb
+from kvault.cli.entity import read_entity, write_entity, list_entities, delete_entity, move_entity
+from kvault.cli.journal import write_journal
+from kvault.cli.summary import read_summary, write_summary, update_summaries, ancestors
+from kvault.cli.validate import validate_kb
 from kvault.core.daily_artifacts import generate_daily_artifact, parse_iso_date
 from kvault.core.observability import ObservabilityLogger
+from kvault.core import operations as ops
 
 # -------------------------
 # Helpers
@@ -34,17 +40,41 @@ def _render(template: str, replacements: Dict[str, str]) -> str:
 
 
 @click.group()
-def cli() -> None:
+@click.option(
+    "--kb-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Knowledge base root (auto-detected if not specified)",
+)
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def cli(ctx: click.Context, kb_root: Optional[Path], as_json: bool) -> None:
     """kvault — personal knowledge base for AI agents."""
+    ctx.ensure_object(dict)
+    ctx.obj["kb_root"] = kb_root
+    ctx.obj["as_json"] = as_json
 
 
+# Register commands
 cli.add_command(check_kb)
+cli.add_command(read_entity)
+cli.add_command(write_entity)
+cli.add_command(list_entities, "list")
+cli.add_command(delete_entity, "delete")
+cli.add_command(move_entity, "move")
+cli.add_command(read_summary)
+cli.add_command(write_summary)
+cli.add_command(update_summaries)
+cli.add_command(ancestors)
+cli.add_command(write_journal)
+cli.add_command(validate_kb, "validate")
 
 
 @cli.command("init")
 @click.argument("path", type=click.Path(path_type=Path), default=".")
 @click.option("--name", default="My", help="Owner name for the knowledge base")
-def init_kb(path: Path, name: str) -> None:
+@click.pass_context
+def init_kb(ctx: click.Context, path: Path, name: str) -> None:
     """Initialize a new kvault knowledge base."""
     path = path.resolve()
     path.mkdir(parents=True, exist_ok=True)
@@ -100,11 +130,39 @@ def init_kb(path: Path, name: str) -> None:
     click.echo(f"Initialized knowledge base at {path}")
     click.echo(f"Owner: {name}")
     click.echo()
-    click.echo("Next: add MCP server to your AI tool config:")
-    click.echo()
-    click.echo('  { "mcpServers": { "kvault": { "command": "kvault-mcp" } } }')
-    click.echo()
-    click.echo("Then customize CLAUDE.md and start adding entities.")
+    click.echo("Next: read CLAUDE.md for agent workflow instructions.")
+    click.echo("Use 'kvault --help' to see all commands.")
+
+
+@cli.command("status")
+@click.pass_context
+def status(ctx: click.Context) -> None:
+    """Show KB status: root, entity count, hierarchy, health."""
+    kb_root = resolve_kb_root(ctx)
+    info = ops.get_kb_info(kb_root)
+    health = {
+        "root_summary_exists": (kb_root / "_summary.md").exists(),
+        "kvault_dir_exists": (kb_root / ".kvault").exists(),
+    }
+    info["health"] = health
+    if ctx.obj.get("as_json"):
+        output_json(info)
+    else:
+        click.echo(f"KB root: {info['kg_root']}")
+        click.echo(f"Entities: {info['entity_count']}")
+        click.echo(f"Root summary: {'✓' if health['root_summary_exists'] else '✗'}")
+        click.echo(f".kvault dir: {'✓' if health['kvault_dir_exists'] else '✗'}")
+        click.echo()
+        click.echo(info["hierarchy"])
+
+
+@cli.command("tree")
+@click.option("--depth", type=int, default=3, help="Max depth to display")
+@click.pass_context
+def tree(ctx: click.Context, depth: int) -> None:
+    """Print KB hierarchy tree."""
+    kb_root = resolve_kb_root(ctx)
+    click.echo(ops.build_hierarchy_tree(kb_root, max_depth=depth))
 
 
 @cli.group("artifact")

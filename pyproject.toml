@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledgevault"
-version = "0.6.3"
-description = "Personal knowledge base that runs inside any MCP-compatible AI tool — structured, navigable, zero extra cost"
+version = "0.7.0"
+description = "CLI-first personal knowledge base for AI agents — structured, navigable, zero extra cost"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 authors = [
     {name = "Eddie Landesberg"}
 ]
-keywords = ["knowledge-graph", "entity-extraction", "llm", "data-processing", "claude-code", "mcp", "mcp-server", "personal-knowledge-base", "pkm", "llm-memory", "agent-memory", "openai-codex"]
+keywords = ["knowledge-graph", "entity-extraction", "llm", "data-processing", "claude-code", "personal-knowledge-base", "pkm", "llm-memory", "agent-memory", "openai-codex"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -44,14 +44,8 @@ dev = [
 sdk = [
     "claude-code-sdk>=0.1.0",
 ]
-# MCP server for Claude Code integration (requires Python 3.10+)
-mcp = [
-    "mcp>=1.0.0; python_version >= '3.10'",
-]
-
 [project.scripts]
 kvault = "kvault.cli.main:cli"
-kvault-mcp = "kvault.mcp.server:main"
 
 [project.urls]
 Homepage = "https://github.com/cimo-labs/kvault"

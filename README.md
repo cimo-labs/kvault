@@ -3,23 +3,23 @@
 **Tell your AI agent to build you a knowledge base. That's it.**
 
 ```bash
-pip install knowledgevault[mcp]
+pip install knowledgevault
 ```
 
-kvault gives your coding agent persistent, structured memory. It runs as an MCP server inside Claude Code (or any MCP-compatible tool), using the subscription you already pay for. No extra API keys. No extra cost.
+kvault gives your coding agent persistent, structured memory. It runs as a CLI tool that any agent can call via shell — Claude Code, OpenAI Codex, Cursor, or any tool that can execute commands. No extra API keys. No extra cost.
 
-Your agent creates entities (people, projects, notes), navigates the hierarchy via parent summaries, and keeps everything in sync — all through 16 MCP tools.
+Your agent creates entities (people, projects, notes), navigates the hierarchy via parent summaries, and keeps everything in sync — all through simple CLI commands.
 
 ## Who is this for?
 
-Developers using **Claude Code**, **OpenAI Codex**, **Cursor**, **VS Code + Copilot**, or any MCP-compatible tool who want their agent to remember things between sessions — contacts, projects, meeting notes, research — in a structured, navigable format.
+Developers using **Claude Code**, **OpenAI Codex**, **Cursor**, **VS Code + Copilot**, or any AI coding tool who want their agent to remember things between sessions — contacts, projects, meeting notes, research — in a structured, navigable format.
 
 ## What makes it different?
 
 | | kvault | [Anthropic memory server](https://github.com/anthropics/claude-code/tree/main/packages/memory) | [Notion AI](https://www.notion.so/product/ai) / [Mem.ai](https://mem.ai) | [obsidian-claude-pkm](https://github.com/4lph4-lab/obsidian-claude-pkm) |
 |---|---|---|---|---|
 | **Structure** | Hierarchical entities with navigable tree | Flat JSON | Rich docs, flat search | Obsidian vault |
-| **Agent-native** | 16 MCP tools, built for agents | 4 tools, basic | Chat sidebar | Template, not runtime |
+| **Agent-native** | CLI commands, works in any subprocess | 4 MCP tools, basic | Chat sidebar | Template, not runtime |
 | **Cost** | $0 (uses existing subscription) | $0 | $12-20/mo extra | $0 |
 | **Navigation** | Parent summaries at every level | None | AI-generated | Manual |
 | **Search** | Agent uses its own Grep/Glob/Read | Built-in | Built-in | Manual |
@@ -29,62 +29,24 @@ Developers using **Claude Code**, **OpenAI Codex**, **Cursor**, **VS Code + Copi
 **1. Install**
 
 ```bash
-pip install knowledgevault[mcp]
+pip install knowledgevault
 ```
 
-**2. Add the MCP server to your AI tool**
+**2. Initialize a knowledge base**
 
-**Claude Code** (`.claude/settings.json`):
-```json
-{
-  "mcpServers": {
-    "kvault": { "command": "kvault-mcp" }
-  }
-}
-```
-
-**OpenAI Codex** (`.codex/config.toml`):
-```toml
-[mcp_servers.kvault]
-command = "kvault-mcp"
-```
-
-**Cursor** (`.cursor/mcp.json`):
-```json
-{
-  "mcpServers": {
-    "kvault": { "command": "kvault-mcp" }
-  }
-}
-```
-
-**VS Code + GitHub Copilot** (`.vscode/mcp.json`):
-```json
-{
-  "servers": {
-    "kvault": { "command": "kvault-mcp", "type": "stdio" }
-  }
-}
-```
-
-**Windsurf** (`~/.codeium/windsurf/mcp_config.json`):
-```json
-{
-  "mcpServers": {
-    "kvault": { "command": "kvault-mcp" }
-  }
-}
+```bash
+kvault init ./my_kb --name "Your Name"
 ```
 
 **3. Tell your agent**
 
-> "Create a knowledge base for me at ./my_kb"
+> "Use kvault CLI commands to manage my knowledge base at ./my_kb"
 
-Your agent calls `kvault_init`, creates the directory structure, and you're up.
+Your agent reads the generated `CLAUDE.md` for workflow instructions and starts working.
 
 ## Try it: import your ChatGPT history
 
-The best way to see kvault in action is to point it at data you already have. ChatGPT lets you export your entire conversation history — years of questions, people mentioned, projects discussed, decisions made — and Claude Code + kvault can turn it into a structured, navigable knowledge base in minutes.
+The best way to see kvault in action is to point it at data you already have. ChatGPT lets you export your entire conversation history — years of questions, people mentioned, projects discussed, decisions made — and your agent can turn it into a structured, navigable knowledge base in minutes.
 
 **1. Export your ChatGPT data**
 
@@ -96,7 +58,7 @@ Go to [ChatGPT → Settings → Data controls → Export data](https://chatgpt.c
 unzip chatgpt-export.zip -d my_kb/sources/chatgpt
 ```
 
-**3. Tell Claude Code to process it**
+**3. Tell your agent to process it**
 
 ```
 Read through my ChatGPT export in sources/chatgpt/conversations.json.
@@ -104,33 +66,31 @@ Extract the people, projects, and ideas I've discussed most frequently.
 Create entities for each one in the knowledge base.
 ```
 
-Claude Code will use the kvault tools to create structured entries with frontmatter and propagate summaries. You'll end up with a browsable, navigable knowledge base built from years of conversations you've already had.
+Your agent will use kvault CLI commands to create structured entries with frontmatter and propagate summaries.
 
-**Other great data sources to try:**
+## The 2-call write workflow
 
-| Source | How to get it | What you'll extract |
-|--------|---------------|---------------------|
-| **ChatGPT history** | Settings → Export data | People, projects, decisions, research threads |
-| **Google Contacts** | [Google Takeout](https://takeout.google.com/) (Contacts) | Names, emails, phone numbers, notes |
-| **iMessage** | `~/Library/Messages/chat.db` (macOS) | Relationships, interaction frequency, context |
-| **Gmail** | [Google Takeout](https://takeout.google.com/) (Mail) | Professional contacts, threads, follow-ups |
-| **Meeting notes** | Any folder of markdown/text files | People, action items, decisions |
-| **Notion export** | Notion → Settings → Export | Projects, notes, wikis |
+```bash
+# Call 1: Write entity (stdin = frontmatter + markdown body)
+kvault write people/contacts/acme --create --reasoning "New customer" --json <<'EOF'
+---
+source: meeting_2026-02-25
+aliases: [ACME Corp]
+---
+# ACME Corp
+Key customer acquired at trade show...
+EOF
+# → {"success": true, "ancestors": [{path, current_content, has_meta}, ...]}
 
-The pattern is always the same: drop the data into `sources/`, tell your agent to process it, and let kvault handle structure and propagation.
-
-## What happens next
-
-Every time your agent processes new information, it follows a staged workflow:
-
-1. **Research** — Browse the tree and read parent summaries to understand what exists
-2. **Decide** — Determine whether to create/update/merge/move entities
-3. **Execute** — Create or update entities with YAML frontmatter (`_summary.md`)
-4. **Propagate** — Update all ancestor `_summary.md` files so summaries stay in sync
-5. **Log** — Add entry to `journal/YYYY-MM/log.md` (or pass `reasoning` to auto-log on write)
-6. **Rebuild/Validate** — Optionally run consistency checks (`kvault_validate_kb`)
-
-Your agent uses its own Grep/Glob/Read tools for searching. Parent summaries at each level act as curated indexes — when reading any entity, kvault automatically includes the parent summary so the agent sees sibling context for free.
+# Call 2: Agent reads ancestors, composes updated summaries
+kvault update-summaries --json <<'EOF'
+[
+  {"path": "people/contacts", "content": "# Contacts\n...updated..."},
+  {"path": "people", "content": "# People\n...updated..."}
+]
+EOF
+# → {"success": true, "updated": ["people/contacts", "people"], "count": 2}
+```
 
 ## What an entity looks like
 
@@ -143,44 +103,31 @@ updated: 2026-02-06
 source: manual
 aliases: [Sarah Chen, sarah@anthropic.com]
 email: sarah@anthropic.com
-relationship_type: colleague
 ---
 # Sarah Chen
 
 Research scientist at Anthropic working on causal discovery.
-
-## Background
-Met at NeurIPS 2025. Collaborator on interpretability project.
-
-## Interactions
-- 2026-02-06: Coffee meeting — discussed causal representation learning
-
-## Follow-ups
-- [ ] Share CJE paper draft
 ```
 
-**Required frontmatter:** `source`, `aliases` (the MCP tools set `created`/`updated` automatically)
+**Required frontmatter:** `source`, `aliases` (kvault sets `created`/`updated` automatically)
 
 ## What a knowledge base looks like
 
 ```
 my_kb/
 ├── _summary.md                          # Root: executive overview
+├── CLAUDE.md                            # Agent workflow instructions
 ├── people/
 │   ├── _summary.md                      # "12 contacts across 3 categories"
 │   ├── family/
-│   │   ├── _summary.md
-│   │   └── mom/
-│   │       └── _summary.md
+│   │   └── _summary.md
 │   ├── friends/
 │   │   ├── _summary.md
 │   │   └── alex_rivera/
 │   │       └── _summary.md
 │   └── contacts/
 │       ├── _summary.md
-│       ├── sarah_chen/
-│       │   └── _summary.md
-│       └── james_park/
+│       └── sarah_chen/
 │           └── _summary.md
 ├── projects/
 │   ├── _summary.md
@@ -193,60 +140,49 @@ my_kb/
     └── logs.db                          # Observability
 ```
 
-Every directory with a `_summary.md` is a node. Summaries at each level capture the semantic landscape of their children. When reading any entity, kvault returns the parent summary too — so the agent always knows what siblings exist.
+## CLI commands
 
-## MCP tools (16)
+| Category | Commands |
+|----------|----------|
+| **Entity** | `kvault read`, `kvault write`, `kvault list`, `kvault delete`, `kvault move` |
+| **Summary** | `kvault read-summary`, `kvault write-summary`, `kvault update-summaries`, `kvault ancestors` |
+| **Journal** | `kvault journal` |
+| **Status** | `kvault status`, `kvault tree` |
+| **Validation** | `kvault validate`, `kvault check` |
+| **Init** | `kvault init` |
 
-| Category | Tools |
-|----------|-------|
-| **Init** | `kvault_init` |
-| **Status** | `kvault_status` |
-| **Entity** | `kvault_read_entity`, `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity` |
-| **Summary** | `kvault_read_summary`, `kvault_write_summary`, `kvault_update_summaries`, `kvault_get_parent_summaries`, `kvault_propagate_all` |
-| **Workflow** | `kvault_log_phase`, `kvault_write_journal` |
-| **Artifacts** | `kvault_generate_daily_artifact` |
-| **Validation** | `kvault_validate_kb` |
-
-`kvault_read_entity` returns entity content **plus** the parent `_summary.md` — giving the agent sibling context for free. `kvault_write_entity` returns ancestor summaries and pipeline hints so agents know exactly what to propagate next.
+All commands support `--json` for machine-readable output. `--kb-root` overrides auto-detection.
 
 ## Optional root pinning (multi-tenant hardening)
 
-For shared runtimes, you can pin allowed init roots:
+For shared runtimes, pin allowed roots:
 
 ```bash
 export KVAULT_ALLOWED_ROOTS="/Users/mossbot/personal_kb"
-kvault-mcp
 ```
-
-When `KVAULT_ALLOWED_ROOTS` is set, `kvault_init(kg_root=...)` only accepts exact
-roots in that list (comma-separated for multiple roots).
 
 ## Python API
 
-kvault also exposes a Python API for programmatic use:
-
 ```python
 from pathlib import Path
-from kvault import EntityResearcher, SimpleStorage, scan_entities
+from kvault.core import operations as ops
 
 kg_root = Path("my_kb")
-storage = SimpleStorage(kg_root)
-researcher = EntityResearcher(kg_root)
 
-# Scan all entities
+# Read/write entities
+entity = ops.read_entity(kg_root, "people/contacts/sarah_chen")
+result = ops.write_entity(kg_root, "people/contacts/new_person", "# Content", create=True)
+
+# Scan and search
+from kvault import scan_entities, EntityResearcher
 entities = scan_entities(kg_root)
-
-# Reusable dedup/reconciliation suggestions
-action, target_path, confidence = researcher.suggest_action("Universal Robots", aliases=["UR"])
-
-# Navigate hierarchy
-ancestors = storage.get_ancestors("people/contacts/sarah_chen")
-# Returns: ["people/contacts", "people"]
+researcher = EntityResearcher(kg_root)
+action, target, confidence = researcher.suggest_action("Sarah Chen")
 ```
 
 ## Integrity hook
 
-Catch stale summaries before each prompt by adding to `.claude/settings.json`:
+Catch stale summaries before each prompt:
 
 ```json
 {
@@ -261,50 +197,11 @@ Catch stale summaries before each prompt by adding to `.claude/settings.json`:
 }
 ```
 
-## Daily artifacts + Moss automation
-
-Generate a daily summary artifact directly:
-
-```bash
-kvault artifact daily --kb-root /absolute/path/to/my_kb --date 2026-02-15
-```
-
-Output path:
-
-```text
-/absolute/path/to/my_kb/.kvault/artifacts/daily/YYYY-MM-DD.md
-```
-
-For Moss/OpenClaw, two practical patterns:
-
-1. Direct cron on the host (simple and reliable):
-```cron
-15 6 * * * cd ~/personal_kb && kvault artifact daily --kb-root . --date "$(date +\%F)" --force >> /tmp/kvault-artifacts.log 2>&1
-```
-
-2. Cron queues a request for Moss (agent-owned execution):
-```bash
-cat >> ~/.openclaw/workspace/claude-code/inbox.md << 'EOF'
-## 2026-02-15T06:15:00-08:00 - STATUS: PENDING
-
-**From:** System Cron
-**Priority:** NORMAL
-**Request:** Run `kvault artifact daily --kb-root /home/eddie/personal_kb --date 2026-02-15 --force`, then confirm in outbox.
-
----
-EOF
-```
-
 ## Development
 
 ```bash
-# Install dev dependencies
 pip install -e ".[dev]"
-
-# Run tests
 pytest
-
-# Lint, format, type-check
 ruff check . && black . && mypy .
 ```
 

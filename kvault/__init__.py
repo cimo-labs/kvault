@@ -2,13 +2,13 @@
 kvault - Personal knowledge base for AI agents.
 
 Stores entities as YAML-frontmatter Markdown files with hierarchical
-summary propagation. Runs as an MCP server inside Claude Code, Cursor,
-VS Code, or any MCP-compatible tool.
+summary propagation. CLI-first: agents call kvault commands via shell.
+Also available as a legacy MCP server.
 
 No external API keys. No extra cost. Just files.
 """
 
-__version__ = "0.6.3"
+__version__ = "0.7.0"
 
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
 from kvault.core.daily_artifacts import DailyArtifactResult, generate_daily_artifact, parse_iso_date

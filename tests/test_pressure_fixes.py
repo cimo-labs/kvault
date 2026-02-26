@@ -7,6 +7,7 @@ from pathlib import Path
 
 from kvault.core.storage import scan_entities
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter
+from kvault.core import operations as ops
 
 # ============================================================================
 # BUG-2: Entity name extraction
@@ -123,6 +124,7 @@ class TestValidateKbCategoryDirs:
     def _create_kb_with_subcategories(self, tmp_path):
         kb = tmp_path / "kb"
         kb.mkdir()
+        (kb / ".kvault").mkdir(parents=True, exist_ok=True)
         (kb / "_summary.md").write_text("---\naliases: []\n---\n# Test KB\n")
 
         for d in ["people", "people/friends", "people/work"]:
@@ -140,25 +142,19 @@ class TestValidateKbCategoryDirs:
         return kb
 
     def test_subcategory_dirs_not_flagged(self, tmp_path):
-        from kvault.mcp.server import handle_kvault_init, handle_kvault_validate_kb
-
         kb = self._create_kb_with_subcategories(tmp_path)
-        handle_kvault_init(str(kb))
-        result = handle_kvault_validate_kb()
+        result = ops.validate_kb(kb)
         assert result["valid"] is True or result["issue_count"] >= 0
 
     def test_leaf_entity_without_frontmatter_not_scanned(self, tmp_path):
         """Entity without frontmatter won't appear in scan (no index to have ghost entries)."""
-        from kvault.mcp.server import handle_kvault_init, handle_kvault_validate_kb
-
         kb = self._create_kb_with_subcategories(tmp_path)
 
         orphan = kb / "people" / "friends" / "orphan"
         orphan.mkdir()
         (orphan / "_summary.md").write_text("# Orphan\n\nNo frontmatter.\n")
 
-        handle_kvault_init(str(kb))
-        result = handle_kvault_validate_kb()
+        result = ops.validate_kb(kb)
         # No index means no "ghost" entries — orphan simply isn't found by scan
         assert result is not None
 
@@ -172,49 +168,45 @@ class TestWriteEntityAutoName:
     """write_entity should auto-set 'name' from first non-email alias."""
 
     def test_auto_name_from_alias(self, empty_kb):
-        from kvault.mcp.server import handle_kvault_write_entity, handle_kvault_read_entity
-
-        handle_kvault_write_entity(
+        ops.write_entity(
+            empty_kb,
             path="people/test",
-            meta={"source": "test", "aliases": ["Test Person", "test@example.com"]},
             content="# Test\n",
+            meta={"source": "test", "aliases": ["Test Person", "test@example.com"]},
             create=True,
         )
-        entity = handle_kvault_read_entity("people/test")
+        entity = ops.read_entity(empty_kb, "people/test")
         assert entity["meta"]["name"] == "Test Person"
 
     def test_auto_name_skips_email(self, empty_kb):
-        from kvault.mcp.server import handle_kvault_write_entity, handle_kvault_read_entity
-
-        handle_kvault_write_entity(
+        ops.write_entity(
+            empty_kb,
             path="people/test",
-            meta={"source": "test", "aliases": ["test@example.com", "Test Person"]},
             content="# Test\n",
+            meta={"source": "test", "aliases": ["test@example.com", "Test Person"]},
             create=True,
         )
-        entity = handle_kvault_read_entity("people/test")
+        entity = ops.read_entity(empty_kb, "people/test")
         assert entity["meta"]["name"] == "Test Person"
 
     def test_auto_name_handles_non_string_aliases(self, empty_kb):
-        from kvault.mcp.server import handle_kvault_write_entity, handle_kvault_read_entity
-
-        handle_kvault_write_entity(
+        ops.write_entity(
+            empty_kb,
             path="people/test",
-            meta={"source": "test", "aliases": [14155551234, "Test Person"]},
             content="# Test\n",
+            meta={"source": "test", "aliases": [14155551234, "Test Person"]},
             create=True,
         )
-        entity = handle_kvault_read_entity("people/test")
+        entity = ops.read_entity(empty_kb, "people/test")
         assert entity["meta"]["name"] == "Test Person"
 
     def test_explicit_name_not_overwritten(self, empty_kb):
-        from kvault.mcp.server import handle_kvault_write_entity, handle_kvault_read_entity
-
-        handle_kvault_write_entity(
+        ops.write_entity(
+            empty_kb,
             path="people/test",
-            meta={"source": "test", "aliases": ["Alias"], "name": "Explicit Name"},
             content="# Test\n",
+            meta={"source": "test", "aliases": ["Alias"], "name": "Explicit Name"},
             create=True,
         )
-        entity = handle_kvault_read_entity("people/test")
+        entity = ops.read_entity(empty_kb, "people/test")
         assert entity["meta"]["name"] == "Explicit Name"

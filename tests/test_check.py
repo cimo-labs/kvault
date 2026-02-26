@@ -105,12 +105,13 @@ def test_propagation_falls_back_to_mtime(tmp_path):
 
 def test_write_entity_returns_ancestors(empty_kb):
     """write_entity result should include ancestors list with current content."""
-    from kvault.mcp.server import handle_kvault_write_entity
+    from kvault.core import operations as ops
 
-    result = handle_kvault_write_entity(
+    result = ops.write_entity(
+        empty_kb,
         path="people/friends/test_person",
-        meta={"source": "manual", "aliases": ["Test Person"]},
         content="# Test Person\n\nA test entity.\n",
+        meta={"source": "manual", "aliases": ["Test Person"]},
         create=True,
     )
 
@@ -122,12 +123,13 @@ def test_write_entity_returns_ancestors(empty_kb):
 
 def test_ancestors_includes_root(empty_kb):
     """ancestors list should include '.' for root."""
-    from kvault.mcp.server import handle_kvault_write_entity
+    from kvault.core import operations as ops
 
-    result = handle_kvault_write_entity(
+    result = ops.write_entity(
+        empty_kb,
         path="people/friends/test_person",
-        meta={"source": "manual", "aliases": ["Test Person"]},
         content="# Test Person\n",
+        meta={"source": "manual", "aliases": ["Test Person"]},
         create=True,
     )
 

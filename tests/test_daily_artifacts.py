@@ -1,4 +1,4 @@
-"""Tests for daily artifact generation (core, CLI, MCP)."""
+"""Tests for daily artifact generation (core and CLI)."""
 
 from datetime import date
 
@@ -6,7 +6,6 @@ from click.testing import CliRunner
 
 from kvault.cli.main import cli
 from kvault.core.daily_artifacts import generate_daily_artifact
-from kvault.mcp.server import handle_kvault_generate_daily_artifact
 
 
 def test_generate_daily_artifact_creates_expected_sections(sample_kb):
@@ -55,21 +54,3 @@ def test_cli_artifact_daily_generates_file(sample_kb):
     assert "daily artifact" in result.output.lower()
     artifact_path = sample_kb / ".kvault" / "artifacts" / "daily" / "2026-02-12.md"
     assert artifact_path.exists()
-
-
-def test_mcp_generate_daily_artifact(initialized_kb):
-    """MCP handler should generate and return artifact metadata + content."""
-    result = handle_kvault_generate_daily_artifact(artifact_date="2026-02-13", force=True)
-
-    assert result["success"] is True
-    assert result["date"] == "2026-02-13"
-    assert result["path"] == ".kvault/artifacts/daily/2026-02-13.md"
-    assert "## People Summary (Full)" in result["content"]
-
-
-def test_mcp_generate_daily_artifact_rejects_invalid_date(initialized_kb):
-    """MCP handler should return validation error for bad date format."""
-    result = handle_kvault_generate_daily_artifact(artifact_date="02/13/2026")
-
-    assert result["success"] is False
-    assert result["error_code"] == "validation_error"

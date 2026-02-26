@@ -7,9 +7,8 @@ Main Python package for `knowledgevault`.
 ```
 kvault/
 ├── __init__.py
-├── cli/                 # kvault init/check/artifact/log commands
-├── core/                # storage, frontmatter, research, observability, artifacts
-├── mcp/                 # MCP server + canonical manifest (16 tools)
+├── cli/                 # CLI commands (primary interface)
+├── core/                # operations, storage, frontmatter, research, observability, artifacts
 └── templates/           # default KB templates
 ```
 
@@ -36,9 +35,9 @@ from kvault import (
 
 ## Interface Layers
 
-- MCP server (`kvault-mcp`) is the preferred runtime interface.
+- CLI commands (`kvault`) are the primary runtime interface.
+- Core operations layer (`kvault/core/operations.py`) provides shared business logic.
 - Core modules provide reusable library behavior.
-- CLI commands are local operational wrappers.
 
 ## CLI Quick Start
 

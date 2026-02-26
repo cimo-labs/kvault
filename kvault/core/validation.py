@@ -1,6 +1,6 @@
-"""Business rules and validation for kvault MCP server.
+"""Business rules and validation for kvault operations.
 
-Shared validation logic for MCP tool handlers and CLI-facing workflows.
+Shared validation logic used by both the MCP server and CLI commands.
 """
 
 import re

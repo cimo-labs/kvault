@@ -2,7 +2,6 @@
 
 import json
 import pytest
-from pathlib import Path
 from click.testing import CliRunner
 
 from kvault.cli.main import cli
@@ -134,7 +133,9 @@ class TestWriteCommand:
         assert "ancestors" in data
 
     def test_write_update(self, runner, cli_kb_with_entity):
-        input_content = "---\nsource: manual\naliases:\n  - Alice Smith\n---\n\n# Alice Smith\n\nUpdated!\n"
+        input_content = (
+            "---\nsource: manual\naliases:\n  - Alice Smith\n---\n\n# Alice Smith\n\nUpdated!\n"
+        )
         result = runner.invoke(
             cli,
             ["--kb-root", str(cli_kb_with_entity), "write", "people/friends/alice_smith"],
@@ -212,7 +213,13 @@ class TestDeleteCommand:
     def test_delete_with_force(self, runner, cli_kb_with_entity):
         result = runner.invoke(
             cli,
-            ["--kb-root", str(cli_kb_with_entity), "delete", "people/friends/alice_smith", "--force"],
+            [
+                "--kb-root",
+                str(cli_kb_with_entity),
+                "delete",
+                "people/friends/alice_smith",
+                "--force",
+            ],
         )
         assert result.exit_code == 0
         assert "Deleted" in result.output
@@ -234,9 +241,7 @@ class TestDeleteCommand:
         assert data["success"]
 
     def test_delete_nonexistent(self, runner, cli_kb):
-        result = runner.invoke(
-            cli, ["--kb-root", str(cli_kb), "--json", "delete", "people/nobody"]
-        )
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "--json", "delete", "people/nobody"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert not data["success"]
@@ -276,9 +281,7 @@ class TestSummaryCommands:
         assert "People" in result.output
 
     def test_read_summary_json(self, runner, cli_kb):
-        result = runner.invoke(
-            cli, ["--kb-root", str(cli_kb), "--json", "read-summary", "people"]
-        )
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "--json", "read-summary", "people"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["path"] == "people"
@@ -293,15 +296,19 @@ class TestSummaryCommands:
 
     def test_update_summaries(self, runner, cli_kb):
         updates = json.dumps([{"path": "people", "content": "# People\n\nBatch updated.\n"}])
-        result = runner.invoke(
-            cli, ["--kb-root", str(cli_kb), "update-summaries"], input=updates
-        )
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "update-summaries"], input=updates)
         assert result.exit_code == 0
 
     def test_ancestors(self, runner, cli_kb_with_entity):
         result = runner.invoke(
             cli,
-            ["--kb-root", str(cli_kb_with_entity), "--json", "ancestors", "people/friends/alice_smith"],
+            [
+                "--kb-root",
+                str(cli_kb_with_entity),
+                "--json",
+                "ancestors",
+                "people/friends/alice_smith",
+            ],
         )
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -341,9 +348,7 @@ class TestValidateCommand:
         assert result.exit_code == 0
 
     def test_validate_json(self, runner, cli_kb_with_entity):
-        result = runner.invoke(
-            cli, ["--kb-root", str(cli_kb_with_entity), "--json", "validate"]
-        )
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb_with_entity), "--json", "validate"])
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert "valid" in data

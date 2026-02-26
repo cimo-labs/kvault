@@ -4,9 +4,7 @@ These tests call operations functions directly (no MCP server initialization).
 """
 
 import pytest
-from pathlib import Path
 from kvault.core import operations as ops
-
 
 # ============================================================================
 # Fixtures

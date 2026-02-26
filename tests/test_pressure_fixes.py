@@ -1,12 +1,8 @@
 """Regression tests for pressure-test findings: name extraction, validate_kb, auto-name."""
 
-import json
-import os
-import pytest
 from pathlib import Path
 
 from kvault.core.storage import scan_entities
-from kvault.core.frontmatter import parse_frontmatter, build_frontmatter
 from kvault.core import operations as ops
 
 # ============================================================================

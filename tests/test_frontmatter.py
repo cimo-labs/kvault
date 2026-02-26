@@ -1,7 +1,5 @@
 """Tests for kvault.core.frontmatter module."""
 
-import pytest
-
 from kvault.core.frontmatter import build_frontmatter, merge_frontmatter, parse_frontmatter
 
 

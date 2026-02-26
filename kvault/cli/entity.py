@@ -1,6 +1,5 @@
 """CLI commands for entity operations: read, write, list, delete, move."""
 
-from pathlib import Path
 from typing import Optional
 
 import click

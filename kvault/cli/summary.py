@@ -1,7 +1,5 @@
 """CLI commands for summary operations: read-summary, write-summary, update-summaries, ancestors."""
 
-from typing import Optional
-
 import click
 
 from kvault.cli._helpers import output_json, read_stdin, read_stdin_json, resolve_kb_root
@@ -66,7 +64,9 @@ def update_summaries(ctx: click.Context) -> None:
         output_json(result)
     else:
         if result.get("success"):
-            click.echo(f"Updated {result['count']} summaries: {', '.join(result.get('updated', []))}")
+            click.echo(
+                f"Updated {result['count']} summaries: {', '.join(result.get('updated', []))}"
+            )
         else:
             raise click.ClickException("Update failed")
         if result.get("errors"):

@@ -2,7 +2,6 @@
 
 import json
 import pytest
-from pathlib import Path
 from click.testing import CliRunner
 
 from kvault.cli.main import cli
@@ -23,7 +22,9 @@ def workflow_kb(tmp_path):
     (kb / "people").mkdir()
     (kb / "people" / "_summary.md").write_text("# People\n\nAll contacts.\n")
     (kb / "people" / "contacts").mkdir()
-    (kb / "people" / "contacts" / "_summary.md").write_text("# Contacts\n\nProfessional contacts.\n")
+    (kb / "people" / "contacts" / "_summary.md").write_text(
+        "# Contacts\n\nProfessional contacts.\n"
+    )
     (kb / "projects").mkdir()
     (kb / "projects" / "_summary.md").write_text("# Projects\n\nAll projects.\n")
     return kb
@@ -104,11 +105,7 @@ class TestFullWriteWorkflow:
             input=entity_content,
         )
 
-        result = runner.invoke(
-            cli, ["--kb-root", str(workflow_kb), "--json", "validate"]
-        )
+        result = runner.invoke(cli, ["--kb-root", str(workflow_kb), "--json", "validate"])
         assert result.exit_code == 0
         data = json.loads(result.output)
-        assert data["valid"] is True or all(
-            i["severity"] == "info" for i in data.get("issues", [])
-        )
+        assert data["valid"] is True or all(i["severity"] == "info" for i in data.get("issues", []))

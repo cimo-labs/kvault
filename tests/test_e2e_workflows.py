@@ -4,10 +4,6 @@ Tests complete user workflows (the 2-call pipeline) against the sample KB fixtur
 Following CJE's testing philosophy: test what users actually do, with real-ish data.
 """
 
-import pytest
-from pathlib import Path
-from tests.conftest import SAMPLE_KB_ENTITY_COUNT
-
 from kvault.core import operations as ops
 
 # ============================================================================

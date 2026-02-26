@@ -93,9 +93,7 @@ def build_hierarchy_tree(root: Path, max_depth: int = 3) -> str:
         if path.name.startswith("."):
             return
         try:
-            subdirs = sorted(
-                p for p in path.iterdir() if p.is_dir() and not p.name.startswith(".")
-            )
+            subdirs = sorted(p for p in path.iterdir() if p.is_dir() and not p.name.startswith("."))
         except PermissionError:
             return
         for i, subdir in enumerate(subdirs):

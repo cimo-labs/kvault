@@ -8,7 +8,7 @@ from typing import Dict, Optional
 
 import click
 
-from kvault.cli._helpers import find_kb_root, output_json, resolve_kb_root
+from kvault.cli._helpers import output_json, resolve_kb_root
 from kvault.cli.check import check_kb
 from kvault.cli.entity import read_entity, write_entity, list_entities, delete_entity, move_entity
 from kvault.cli.journal import write_journal

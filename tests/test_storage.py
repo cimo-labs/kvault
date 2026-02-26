@@ -1,8 +1,6 @@
 """Tests for SimpleStorage."""
 
-import json
 import pytest
-from pathlib import Path
 
 from kvault.core.storage import SimpleStorage, normalize_entity_id
 

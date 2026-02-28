@@ -1,5 +1,7 @@
 # Knowledge Base — Operating Rules
 
+> Instructions for AI coding agents (Claude Code, OpenAI Codex, Gemini CLI, Cursor, GitHub Copilot, etc.)
+
 ## RULES (read these first, every session)
 
 1. **PROPAGATE ALL ANCESTORS.** After any entity write, update EVERY `_summary.md` from parent to root.
@@ -10,8 +12,8 @@
    - `people/_summary.md`
    - `_summary.md` (root)
 
-2. **FIX HOOK WARNINGS FIRST.** When the UserPromptSubmit hook reports `[KB]` issues,
-   fix every PROPAGATE and LOG warning before doing anything else.
+2. **FIX INTEGRITY WARNINGS FIRST.** If `kvault check` reports `[KB]` issues (or a pre-prompt hook
+   surfaces them), fix every PROPAGATE and LOG warning before doing anything else.
 
 3. **JOURNAL EVERY SESSION.** If you modified any entity today, `journal/YYYY-MM/log.md`
    must have an entry for today before the session ends. (Auto-logged if you pass `--reasoning` to `kvault write`.)
@@ -20,7 +22,7 @@
    `created` and `updated` are set automatically by kvault.
 
 5. **CHECK BEFORE WRITE.** Always browse the tree and read parent summaries before creating new entities.
-   Use Grep/Glob/Read to check for existing entities. Never create duplicates.
+   Search for existing entities (grep, find, or your tool's search) before creating. Never create duplicates.
 
 ---
 
@@ -53,7 +55,7 @@ Customize this section with your details.
 ## Writing to the Knowledge Base (2-call workflow)
 
 ### 1. NAVIGATE — Find what exists and decide
-Browse the tree and read parent summaries. Use Grep/Glob/Read tools and kvault CLI:
+Browse the tree and read parent summaries. Use your tool's search/read capabilities and kvault CLI:
 ```bash
 kvault status --json                       # Get hierarchy tree
 kvault read <path> --json                  # Returns entity + parent summary (sibling context)

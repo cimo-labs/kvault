@@ -2,6 +2,17 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.7.1 - 2026-02-27
+
+### Changed
+
+- **Multi-tool compatibility**: Renamed `kvault/templates/CLAUDE.md` → `AGENTS.md`. `kvault init` now generates `AGENTS.md` instead of `CLAUDE.md`. Template language generalized for all AI coding agents (Claude Code, OpenAI Codex, Gemini CLI, Cursor, GitHub Copilot).
+- **README**: Added multi-tool quickstart tips table; integrity hook section now shows CLI command first with tool-specific hook as an example; replaced Claude Code-specific tool references with generic language.
+
+### Fixed
+
+- **Click 8.2 compatibility**: Removed `mix_stderr` kwarg from `CliRunner()` in tests (removed in Click 8.2).
+
 ## 0.7.0 - 2026-02-25
 
 ### Added
@@ -17,7 +28,7 @@ All notable changes to `knowledgevault` are documented in this file.
 ### Changed
 
 - **`kvault init` output**: Changed "Next steps" from MCP config JSON to CLI usage instructions.
-- **Templates**: `kvault/templates/CLAUDE.md` rewritten for CLI workflow (shell commands, not MCP tool calls).
+- **Templates**: `kvault/templates/CLAUDE.md` rewritten for CLI workflow (shell commands, not MCP tool calls). (Renamed to `AGENTS.md` in 0.7.1.)
 - **Documentation**: README, CLAUDE.md, and CHANGELOG updated for CLI-first architecture.
 
 ### Removed

@@ -22,7 +22,7 @@ Developers using **Claude Code**, **OpenAI Codex**, **Cursor**, **VS Code + Copi
 | **Agent-native** | CLI commands, works in any subprocess | 4 MCP tools, basic | Chat sidebar | Template, not runtime |
 | **Cost** | $0 (uses existing subscription) | $0 | $12-20/mo extra | $0 |
 | **Navigation** | Parent summaries at every level | None | AI-generated | Manual |
-| **Search** | Agent uses its own Grep/Glob/Read | Built-in | Built-in | Manual |
+| **Search** | Agent uses its own search tools (grep, find, etc.) | Built-in | Built-in | Manual |
 
 ## Quickstart (30 seconds)
 
@@ -42,7 +42,16 @@ kvault init ./my_kb --name "Your Name"
 
 > "Use kvault CLI commands to manage my knowledge base at ./my_kb"
 
-Your agent reads the generated `CLAUDE.md` for workflow instructions and starts working.
+Your agent reads the generated `AGENTS.md` for workflow instructions and starts working.
+
+**Tool-specific tips:**
+
+| Tool | Setup |
+|------|-------|
+| **Claude Code** | Works automatically — reads `AGENTS.md` as project instructions |
+| **OpenAI Codex CLI** | Tell it: *"Read AGENTS.md for the kvault workflow, then use shell commands to manage ./my_kb"* |
+| **Gemini CLI** | Symlink `AGENTS.md` → `GEMINI.md`, or paste the workflow rules into your system prompt |
+| **Cursor / Copilot** | Add `AGENTS.md` contents to your `.cursorrules` or workspace instructions |
 
 ## Try it: import your ChatGPT history
 
@@ -116,7 +125,7 @@ Research scientist at Anthropic working on causal discovery.
 ```
 my_kb/
 ├── _summary.md                          # Root: executive overview
-├── CLAUDE.md                            # Agent workflow instructions
+├── AGENTS.md                            # Agent workflow instructions
 ├── people/
 │   ├── _summary.md                      # "12 contacts across 3 categories"
 │   ├── family/
@@ -180,9 +189,15 @@ researcher = EntityResearcher(kg_root)
 action, target, confidence = researcher.suggest_action("Sarah Chen")
 ```
 
-## Integrity hook
+## Integrity check
 
-Catch stale summaries before each prompt:
+Run `kvault check` to catch stale summaries:
+
+```bash
+kvault check --kb-root /absolute/path/to/my_kb
+```
+
+If your tool supports pre-prompt hooks, you can automate this. For example, in Claude Code's `.claude/settings.json`:
 
 ```json
 {

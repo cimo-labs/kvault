@@ -95,10 +95,10 @@ def init_kb(ctx: click.Context, path: Path, name: str) -> None:
     root_tpl = _load_template("root_summary.md")
     cat_tpl = _load_template("category_summary.md")
     journal_tpl = _load_template("journal_entry.md")
-    claude_tpl = _load_template("CLAUDE.md")
+    agents_tpl = _load_template("AGENTS.md")
 
     (path / "_summary.md").write_text(_render(root_tpl, replacements))
-    (path / "CLAUDE.md").write_text(_render(claude_tpl, replacements))
+    (path / "AGENTS.md").write_text(_render(agents_tpl, replacements))
 
     categories = {
         "people": "People tracked in this knowledge base.",
@@ -130,7 +130,7 @@ def init_kb(ctx: click.Context, path: Path, name: str) -> None:
     click.echo(f"Initialized knowledge base at {path}")
     click.echo(f"Owner: {name}")
     click.echo()
-    click.echo("Next: read CLAUDE.md for agent workflow instructions.")
+    click.echo("Next: read AGENTS.md for agent workflow instructions.")
     click.echo("Use 'kvault --help' to see all commands.")
 
 

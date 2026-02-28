@@ -16,7 +16,7 @@ kvault/
 ├── kvault/
 │   ├── cli/         # CLI commands (primary interface)
 │   ├── core/        # Operations, storage, validation, frontmatter
-│   ├── templates/   # KB init templates (CLAUDE.md)
+│   ├── templates/   # KB init templates (AGENTS.md)
 │   └── py.typed     # PEP 561 marker
 └── tests/
 ```
@@ -122,4 +122,4 @@ Before publishing:
 1. Update docs for any API/CLI changes.
 2. Run full tests.
 3. Ensure `CHANGELOG.md` and package version stay in sync.
-4. Update templates/CLAUDE.md for agent-facing changes.
+4. Update templates/AGENTS.md for agent-facing changes.

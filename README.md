@@ -212,6 +212,18 @@ If your tool supports pre-prompt hooks, you can automate this. For example, in C
 }
 ```
 
+## It's just files
+
+kvault produces Markdown with YAML frontmatter in a plain directory. No proprietary format, no database to export from. Your existing tools work out of the box:
+
+| Want to... | Use |
+|---|---|
+| **Semantic search** | Embed the `.md` files with any vector tool (OpenAI, Chroma, txtai, etc.) |
+| **Visual browsing** | Open the KB directory in Obsidian or Logseq |
+| **Publish as a site** | Point Hugo, Jekyll, or Astro at the directory |
+| **CI validation** | Run `kvault validate` in a GitHub Action |
+| **Bulk export** | `find . -name _summary.md` + `yq` over the frontmatter |
+
 ## Development
 
 ```bash

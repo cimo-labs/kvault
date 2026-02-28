@@ -9,7 +9,7 @@ from kvault.cli.main import cli
 
 @pytest.fixture
 def runner():
-    return CliRunner(mix_stderr=False)
+    return CliRunner()
 
 
 @pytest.fixture

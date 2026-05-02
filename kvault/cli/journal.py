@@ -1,22 +1,37 @@
 """CLI command for journal writing."""
 
+from pathlib import Path
 from typing import Optional
 
 import click
 
-from kvault.cli._helpers import output_json, read_stdin_json, resolve_kb_root
+from kvault.cli._helpers import (
+    apply_common_options,
+    common_options,
+    output_json,
+    read_stdin_json,
+    resolve_kb_root,
+)
 from kvault.core import operations as ops
 
 
 @click.command("journal")
 @click.option("--source", required=True, help="Source identifier for the journal entry")
 @click.option("--date", "journal_date", default=None, help="Date (YYYY-MM-DD, defaults to today)")
+@common_options
 @click.pass_context
-def write_journal(ctx: click.Context, source: str, journal_date: Optional[str]) -> None:
+def write_journal(
+    ctx: click.Context,
+    source: str,
+    journal_date: Optional[str],
+    kb_root: Optional[Path],
+    as_json: bool,
+) -> None:
     """Write a journal entry from stdin JSON actions array.
 
     Expects: [{"action_type": "create", "path": "...", "reasoning": "..."}]
     """
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
     actions = read_stdin_json()
     if not isinstance(actions, list):

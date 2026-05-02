@@ -7,10 +7,11 @@ Checks:
 4. BRANCH: Directories with >10 children should be restructured
 
 Exit codes:
-    0 = All checks pass (silent)
-    1 = Warnings found (minimal output for Claude context)
+    0 = All hard checks pass (summary-quality warnings are warn-only)
+    1 = Hard warnings found (minimal output for Claude context)
 """
 
+import json
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -18,7 +19,9 @@ from typing import List, Optional
 
 import click
 
+from kvault.core import operations as ops
 from kvault.core.frontmatter import parse_frontmatter
+from kvault.core.summary_quality import audit_summary_quality, format_summary_quality_warnings
 
 DEFAULT_THRESHOLD_MINUTES = 5
 
@@ -225,6 +228,7 @@ def check_directory_size(kb_root: Path, max_children: int = 10) -> List[str]:
     default=None,
     help="Knowledge base root (auto-detected if not specified)",
 )
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 @click.option(
     "--threshold",
     type=int,
@@ -232,37 +236,99 @@ def check_directory_size(kb_root: Path, max_children: int = 10) -> List[str]:
     show_default=True,
     help="Staleness threshold in minutes",
 )
-def check_kb(kb_root: Optional[Path], threshold: int) -> None:
+@click.option(
+    "--no-summary-quality",
+    is_flag=True,
+    help="Skip parent-summary quality warnings.",
+)
+@click.option(
+    "--summary-max-warnings",
+    type=int,
+    default=5,
+    show_default=True,
+    help="Maximum summary-quality warnings to print.",
+)
+@click.pass_context
+def check_kb(
+    ctx: click.Context,
+    kb_root: Optional[Path],
+    as_json: bool,
+    threshold: int,
+    no_summary_quality: bool,
+    summary_max_warnings: int,
+) -> None:
     """Check KB integrity (propagation, journal, index, frontmatter, branching)."""
-    if kb_root is None:
+    ctx.ensure_object(dict)
+    explicit_root = kb_root or ctx.obj.get("kb_root")
+    if as_json:
+        ctx.obj["as_json"] = True
+
+    if explicit_root is None:
         kb_root = _find_kb_root()
         if kb_root is None:
             # Silent exit if no KB found
             sys.exit(0)
     else:
-        kb_root = kb_root.resolve()
+        kb_root = Path(explicit_root).resolve()
 
     if not kb_root.exists():
         sys.exit(0)
 
-    all_warnings: List[str] = []
-    all_warnings.extend(check_propagation(kb_root, threshold))
-    all_warnings.extend(check_journal(kb_root))
-    all_warnings.extend(check_frontmatter(kb_root))
-    all_warnings.extend(check_directory_size(kb_root))
+    allowed_error = ops.validate_allowed_root(kb_root)
+    if allowed_error:
+        raise click.ClickException(allowed_error)
 
-    if all_warnings:
-        prop_warnings = [w for w in all_warnings if w.startswith("PROPAGATE")]
+    hard_warnings: List[str] = []
+    hard_warnings.extend(check_propagation(kb_root, threshold))
+    hard_warnings.extend(check_journal(kb_root))
+    hard_warnings.extend(check_frontmatter(kb_root))
+    hard_warnings.extend(check_directory_size(kb_root))
+
+    summary_issues = [] if no_summary_quality else audit_summary_quality(kb_root)
+
+    if ctx.obj.get("as_json"):
+        click.echo(
+            json.dumps(
+                {
+                    "success": len(hard_warnings) == 0,
+                    "warnings": hard_warnings,
+                    "warning_count": len(hard_warnings),
+                    "summary_warnings": [
+                        {
+                            "path": issue.path,
+                            "code": issue.code,
+                            "message": issue.message,
+                            "details": issue.details,
+                        }
+                        for issue in summary_issues
+                    ],
+                    "summary_warning_count": len(summary_issues),
+                    "summary_quality_enabled": not no_summary_quality,
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        sys.exit(1 if hard_warnings else 0)
+
+    if hard_warnings:
+        prop_warnings = [w for w in hard_warnings if w.startswith("PROPAGATE")]
         if prop_warnings:
             msg = f"[KB] Fix before continuing: {'; '.join(prop_warnings[:5])}"
             if len(prop_warnings) > 5:
                 msg += f" (+{len(prop_warnings) - 5} more)"
             click.echo(msg)
         else:
-            msg = f"[KB] {len(all_warnings)} issues: {'; '.join(all_warnings[:3])}"
-            if len(all_warnings) > 3:
-                msg += f" (+{len(all_warnings) - 3} more)"
+            msg = f"[KB] {len(hard_warnings)} issues: {'; '.join(hard_warnings[:3])}"
+            if len(hard_warnings) > 3:
+                msg += f" (+{len(hard_warnings) - 3} more)"
             click.echo(msg)
+
+    for warning in format_summary_quality_warnings(
+        summary_issues, max_warnings=summary_max_warnings
+    ):
+        click.echo(warning)
+
+    if hard_warnings:
         sys.exit(1)
-    else:
-        sys.exit(0)
+    sys.exit(0)

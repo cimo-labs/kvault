@@ -7,6 +7,8 @@ from typing import Any, Optional
 
 import click
 
+from kvault.core import operations as ops
+
 
 def find_kb_root() -> Optional[Path]:
     """Walk up from cwd looking for _summary.md + .kvault/."""
@@ -25,13 +27,44 @@ def resolve_kb_root(ctx: click.Context, explicit: Optional[Path] = None) -> Path
         root = Path(root).resolve()
         if not root.exists():
             raise click.ClickException(f"KB root does not exist: {root}")
+        allowed_error = ops.validate_allowed_root(root)
+        if allowed_error:
+            raise click.ClickException(allowed_error)
         return root
     detected = find_kb_root()
     if detected is None:
         raise click.ClickException(
             "Could not find a kvault KB. Use --kb-root or run from inside a KB directory."
         )
+    allowed_error = ops.validate_allowed_root(detected)
+    if allowed_error:
+        raise click.ClickException(allowed_error)
     return detected
+
+
+def apply_common_options(
+    ctx: click.Context,
+    kb_root: Optional[Path] = None,
+    as_json: bool = False,
+) -> None:
+    """Apply command-level common option overrides to the group context."""
+    ctx.ensure_object(dict)
+    if kb_root is not None:
+        ctx.obj["kb_root"] = kb_root
+    if as_json:
+        ctx.obj["as_json"] = True
+
+
+def common_options(func: Any) -> Any:
+    """Add common command-level options accepted after subcommands."""
+    func = click.option("--json", "as_json", is_flag=True, help="Output as JSON")(func)
+    func = click.option(
+        "--kb-root",
+        type=click.Path(path_type=Path),
+        default=None,
+        help="Knowledge base root (auto-detected if not specified)",
+    )(func)
+    return func
 
 
 def read_stdin() -> str:

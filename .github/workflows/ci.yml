@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,ui,mcp]"
       - name: Run tests
         run: pytest tests/ -v --tb=short --cov=kvault --cov-report=term
 
@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,ui,mcp]"
       - name: Check formatting
         run: black --check kvault/ tests/
       - name: Lint

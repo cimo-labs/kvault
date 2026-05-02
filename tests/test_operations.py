@@ -177,6 +177,17 @@ class TestWriteEntity:
         entity = ops.read_entity(empty_ops_kb, "people/friends/frank")
         assert entity["meta"]["source"] == "auto:mcp"
 
+    def test_create_deep_entity_path(self, empty_ops_kb):
+        deep_path = "people/contacts/professional/education/person"
+        result = ops.write_entity(
+            empty_ops_kb,
+            deep_path,
+            "# Person\n\nDeep contact path.\n",
+            create=True,
+        )
+        assert result["success"]
+        assert (empty_ops_kb / deep_path / "_summary.md").exists()
+
 
 # ============================================================================
 # Write + propagate workflow

@@ -7,7 +7,8 @@
 - CLI commands via `kvault` entry point (`kvault/cli/`)
 - stateless operations layer (`kvault/core/operations.py`)
 - filesystem storage with frontmatter summaries (`kvault/core/`)
-- tests calling operations directly (no MCP layer)
+- thin root-bound MCP compatibility server (`kvault/mcp/server.py`)
+- optional read-only web UI (`kvault/ui/`)
 
 ## Repository Layout
 
@@ -16,7 +17,9 @@ kvault/
 ├── kvault/
 │   ├── cli/         # CLI commands (primary interface)
 │   ├── core/        # Operations, storage, validation, frontmatter
+│   ├── mcp/         # MCP compatibility server
 │   ├── templates/   # KB init templates (AGENTS.md)
+│   ├── ui/          # Read-only Starlette UI
 │   └── py.typed     # PEP 561 marker
 └── tests/
 ```
@@ -28,6 +31,9 @@ kvault/
 3. Path handling must never allow escape outside configured KB root.
 4. If `KVAULT_ALLOWED_ROOTS` is configured, operations must reject non-allowed roots.
 5. CLI uses `default_source="auto:cli"`.
+6. MCP uses `default_source="auto:mcp"` and is bound to one KB root per process.
+7. Parent summaries should be comprehensive rollups of all descendants; `kvault check`
+   emits warn-only `SUMMARY:` findings for weak rollups.
 
 ## Core APIs
 
@@ -54,6 +60,10 @@ from kvault.core import (
     merge_frontmatter,
     EntityResearcher,
     ResearchCandidate,
+    ObservabilityLogger,
+    SummaryQualityIssue,
+    audit_summary_quality,
+    format_summary_quality_warnings,
     DailyArtifactResult,
     generate_daily_artifact,
 )
@@ -91,12 +101,16 @@ kvault journal --source TEXT [--date YYYY-MM-DD] [--json] < actions.json
 kvault status [--json]
 kvault tree [--depth N]
 kvault validate [--json]
-kvault check [--kb-root PATH]
+kvault check [--kb-root PATH] [--json] [--no-summary-quality]
 
 # Init & artifacts
 kvault init <path> [--name NAME]
-kvault artifact daily [--kb-root PATH] [--date YYYY-MM-DD] [--force]
+kvault artifact daily [--kb-root PATH] [--date YYYY-MM-DD] [--force] [--json]
 kvault log summary [--db PATH] [--session-id ID] [--json]
+kvault ui [--kb-root PATH] [--port PORT] [--host HOST]
+
+# MCP compatibility
+kvault-mcp --kb-root PATH
 
 # Version
 kvault status --json

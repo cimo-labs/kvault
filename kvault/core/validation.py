@@ -105,7 +105,7 @@ def normalize_path(path: str) -> str:
 def validate_entity_path(path: str) -> Tuple[bool, Optional[str]]:
     """Validate entity path format.
 
-    Valid paths: category/entity or category/subcategory/entity
+    Valid paths have at least two safe lowercase components.
     E.g., "people/contacts/john_doe", "projects/my_project"
 
     Args:
@@ -119,9 +119,6 @@ def validate_entity_path(path: str) -> Tuple[bool, Optional[str]]:
 
     if len(parts) < 2:
         return False, "Path must have at least 2 parts (category/entity)"
-
-    if len(parts) > 4:
-        return False, "Path too deep (max 4 levels)"
 
     # Check each part is valid identifier
     for part in parts:

@@ -1,0 +1,112 @@
+/* kvault web UI */
+
+/* ===== Browse page layout ===== */
+#browse-wrap {
+    display: flex;
+    gap: 1.5rem;
+    min-height: 70vh;
+}
+
+#tree-sidebar {
+    flex: 0 0 320px;
+    max-height: calc(100vh - 10rem);
+    overflow-y: auto;
+    border-right: 2px solid #e0e0e0;
+    padding-right: 1rem;
+}
+
+#content-panel {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: break-word;
+}
+
+.tree-empty {
+    color: #888;
+    font-style: italic;
+}
+
+/* ===== Tree structure ===== */
+#tree-top,
+#tree-sidebar ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+#tree-sidebar li {
+    margin: 0;
+    padding: 0.12rem 0;
+}
+
+#tree-sidebar ul.tree-nested {
+    margin-left: 0.55rem;
+    padding-left: 0.85rem;
+    border-left: 1px solid #e1e6ee;
+}
+
+/* Tree links */
+#tree-sidebar a {
+    text-decoration: none;
+    color: #1a6fb5;
+    font-size: 0.9rem;
+    overflow-wrap: anywhere;
+}
+
+#tree-sidebar a:hover {
+    text-decoration: underline;
+}
+
+#tree-sidebar a.tree-link.is-active {
+    color: #0a4c7a;
+    font-weight: 700;
+    text-decoration: underline;
+}
+
+.entity-leaf {
+    font-weight: normal;
+}
+
+/* ===== Search results ===== */
+#search-results article header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+#search-results article header small {
+    color: #888;
+}
+
+/* ===== htmx loading ===== */
+.htmx-indicator {
+    display: none;
+}
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+    display: inline-block;
+}
+
+/* ===== Metadata table ===== */
+details table {
+    margin-top: 0.5rem;
+}
+
+/* ===== Mobile layout ===== */
+@media (max-width: 900px) {
+    #browse-wrap {
+        flex-direction: column;
+        min-height: auto;
+    }
+
+    #tree-sidebar {
+        flex: 1 1 auto;
+        max-height: 45vh;
+        border-right: 0;
+        border-bottom: 1px solid #e0e0e0;
+        padding-right: 0;
+        padding-bottom: 0.75rem;
+    }
+}

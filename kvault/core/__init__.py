@@ -9,6 +9,11 @@ from kvault.core.daily_artifacts import (
     generate_daily_artifact,
     parse_iso_date,
 )
+from kvault.core.summary_quality import (
+    SummaryQualityIssue,
+    audit_summary_quality,
+    format_summary_quality_warnings,
+)
 
 __all__ = [
     "parse_frontmatter",
@@ -22,4 +27,7 @@ __all__ = [
     "DailyArtifactResult",
     "generate_daily_artifact",
     "parse_iso_date",
+    "SummaryQualityIssue",
+    "audit_summary_quality",
+    "format_summary_quality_warnings",
 ]

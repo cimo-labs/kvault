@@ -4,15 +4,25 @@ from typing import Optional
 
 import click
 
-from kvault.cli._helpers import output_json, read_stdin, resolve_kb_root
+from pathlib import Path
+
+from kvault.cli._helpers import (
+    apply_common_options,
+    common_options,
+    output_json,
+    read_stdin,
+    resolve_kb_root,
+)
 from kvault.core import operations as ops
 
 
 @click.command("read")
 @click.argument("path")
+@common_options
 @click.pass_context
-def read_entity(ctx: click.Context, path: str) -> None:
+def read_entity(ctx: click.Context, path: str, kb_root: Optional[Path], as_json: bool) -> None:
     """Read an entity and its parent summary."""
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
     result = ops.read_entity(kb_root, path)
     if result is None:
@@ -43,6 +53,7 @@ def read_entity(ctx: click.Context, path: str) -> None:
 @click.option("--create", is_flag=True, help="Create new entity (fail if exists)")
 @click.option("--reasoning", default=None, help="Reasoning for auto-journal logging")
 @click.option("--journal-source", default=None, help="Override source for journal entry")
+@common_options
 @click.pass_context
 def write_entity(
     ctx: click.Context,
@@ -50,12 +61,15 @@ def write_entity(
     create: bool,
     reasoning: Optional[str],
     journal_source: Optional[str],
+    kb_root: Optional[Path],
+    as_json: bool,
 ) -> None:
     """Write an entity from stdin (frontmatter + markdown body).
 
     Content is read from stdin. Include YAML frontmatter for metadata,
     or omit it to use defaults.
     """
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
     raw = read_stdin()
 
@@ -90,9 +104,13 @@ def write_entity(
 
 @click.command("list")
 @click.argument("category", required=False, default=None)
+@common_options
 @click.pass_context
-def list_entities(ctx: click.Context, category: Optional[str]) -> None:
+def list_entities(
+    ctx: click.Context, category: Optional[str], kb_root: Optional[Path], as_json: bool
+) -> None:
     """List entities, optionally filtered by category."""
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
     entities = ops.list_entities(kb_root, category=category)
     if ctx.obj.get("as_json"):
@@ -108,9 +126,13 @@ def list_entities(ctx: click.Context, category: Optional[str]) -> None:
 @click.command("delete")
 @click.argument("path")
 @click.option("--force", is_flag=True, help="Skip confirmation prompt")
+@common_options
 @click.pass_context
-def delete_entity(ctx: click.Context, path: str, force: bool) -> None:
+def delete_entity(
+    ctx: click.Context, path: str, force: bool, kb_root: Optional[Path], as_json: bool
+) -> None:
     """Delete an entity."""
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
     if not force and not ctx.obj.get("as_json"):
         click.confirm(f"Delete entity '{path}'?", abort=True)
@@ -127,9 +149,13 @@ def delete_entity(ctx: click.Context, path: str, force: bool) -> None:
 @click.command("move")
 @click.argument("source")
 @click.argument("target")
+@common_options
 @click.pass_context
-def move_entity(ctx: click.Context, source: str, target: str) -> None:
+def move_entity(
+    ctx: click.Context, source: str, target: str, kb_root: Optional[Path], as_json: bool
+) -> None:
     """Move an entity to a new path."""
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
     result = ops.move_entity(kb_root, source, target)
     if ctx.obj.get("as_json"):

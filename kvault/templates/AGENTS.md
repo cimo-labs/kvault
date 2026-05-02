@@ -13,7 +13,8 @@
    - `_summary.md` (root)
 
 2. **FIX INTEGRITY WARNINGS FIRST.** If `kvault check` reports `[KB]` issues (or a pre-prompt hook
-   surfaces them), fix every PROPAGATE and LOG warning before doing anything else.
+   surfaces them), fix every PROPAGATE and LOG warning before doing anything else. If it reports
+   `SUMMARY:` warnings, improve those parent rollups when touching that area; they are warn-only.
 
 3. **JOURNAL EVERY SESSION.** If you modified any entity today, `journal/YYYY-MM/log.md`
    must have an entry for today before the session ends. (Auto-logged if you pass `--reasoning` to `kvault write`.)
@@ -23,6 +24,10 @@
 
 5. **CHECK BEFORE WRITE.** Always browse the tree and read parent summaries before creating new entities.
    Search for existing entities (grep, find, or your tool's search) before creating. Never create duplicates.
+
+6. **PARENT SUMMARIES ARE ROLLUPS.** Every parent `_summary.md` must be a comprehensive current-state
+   summary of all descendant summaries. Do not replace parent summaries with placeholders such as
+   "see child files for details."
 
 ---
 
@@ -128,8 +133,9 @@ Context and notes here.
 **Validation:** `kvault validate`, `kvault check`
 **Status:** `kvault status`, `kvault tree`
 
-All commands support `--json` for machine-readable output. Use `--kb-root` to specify the KB root
-(auto-detected from cwd by default).
+All agent-facing commands support `--json` for machine-readable output and `--kb-root` to specify
+the KB root (auto-detected from cwd by default). These flags work before or after the subcommand:
+`kvault read people/friends/alice --json --kb-root ~/example_kb`.
 
 ---
 

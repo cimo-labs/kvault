@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledgevault"
-version = "0.7.1"
+version = "0.8.0"
 description = "CLI-first personal knowledge base for AI agents — structured, navigable, zero extra cost"
 readme = "README.md"
 license = {text = "MIT"}
@@ -39,13 +39,24 @@ dev = [
     "types-PyYAML>=6.0",
     "ruff>=0.1.0",
     "pre-commit>=3.0",
+    "httpx>=0.24.0",
 ]
 # Optional: Agent SDK dependencies for downstream automation integrations
 sdk = [
     "claude-code-sdk>=0.1.0",
 ]
+ui = [
+    "starlette>=0.27.0",
+    "uvicorn[standard]>=0.23.0",
+    "jinja2>=3.1.0",
+    "mistune>=3.0.0",
+]
+mcp = [
+    "mcp>=1.0.0; python_version >= '3.10'",
+]
 [project.scripts]
 kvault = "kvault.cli.main:cli"
+kvault-mcp = "kvault.mcp.server:main"
 
 [project.urls]
 Homepage = "https://github.com/cimo-labs/kvault"
@@ -58,7 +69,7 @@ where = ["."]
 include = ["kvault*"]
 
 [tool.setuptools.package-data]
-kvault = ["templates/**/*", "py.typed"]
+kvault = ["templates/**/*", "ui/static/*", "ui/templates/**/*", "py.typed"]
 
 [tool.setuptools.exclude-package-data]
 "*" = ["__pycache__/*", "*.py[cod]"]

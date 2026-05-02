@@ -10,10 +10,16 @@ tests/
 ├── fixtures/
 │   └── sample_kb/           # 5-entity representative KB for E2E tests
 ├── test_check.py            # kvault check CLI + propagation staleness detection
+├── test_cli_commands.py     # CLI command behavior and option ordering
+├── test_daily_artifacts.py  # Daily artifact generation
 ├── test_e2e_workflows.py    # End-to-end write/propagation workflow pipelines
 ├── test_frontmatter.py      # YAML frontmatter parsing
+├── test_mcp_server.py       # MCP compatibility server
 ├── test_pressure_fixes.py   # Pressure test regression coverage
-└── test_storage.py          # SimpleStorage filesystem + scan_entities
+├── test_storage.py          # SimpleStorage filesystem + scan_entities
+├── test_summary_quality.py  # Parent-summary quality audit
+├── test_ui.py               # Web UI integration tests
+└── test_ui_search.py        # Web UI search tests
 ```
 
 ## Running Tests
@@ -44,11 +50,11 @@ def sample_kb(tmp_path):
 
 @pytest.fixture
 def initialized_kb(sample_kb):
-    """Sample KB with MCP server initialized."""
+    """Sample KB with .kvault/ initialized for operations."""
 
 @pytest.fixture
 def empty_kb(tmp_path):
-    """Fresh KB with category structure but no entities. MCP initialized."""
+    """Fresh KB with category structure but no entities."""
 ```
 
 ## Test Data
@@ -63,4 +69,4 @@ def empty_kb(tmp_path):
 
 ## Stats
 
-**~100+ tests, runs in < 2s.**
+**200+ tests, runs in a few seconds.**

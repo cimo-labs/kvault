@@ -8,7 +8,7 @@ from typing import Dict, Optional
 
 import click
 
-from kvault.cli._helpers import output_json, resolve_kb_root
+from kvault.cli._helpers import apply_common_options, common_options, output_json, resolve_kb_root
 from kvault.cli.check import check_kb
 from kvault.cli.entity import read_entity, write_entity, list_entities, delete_entity, move_entity
 from kvault.cli.journal import write_journal
@@ -77,6 +77,9 @@ cli.add_command(validate_kb, "validate")
 def init_kb(ctx: click.Context, path: Path, name: str) -> None:
     """Initialize a new kvault knowledge base."""
     path = path.resolve()
+    allowed_error = ops.validate_allowed_root(path)
+    if allowed_error:
+        raise click.ClickException(allowed_error)
     path.mkdir(parents=True, exist_ok=True)
 
     if (path / ".kvault").exists():
@@ -101,7 +104,19 @@ def init_kb(ctx: click.Context, path: Path, name: str) -> None:
     (path / "AGENTS.md").write_text(_render(agents_tpl, replacements))
 
     categories = {
-        "people": "People tracked in this knowledge base.",
+        "people": (
+            "People tracked in this knowledge base, organized into Family, Friends, and Contacts. "
+            "Family is for relatives and household context, including relationship notes, important "
+            "dates, preferences, current life state, and recurring obligations. Friends is for personal "
+            "relationships, shared history, recent conversations, interests, plans, and follow-ups that "
+            "help future agents preserve continuity. Contacts is for professional contacts, "
+            "acquaintances, collaborators, vendors, customers, and other people who matter because of "
+            "work, research, community, or logistics. As descendants are added, this parent summary "
+            "should roll up the current state across all three branches so an agent can understand the "
+            "whole people landscape before opening child files. Keep durable facts here: who matters, "
+            "why they matter, what changed recently, what follow-up is pending, and which child branch "
+            "contains the detailed evidence for future careful review."
+        ),
         "people/family": "Close family members.",
         "people/friends": "Personal friends.",
         "people/contacts": "Professional contacts, acquaintances, and others.",
@@ -135,9 +150,11 @@ def init_kb(ctx: click.Context, path: Path, name: str) -> None:
 
 
 @cli.command("status")
+@common_options
 @click.pass_context
-def status(ctx: click.Context) -> None:
+def status(ctx: click.Context, kb_root: Optional[Path], as_json: bool) -> None:
     """Show KB status: root, entity count, hierarchy, health."""
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
     info = ops.get_kb_info(kb_root)
     health = {
@@ -158,11 +175,56 @@ def status(ctx: click.Context) -> None:
 
 @cli.command("tree")
 @click.option("--depth", type=int, default=3, help="Max depth to display")
+@common_options
 @click.pass_context
-def tree(ctx: click.Context, depth: int) -> None:
+def tree(ctx: click.Context, depth: int, kb_root: Optional[Path], as_json: bool) -> None:
     """Print KB hierarchy tree."""
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
-    click.echo(ops.build_hierarchy_tree(kb_root, max_depth=depth))
+    hierarchy = ops.build_hierarchy_tree(kb_root, max_depth=depth)
+    if ctx.obj.get("as_json"):
+        output_json({"kg_root": str(kb_root), "depth": depth, "hierarchy": hierarchy})
+    else:
+        click.echo(hierarchy)
+
+
+@cli.command("ui")
+@click.option("--port", type=int, default=8765, show_default=True, help="Port to listen on")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind to")
+@click.option("--no-open", is_flag=True, help="Don't auto-open browser")
+@common_options
+@click.pass_context
+def ui(
+    ctx: click.Context,
+    port: int,
+    host: str,
+    no_open: bool,
+    kb_root: Optional[Path],
+    as_json: bool,
+) -> None:
+    """Launch read-only web UI for browsing the knowledge base."""
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
+    try:
+        from kvault.ui.app import create_app
+    except ImportError:
+        raise click.ClickException(
+            "Web UI dependencies not installed. Run: pip install 'knowledgevault[ui]'"
+        )
+    import uvicorn
+
+    kb_root = resolve_kb_root(ctx)
+    app = create_app(kb_root)
+
+    url = f"http://{host}:{port}"
+    click.echo(f"Serving KB at {kb_root}")
+    click.echo(f"Open {url} in your browser")
+
+    if not no_open:
+        import webbrowser
+
+        webbrowser.open(url)
+
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 @cli.group("artifact")
@@ -174,9 +236,8 @@ def artifact_group() -> None:
 @click.option(
     "--kb-root",
     type=click.Path(path_type=Path),
-    default=".",
-    show_default=True,
-    help="Knowledge base root directory",
+    default=None,
+    help="Knowledge base root (auto-detected if not specified)",
 )
 @click.option(
     "--date",
@@ -195,13 +256,19 @@ def artifact_group() -> None:
     is_flag=True,
     help="Print generated artifact markdown to stdout.",
 )
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
 def generate_daily(
-    kb_root: Path, artifact_date: Optional[str], force: bool, print_stdout: bool
+    ctx: click.Context,
+    kb_root: Optional[Path],
+    artifact_date: Optional[str],
+    force: bool,
+    print_stdout: bool,
+    as_json: bool,
 ) -> None:
     """Generate the daily artifact markdown file."""
-    kb_root = kb_root.resolve()
-    if not kb_root.exists():
-        raise click.ClickException(f"Knowledge base root does not exist: {kb_root}")
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
+    kb_root = resolve_kb_root(ctx)
 
     try:
         parsed_date = parse_iso_date(artifact_date)
@@ -209,8 +276,22 @@ def generate_daily(
         raise click.ClickException(str(exc)) from exc
 
     result = generate_daily_artifact(kb_root, artifact_date=parsed_date, force=force)
-    status = "Generated" if result.written else "Reused existing"
     rel_path = result.path.relative_to(kb_root)
+    if ctx.obj.get("as_json"):
+        output_json(
+            {
+                "success": True,
+                "kg_root": str(kb_root),
+                "artifact_date": result.artifact_date.isoformat(),
+                "path": str(result.path),
+                "relative_path": str(rel_path),
+                "written": result.written,
+                "content": result.content,
+            }
+        )
+        return
+
+    status = "Generated" if result.written else "Reused existing"
     click.echo(f"{status} daily artifact: {rel_path}")
 
     if print_stdout:

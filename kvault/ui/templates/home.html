@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}kvault &mdash; Dashboard{% endblock %}
+{% block content %}
+<hgroup>
+    <h1>Knowledge Base</h1>
+    <p>{{ info.entity_count }} entities</p>
+</hgroup>
+
+<div class="grid">
+    <article>
+        <header>Health</header>
+        {% if health.valid %}
+        <p>All checks pass.</p>
+        {% else %}
+        <p>{{ health.issue_count }} issue{{ 's' if health.issue_count != 1 else '' }} found
+            ({{ health.summary.warnings }} warning{{ 's' if health.summary.warnings != 1 else '' }},
+             {{ health.summary.info }} info).</p>
+        {% endif %}
+    </article>
+    <article>
+        <header>Categories</header>
+        <ul>
+        {% for cat in categories %}
+            <li><a href="/summary/{{ cat.path }}">{{ cat.name }}</a> ({{ cat.count }})</li>
+        {% endfor %}
+        </ul>
+    </article>
+</div>
+
+<article>
+    <header>Tree</header>
+    <pre>{{ info.hierarchy }}</pre>
+</article>
+{% endblock %}

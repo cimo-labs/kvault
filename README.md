@@ -158,16 +158,36 @@ my_kb/
 | **Journal** | `kvault journal` |
 | **Status** | `kvault status`, `kvault tree` |
 | **Validation** | `kvault validate`, `kvault check` |
+| **Artifacts** | `kvault artifact daily` |
+| **Logs** | `kvault log summary` |
+| **UI** | `kvault ui` |
 | **Init** | `kvault init` |
 
-All commands support `--json` for machine-readable output. `--kb-root` overrides auto-detection.
+Agent-facing commands support `--json` for machine-readable output. `--kb-root` overrides
+auto-detection on KB-bound commands, and it works before or after the subcommand:
+
+```bash
+kvault read people/friends/alice --json --kb-root ~/example_kb
+kvault artifact daily --json --kb-root ~/example_kb
+```
+
+## Optional MCP compatibility
+
+CLI remains the primary interface, but a thin MCP compatibility server is available:
+
+```bash
+pip install "knowledgevault[mcp]"
+kvault-mcp --kb-root /absolute/path/to/my_kb
+```
+
+The MCP server is bound to one KB root per process. You can also set `KVAULT_KB_ROOT`.
 
 ## Optional root pinning (multi-tenant hardening)
 
 For shared runtimes, pin allowed roots:
 
 ```bash
-export KVAULT_ALLOWED_ROOTS="/Users/mossbot/personal_kb"
+export KVAULT_ALLOWED_ROOTS="/Users/example/kb"
 ```
 
 ## Python API
@@ -191,11 +211,15 @@ action, target, confidence = researcher.suggest_action("Sarah Chen")
 
 ## Integrity check
 
-Run `kvault check` to catch stale summaries:
+Run `kvault check` to catch stale summaries and weak parent rollups:
 
 ```bash
 kvault check --kb-root /absolute/path/to/my_kb
 ```
+
+`[KB]` warnings keep the existing nonzero exit behavior. `SUMMARY:` warnings are warn-only by
+default, capped at 5 lines, and call out parent summaries that are too short, omit immediate
+children, or contain placeholder/redirect language. Use `--no-summary-quality` to skip that audit.
 
 If your tool supports pre-prompt hooks, you can automate this. For example, in Claude Code's `.claude/settings.json`:
 
@@ -227,7 +251,7 @@ kvault produces Markdown with YAML frontmatter in a plain directory. No propriet
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,ui,mcp]"
 pytest
 ruff check . && black . && mypy .
 ```

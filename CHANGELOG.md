@@ -2,6 +2,47 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.8.0 - 2026-02-27
+
+### Added
+
+- **Read-only web UI** (`kvault ui`): Browse your knowledge base in a local web browser. Starlette + htmx + Jinja2 — no npm/node required. Optional install: `pip install 'knowledgevault[ui]'`.
+  - Dashboard with entity count, health status, and tree preview
+  - Two-column tree browser with lazy-loaded navigation (htmx)
+  - Entity detail with server-side Markdown rendering (mistune)
+  - Live search with 300ms debounce (htmx)
+  - Breadcrumb navigation, category summaries
+  - Pico CSS (CDN) for responsive classless styling; htmx vendored (~50KB, no CDN dependency for JS)
+  - All routes read-only with path traversal defense-in-depth
+- **`[ui]` optional dependency group**: `starlette`, `uvicorn`, `jinja2`, `mistune`
+- **Summary-quality audit**: `kvault check` now emits warn-only `SUMMARY:` findings for
+  parent summaries that are too short, omit immediate child coverage, or contain placeholder
+  redirect language.
+- **Thin MCP compatibility server**: Restored `[mcp]` extra and `kvault-mcp` entry point with
+  root-bound tools backed by `kvault.core.operations`.
+- **`httpx`** added to `[dev]` dependencies for Starlette test client
+- **New tests**: `test_ui.py` (integration), `test_ui_search.py` (unit)
+
+### Changed
+
+- **CLI option ordering**: Agent-facing commands accept `--json` and `--kb-root` before or after
+  the subcommand.
+- **Artifact CLI**: `kvault artifact daily` now honors top-level `--kb-root` and supports JSON
+  output for machine-readable artifact generation.
+- **Entity path validation**: Removed the old max-depth cap while keeping safe lowercase
+  component validation and root-escape protection.
+- **Init templates**: Freshly initialized KBs now start with parent summaries that satisfy the
+  summary-quality audit.
+- **Root pinning**: `KVAULT_ALLOWED_ROOTS` is enforced at CLI and MCP boundaries.
+- **Public API**: `ObservabilityLogger` is exported from top-level `kvault`, and `__version__`
+  is read from package metadata when installed.
+
+### Fixed
+
+- **Starlette/Jinja compatibility**: `TemplateResponse` calls now work across current and older
+  Starlette signatures.
+- **CI workflow**: Installs `[dev,ui,mcp]` so UI and MCP compatibility tests run where supported.
+
 ## 0.7.1 - 2026-02-27
 
 ### Changed
@@ -67,7 +108,7 @@ All notable changes to `knowledgevault` are documented in this file.
 
 - `ObservabilityLogger.get_session_summary()` now defaults to the latest logged session.
 - Added `ObservabilityLogger.list_sessions()` helper.
-- Refactored ProTec adapter to reuse `kvault.core.research.EntityResearcher` instead of local duplicate logic.
+- Refactored downstream adapter integration to reuse `kvault.core.research.EntityResearcher` instead of local duplicate logic.
 - Reconciled architecture and maintainer docs with current module layout.
 
 ## 0.6.1 - 2026-02-17

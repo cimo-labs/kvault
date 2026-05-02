@@ -1,16 +1,28 @@
 """CLI commands for summary operations: read-summary, write-summary, update-summaries, ancestors."""
 
+from pathlib import Path
+from typing import Optional
+
 import click
 
-from kvault.cli._helpers import output_json, read_stdin, read_stdin_json, resolve_kb_root
+from kvault.cli._helpers import (
+    apply_common_options,
+    common_options,
+    output_json,
+    read_stdin,
+    read_stdin_json,
+    resolve_kb_root,
+)
 from kvault.core import operations as ops
 
 
 @click.command("read-summary")
 @click.argument("path")
+@common_options
 @click.pass_context
-def read_summary(ctx: click.Context, path: str) -> None:
+def read_summary(ctx: click.Context, path: str, kb_root: Optional[Path], as_json: bool) -> None:
     """Read a summary file."""
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
     result = ops.read_summary(kb_root, path)
     if result is None:
@@ -29,9 +41,11 @@ def read_summary(ctx: click.Context, path: str) -> None:
 
 @click.command("write-summary")
 @click.argument("path")
+@common_options
 @click.pass_context
-def write_summary(ctx: click.Context, path: str) -> None:
+def write_summary(ctx: click.Context, path: str, kb_root: Optional[Path], as_json: bool) -> None:
     """Write a single summary file from stdin (frontmatter + body)."""
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
     raw = read_stdin()
 
@@ -49,12 +63,14 @@ def write_summary(ctx: click.Context, path: str) -> None:
 
 
 @click.command("update-summaries")
+@common_options
 @click.pass_context
-def update_summaries(ctx: click.Context) -> None:
+def update_summaries(ctx: click.Context, kb_root: Optional[Path], as_json: bool) -> None:
     """Batch-update summaries from stdin JSON array.
 
     Expects: [{"path": "...", "content": "..."}]
     """
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
     updates = read_stdin_json()
     if not isinstance(updates, list):
@@ -76,9 +92,11 @@ def update_summaries(ctx: click.Context) -> None:
 
 @click.command("ancestors")
 @click.argument("path")
+@common_options
 @click.pass_context
-def ancestors(ctx: click.Context, path: str) -> None:
+def ancestors(ctx: click.Context, path: str, kb_root: Optional[Path], as_json: bool) -> None:
     """Get ancestor summaries for propagation."""
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
     result = ops.get_ancestors(kb_root, path)
     if ctx.obj.get("as_json"):

@@ -1,6 +1,8 @@
 """Tests for daily artifact generation (core and CLI)."""
 
+import json
 from datetime import date
+from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -54,3 +56,34 @@ def test_cli_artifact_daily_generates_file(sample_kb):
     assert "daily artifact" in result.output.lower()
     artifact_path = sample_kb / ".kvault" / "artifacts" / "daily" / "2026-02-12.md"
     assert artifact_path.exists()
+
+
+def test_cli_artifact_daily_honors_top_level_kb_root(sample_kb, tmp_path):
+    """Top-level --kb-root should control nested artifact commands."""
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        result = runner.invoke(
+            cli,
+            ["--kb-root", str(sample_kb), "artifact", "daily", "--date", "2026-02-13"],
+            catch_exceptions=False,
+        )
+        assert not (Path.cwd() / ".kvault").exists()
+
+    assert result.exit_code == 0
+    assert (sample_kb / ".kvault" / "artifacts" / "daily" / "2026-02-13.md").exists()
+
+
+def test_cli_artifact_daily_json(sample_kb):
+    """Artifact CLI should support machine-readable JSON output."""
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["artifact", "daily", "--kb-root", str(sample_kb), "--date", "2026-02-14", "--json"],
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["success"] is True
+    assert data["kg_root"] == str(sample_kb.resolve())
+    assert data["relative_path"] == ".kvault/artifacts/daily/2026-02-14.md"
+    assert "# Daily Artifact - 2026-02-14" in data["content"]

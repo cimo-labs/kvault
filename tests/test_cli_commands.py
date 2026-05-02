@@ -63,6 +63,12 @@ class TestHelp:
         data = json.loads(result.output)
         assert "entity_count" in data
 
+    def test_status_post_command_common_options(self, runner, cli_kb):
+        result = runner.invoke(cli, ["status", "--json", "--kb-root", str(cli_kb)])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "entity_count" in data
+
     def test_tree(self, runner, cli_kb):
         result = runner.invoke(cli, ["--kb-root", str(cli_kb), "tree"])
         assert result.exit_code == 0
@@ -91,6 +97,21 @@ class TestReadCommand:
                 "--json",
                 "read",
                 "people/friends/alice_smith",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["path"] == "people/friends/alice_smith"
+
+    def test_read_post_command_common_options(self, runner, cli_kb_with_entity):
+        result = runner.invoke(
+            cli,
+            [
+                "read",
+                "people/friends/alice_smith",
+                "--json",
+                "--kb-root",
+                str(cli_kb_with_entity),
             ],
         )
         assert result.exit_code == 0
@@ -353,3 +374,21 @@ class TestValidateCommand:
         data = json.loads(result.output)
         assert "valid" in data
         assert "issues" in data
+
+
+# ============================================================================
+# Root pinning
+# ============================================================================
+
+
+def test_allowed_roots_blocks_disallowed_cli_root(runner, cli_kb, tmp_path, monkeypatch):
+    other = tmp_path / "other_kb"
+    other.mkdir()
+    (other / "_summary.md").write_text("# Other\n")
+    (other / ".kvault").mkdir()
+    monkeypatch.setenv("KVAULT_ALLOWED_ROOTS", str(cli_kb))
+
+    result = runner.invoke(cli, ["status", "--kb-root", str(other)])
+
+    assert result.exit_code != 0
+    assert "not allowed" in result.output

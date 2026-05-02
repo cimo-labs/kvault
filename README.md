@@ -6,7 +6,7 @@
 pip install knowledgevault
 ```
 
-kvault gives your coding agent persistent, structured memory. It runs as a CLI tool that any agent can call via shell — Claude Code, OpenAI Codex, Cursor, or any tool that can execute commands. No extra API keys. No extra cost.
+kvault gives your coding agent persistent, structured memory. It runs as a CLI tool that any agent can call via shell — Claude Code, OpenAI Codex, Cursor, or any tool that can execute commands. kvault itself requires no extra API keys, hosted service, or database.
 
 Your agent creates entities (people, projects, notes), navigates the hierarchy via parent summaries, and keeps everything in sync — all through simple CLI commands.
 
@@ -19,8 +19,8 @@ Developers using **Claude Code**, **OpenAI Codex**, **Cursor**, **VS Code + Copi
 | | kvault | [Anthropic memory server](https://github.com/anthropics/claude-code/tree/main/packages/memory) | [Notion AI](https://www.notion.so/product/ai) / [Mem.ai](https://mem.ai) | [obsidian-claude-pkm](https://github.com/4lph4-lab/obsidian-claude-pkm) |
 |---|---|---|---|---|
 | **Structure** | Hierarchical entities with navigable tree | Flat JSON | Rich docs, flat search | Obsidian vault |
-| **Agent-native** | CLI commands, works in any subprocess | 4 MCP tools, basic | Chat sidebar | Template, not runtime |
-| **Cost** | $0 (uses existing subscription) | $0 | $12-20/mo extra | $0 |
+| **Agent-native** | CLI commands, works in any subprocess | MCP server | Chat/sidebar workflow | Template, not runtime |
+| **Service model** | Plain files + local CLI | Local server | Hosted workspace | Local vault |
 | **Navigation** | Parent summaries at every level | None | AI-generated | Manual |
 | **Search** | Agent uses its own search tools (grep, find, etc.) | Built-in | Built-in | Manual |
 
@@ -43,6 +43,7 @@ kvault init ./my_kb --name "Your Name"
 > "Use kvault CLI commands to manage my knowledge base at ./my_kb"
 
 Your agent reads the generated `AGENTS.md` for workflow instructions and starts working.
+Use `--kb-root ./my_kb` from the directory containing `my_kb`, or pass an absolute path.
 
 **Tool-specific tips:**
 
@@ -57,9 +58,11 @@ Your agent reads the generated `AGENTS.md` for workflow instructions and starts 
 
 The best way to see kvault in action is to point it at data you already have. ChatGPT lets you export your entire conversation history — years of questions, people mentioned, projects discussed, decisions made — and your agent can turn it into a structured, navigable knowledge base in minutes.
 
+Chat exports can contain sensitive information. kvault stores the files locally in your KB, but your agent may read excerpts while processing them and send those excerpts to its model provider. Review or redact the export first if that matters for your use case.
+
 **1. Export your ChatGPT data**
 
-Go to [ChatGPT → Settings → Data controls → Export data](https://chatgpt.com/#settings/DataControls). You'll get an email with a zip file containing `conversations.json`.
+Download a ChatGPT data export from ChatGPT's export controls. The archive includes `conversations.json`.
 
 **2. Unzip it into your KB**
 
@@ -81,7 +84,7 @@ Your agent will use kvault CLI commands to create structured entries with frontm
 
 ```bash
 # Call 1: Write entity (stdin = frontmatter + markdown body)
-kvault write people/contacts/acme --create --reasoning "New customer" --json <<'EOF'
+kvault write people/contacts/acme --create --reasoning "New customer" --json --kb-root ./my_kb <<'EOF'
 ---
 source: meeting_2026-02-25
 aliases: [ACME Corp]
@@ -92,7 +95,7 @@ EOF
 # → {"success": true, "ancestors": [{path, current_content, has_meta}, ...]}
 
 # Call 2: Agent reads ancestors, composes updated summaries
-kvault update-summaries --json <<'EOF'
+kvault update-summaries --json --kb-root ./my_kb <<'EOF'
 [
   {"path": "people/contacts", "content": "# Contacts\n...updated..."},
   {"path": "people", "content": "# People\n...updated..."}
@@ -110,12 +113,12 @@ Each entity is a directory with a single `_summary.md` file containing YAML fron
 created: 2026-02-06
 updated: 2026-02-06
 source: manual
-aliases: [Sarah Chen, sarah@anthropic.com]
-email: sarah@anthropic.com
+aliases: [Morgan Lee, morgan@example.com]
+email: morgan@example.com
 ---
-# Sarah Chen
+# Morgan Lee
 
-Research scientist at Anthropic working on causal discovery.
+Research collaborator tracking evaluation notes and follow-up questions.
 ```
 
 **Required frontmatter:** `source`, `aliases` (kvault sets `created`/`updated` automatically)
@@ -140,7 +143,7 @@ my_kb/
 │           └── _summary.md
 ├── projects/
 │   ├── _summary.md
-│   └── cje_paper/
+│   └── launch_plan/
 │       └── _summary.md
 ├── journal/
 │   └── 2026-02/
@@ -167,27 +170,93 @@ Agent-facing commands support `--json` for machine-readable output. `--kb-root` 
 auto-detection on KB-bound commands, and it works before or after the subcommand:
 
 ```bash
-kvault read people/friends/alice --json --kb-root ~/example_kb
-kvault artifact daily --json --kb-root ~/example_kb
+kvault read people/friends/alice --json --kb-root ./my_kb
+kvault artifact daily --json --kb-root ./my_kb
+```
+
+## Optional local UI
+
+Install the UI extra to browse a KB in a local read-only web app:
+
+```bash
+pip install "knowledgevault[ui]"
+kvault ui --kb-root ./my_kb
 ```
 
 ## Optional MCP compatibility
 
-CLI remains the primary interface, but a thin MCP compatibility server is available:
+CLI remains the primary interface for shell-capable agents. For MCP-native clients, kvault also
+ships a stdio MCP compatibility server:
 
 ```bash
 pip install "knowledgevault[mcp]"
 kvault-mcp --kb-root /absolute/path/to/my_kb
 ```
 
-The MCP server is bound to one KB root per process. You can also set `KVAULT_KB_ROOT`.
+`knowledgevault[mcp]` requires Python 3.10+. The server is bound to one KB root per process; use a
+separate `kvault-mcp` process for each KB. You can pass the root with `--kb-root` or set
+`KVAULT_KB_ROOT`.
+
+Generic MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "kvault": {
+      "command": "kvault-mcp",
+      "args": ["--kb-root", "/absolute/path/to/my_kb"]
+    }
+  }
+}
+```
+
+Root-pinned config for shared runtimes:
+
+```json
+{
+  "mcpServers": {
+    "kvault": {
+      "command": "kvault-mcp",
+      "args": ["--kb-root", "/absolute/path/to/my_kb"],
+      "env": {
+        "KVAULT_ALLOWED_ROOTS": "/absolute/path/to/my_kb"
+      }
+    }
+  }
+}
+```
+
+The compatibility server exposes root-bound tools for status, entity CRUD, listing, summary
+read/write/update, ancestor lookup, journaling, daily artifact generation, validation, and phase
+logging:
+
+| Category | Tools |
+|----------|-------|
+| **Lifecycle** | `kvault_init`, `kvault_status` |
+| **Entities** | `kvault_read_entity`, `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity` |
+| **Summaries** | `kvault_read_summary`, `kvault_write_summary`, `kvault_update_summaries`, `kvault_get_parent_summaries`, `kvault_get_ancestors`, `kvault_propagate_all` |
+| **Journal / artifacts** | `kvault_write_journal`, `kvault_generate_daily_artifact` |
+| **Validation / logging** | `kvault_validate_kb`, `kvault_log_phase` |
+
+Compatibility tools accept an optional `kg_root` argument for older clients, but it must match the
+server-bound root. `kvault_init` reports bound-root status and rejects mismatched roots; it does not
+create or reinitialize a KB.
+
+MCP clients should use the same propagation workflow as the CLI:
+
+1. Call `kvault_status` or `kvault_list_entities` to orient.
+2. Call `kvault_read_entity` / `kvault_read_summary` before editing.
+3. Call `kvault_write_entity` with durable frontmatter and body content.
+4. Use the returned ancestors or `kvault_get_parent_summaries` to update parent summaries.
+5. Call `kvault_update_summaries` so every parent remains a useful rollup.
+6. Call `kvault_validate_kb` after larger edits.
 
 ## Optional root pinning (multi-tenant hardening)
 
 For shared runtimes, pin allowed roots:
 
 ```bash
-export KVAULT_ALLOWED_ROOTS="/Users/example/kb"
+export KVAULT_ALLOWED_ROOTS="/absolute/path/to/my_kb"
 ```
 
 ## Python API
@@ -206,7 +275,7 @@ result = ops.write_entity(kg_root, "people/contacts/new_person", "# Content", cr
 from kvault import scan_entities, EntityResearcher
 entities = scan_entities(kg_root)
 researcher = EntityResearcher(kg_root)
-action, target, confidence = researcher.suggest_action("Sarah Chen")
+action, target, confidence = researcher.suggest_action("Morgan Lee")
 ```
 
 ## Integrity check
@@ -245,15 +314,17 @@ kvault produces Markdown with YAML frontmatter in a plain directory. No propriet
 | **Semantic search** | Embed the `.md` files with any vector tool (OpenAI, Chroma, txtai, etc.) |
 | **Visual browsing** | Open the KB directory in Obsidian or Logseq |
 | **Publish as a site** | Point Hugo, Jekyll, or Astro at the directory |
-| **CI validation** | Run `kvault validate` in a GitHub Action |
+| **CI validation** | Run `kvault validate` or `kvault check` in a GitHub Action |
 | **Bulk export** | `find . -name _summary.md` + `yq` over the frontmatter |
 
 ## Development
 
 ```bash
 pip install -e ".[dev,ui,mcp]"
-pytest
-ruff check . && black . && mypy .
+pytest -q
+ruff check .
+black --check kvault/ tests/
+mypy kvault/ --ignore-missing-imports
 ```
 
 ## License

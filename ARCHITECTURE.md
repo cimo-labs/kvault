@@ -1,11 +1,11 @@
 # kvault Architecture
 
 Canonical architecture for the `knowledgevault` package.
-Last updated: 2026-05-01
+Last updated: 2026-05-02
 
 ## Overview
 
-`kvault` is a CLI-first knowledge base for AI agents. It stores entities in Markdown
+`kvault` is a CLI-first knowledge base for AI agents. It stores nodes in Markdown
 with YAML frontmatter and exposes a stateless operations layer used by the CLI, the
 thin MCP compatibility server, and tests.
 
@@ -15,7 +15,7 @@ thin MCP compatibility server, and tests.
 2. Deterministic, Git-friendly file storage.
 3. Explicit workflow and validation boundaries.
 4. Zero external service dependencies.
-5. Portable across agent runtimes (Claude Code, Codex, Cursor, VS Code, Windsurf).
+5. Portable across agent runtimes that can run shell commands or MCP tools.
 
 ## System Layers
 
@@ -24,7 +24,7 @@ AI Tool Runtime
   -> shell exec
   -> kvault CLI (Click commands) or kvault-mcp tools
   -> kvault.core.operations (stateless business logic)
-  -> core modules (storage/frontmatter/research/observability/artifacts)
+  -> core modules (search/storage/frontmatter/research/observability/artifacts)
   -> filesystem knowledge base
 ```
 
@@ -33,23 +33,19 @@ AI Tool Runtime
 Primary interface. Agent-facing KB commands support `--kb-root` (auto-detected from cwd)
 and `--json`; command groups and server-launching commands may have command-specific flags.
 
-- `entity.py`: read, write, list, delete, move
+- `entity.py`: node-first read, write, list; compatibility delete/move
+- `search.py`: structured lexical node search
 - `summary.py`: read-summary, write-summary, update-summaries, ancestors
 - `journal.py`: journal
 - `validate.py`: validate
 - `check.py`: check (propagation staleness and summary-quality warnings)
-- `main.py`: init, status, tree, ui, artifact daily, log summary
+- `main.py`: init, status, tree, artifact daily, log summary
 
 ### MCP Layer (`kvault/mcp/`)
 
 Thin compatibility server exposed through `kvault-mcp`. Each process is bound to one KB
 root from `--kb-root` or `KVAULT_KB_ROOT`, enforces `KVAULT_ALLOWED_ROOTS`, and delegates
 tool behavior to `kvault.core.operations`.
-
-### UI Layer (`kvault/ui/`)
-
-Optional read-only Starlette application exposed through `kvault ui`. It provides local
-tree browsing, entity rendering, and simple search without changing KB files.
 
 ### Operations Layer (`kvault/core/operations.py`)
 
@@ -58,6 +54,7 @@ Stateless functions — all take `kg_root: Path` as first arg. Shared by CLI and
 ### Core Layer (`kvault/core/`)
 
 - `storage.py`: filesystem CRUD + `scan_entities` / entity records.
+- `search.py`: stateless structured lexical search over visible `_summary.md` nodes.
 - `frontmatter.py`: parse/build/merge YAML frontmatter.
 - `validation.py`: path validation, error codes, input normalization.
 - `research.py`: reusable entity matching and reconciliation suggestions.
@@ -67,9 +64,9 @@ Stateless functions — all take `kg_root: Path` as first arg. Shared by CLI and
 
 ## Storage Model
 
-### Entity Format
+### Node Format
 
-Each entity is a directory containing a `_summary.md` with YAML frontmatter:
+Each node is a directory containing a `_summary.md` with YAML frontmatter:
 
 ```markdown
 ---
@@ -122,7 +119,7 @@ What belongs in `kvault`:
 - reusable research/reconciliation logic
 - validation and artifact generation
 
-What belongs in host runtimes (e.g. Moss/OpenClaw):
+What belongs in host runtimes:
 
 - workspace-specific permissions/tool routing
 - cron scheduling/inbox queue orchestration
@@ -138,7 +135,6 @@ Primary test suites live under `tests/` and cover:
 - end-to-end write/propagation workflows
 - CLI checks and artifacts
 - MCP compatibility tools
-- read-only web UI
 
 Run:
 

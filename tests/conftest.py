@@ -1,6 +1,6 @@
 """Pytest configuration for kvault tests.
 
-Fixture Architecture (following CJE patterns):
+Fixture Architecture:
 - sample_kb_path: Read-only path to the sample KB fixture
 - sample_kb: Writable copy of sample KB in tmp dir
 - initialized_kb: Sample KB with .kvault dir ready for operations
@@ -27,7 +27,7 @@ def sample_kb_path():
     Contains 5 entities across 2 categories:
     - people/friends/alice_smith (aliases: Alice Smith, alice@acme.com, Ali)
     - people/friends/jose_garcia (aliases: José García, Jose Garcia, jose@startup.io)
-    - people/work/sarah_chen (aliases: Sarah Chen, sarah@anthropic.com)
+    - people/work/sarah_chen (aliases: Sarah Chen, sarah@research.example)
     - people/work/bob_jones (aliases: Bob Jones, bob@bigcorp.com, Bobby)
     - projects/kvault (aliases: kvault, knowledgevault, knowledge vault)
     """

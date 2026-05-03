@@ -12,6 +12,6 @@ Source: manual
 
 ### Updated sarah_chen
 - Updated entity at [people/work/sarah_chen](../../people/work/sarah_chen/)
-- Reason: Added CJE paper review notes
+- Reason: Added evaluation paper review notes
 
 Source: email

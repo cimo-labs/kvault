@@ -134,6 +134,27 @@ def create_server(kb_root: Path | str) -> Any:
             return error_response(ErrorCode.NOT_FOUND, f"Entity not found: {path}")
         return success_response(result)
 
+    @server.tool(name="kvault_read_node")
+    def kvault_read_node(
+        path: str,
+        parents: str = "immediate",
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Read a node plus parent context."""
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        if parents not in {"none", "immediate", "all"}:
+            return error_response(
+                ErrorCode.VALIDATION_ERROR,
+                "parents must be one of: none, immediate, all",
+            )
+        result = ops.read_node(root, path, parents=parents)
+        if result is None:
+            return error_response(ErrorCode.NOT_FOUND, f"Node not found: {path}")
+        return success_response(result)
+
     @server.tool(name="kvault_write_entity")
     def kvault_write_entity(
         path: str,
@@ -160,6 +181,32 @@ def create_server(kb_root: Path | str) -> Any:
             default_source="auto:mcp",
         )
 
+    @server.tool(name="kvault_write_node")
+    def kvault_write_node(
+        path: str,
+        content: str,
+        meta: Optional[Dict[str, Any]] = None,
+        create: bool = False,
+        reasoning: Optional[str] = None,
+        journal_source: Optional[str] = None,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create or update any node summary."""
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        return ops.write_node(
+            root,
+            path,
+            content,
+            meta=meta,
+            create=create,
+            reasoning=reasoning,
+            journal_source=journal_source,
+            default_source="auto:mcp",
+        )
+
     @server.tool(name="kvault_list_entities")
     def kvault_list_entities(
         category: Optional[str] = None, kg_root: Optional[str] = None
@@ -171,6 +218,49 @@ def create_server(kb_root: Path | str) -> Any:
         assert root is not None
         entities = ops.list_entities(root, category=category)
         return success_response({"entities": entities, "count": len(entities)})
+
+    @server.tool(name="kvault_list_nodes")
+    def kvault_list_nodes(
+        path: str = ".",
+        recursive: bool = False,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List child nodes under a node path."""
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        nodes = ops.list_nodes(root, path=path, recursive=recursive)
+        return success_response({"nodes": nodes, "count": len(nodes)})
+
+    @server.tool(name="kvault_search")
+    def kvault_search(
+        query: str,
+        limit: int = 10,
+        include_content: bool = False,
+        parents: str = "none",
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Search visible node summaries."""
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        if parents not in {"none", "immediate", "all"}:
+            return error_response(
+                ErrorCode.VALIDATION_ERROR,
+                "parents must be one of: none, immediate, all",
+            )
+        result = ops.search_nodes(
+            root,
+            query=query,
+            limit=limit,
+            include_content=include_content,
+        )
+        if parents != "none":
+            for item in result["results"]:
+                item["node"] = ops.read_node(root, item["path"], parents=parents)
+        return success_response(result)
 
     @server.tool(name="kvault_delete_entity")
     def kvault_delete_entity(path: str, kg_root: Optional[str] = None) -> Dict[str, Any]:

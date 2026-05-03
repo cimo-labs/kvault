@@ -12,6 +12,7 @@ from kvault.cli._helpers import apply_common_options, common_options, output_jso
 from kvault.cli.check import check_kb
 from kvault.cli.entity import read_entity, write_entity, list_entities, delete_entity, move_entity
 from kvault.cli.journal import write_journal
+from kvault.cli.search import search_nodes
 from kvault.cli.summary import read_summary, write_summary, update_summaries, ancestors
 from kvault.cli.validate import validate_kb
 from kvault.core.daily_artifacts import generate_daily_artifact, parse_iso_date
@@ -60,6 +61,7 @@ cli.add_command(check_kb)
 cli.add_command(read_entity)
 cli.add_command(write_entity)
 cli.add_command(list_entities, "list")
+cli.add_command(search_nodes)
 cli.add_command(delete_entity, "delete")
 cli.add_command(move_entity, "move")
 cli.add_command(read_summary)
@@ -186,45 +188,6 @@ def tree(ctx: click.Context, depth: int, kb_root: Optional[Path], as_json: bool)
         output_json({"kg_root": str(kb_root), "depth": depth, "hierarchy": hierarchy})
     else:
         click.echo(hierarchy)
-
-
-@cli.command("ui")
-@click.option("--port", type=int, default=8765, show_default=True, help="Port to listen on")
-@click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind to")
-@click.option("--no-open", is_flag=True, help="Don't auto-open browser")
-@common_options
-@click.pass_context
-def ui(
-    ctx: click.Context,
-    port: int,
-    host: str,
-    no_open: bool,
-    kb_root: Optional[Path],
-    as_json: bool,
-) -> None:
-    """Launch read-only web UI for browsing the knowledge base."""
-    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
-    try:
-        from kvault.ui.app import create_app
-    except ImportError:
-        raise click.ClickException(
-            "Web UI dependencies not installed. Run: pip install 'knowledgevault[ui]'"
-        )
-    import uvicorn
-
-    kb_root = resolve_kb_root(ctx)
-    app = create_app(kb_root)
-
-    url = f"http://{host}:{port}"
-    click.echo(f"Serving KB at {kb_root}")
-    click.echo(f"Open {url} in your browser")
-
-    if not no_open:
-        import webbrowser
-
-        webbrowser.open(url)
-
-    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 @cli.group("artifact")

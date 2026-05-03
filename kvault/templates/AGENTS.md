@@ -1,11 +1,11 @@
 # Knowledge Base — Operating Rules
 
-> Instructions for AI coding agents (Claude Code, OpenAI Codex, Gemini CLI, Cursor, GitHub Copilot, etc.)
+> Instructions for AI coding agents that can read files or run shell commands.
 
 ## RULES (read these first, every session)
 
-1. **PROPAGATE ALL ANCESTORS.** After any entity write, update EVERY `_summary.md` from parent to root.
-   If the entity is at `people/contacts/professional/education/stella/`, update ALL FIVE:
+1. **PROPAGATE ALL ANCESTORS.** After any node write, update EVERY `_summary.md` from parent to root.
+   If the node is at `people/contacts/professional/education/stella/`, update ALL FIVE:
    - `people/contacts/professional/education/_summary.md`
    - `people/contacts/professional/_summary.md`
    - `people/contacts/_summary.md`
@@ -16,14 +16,14 @@
    surfaces them), fix every PROPAGATE and LOG warning before doing anything else. If it reports
    `SUMMARY:` warnings, improve those parent rollups when touching that area; they are warn-only.
 
-3. **JOURNAL EVERY SESSION.** If you modified any entity today, `journal/YYYY-MM/log.md`
+3. **JOURNAL EVERY SESSION.** If you modified any node today, `journal/YYYY-MM/log.md`
    must have an entry for today before the session ends. (Auto-logged if you pass `--reasoning` to `kvault write`.)
 
-4. **FRONTMATTER REQUIRED.** Every entity needs `source` and `aliases` in YAML frontmatter.
+4. **FRONTMATTER REQUIRED.** Every node needs `source` and `aliases` in YAML frontmatter.
    `created` and `updated` are set automatically by kvault.
 
-5. **CHECK BEFORE WRITE.** Always browse the tree and read parent summaries before creating new entities.
-   Search for existing entities (grep, find, or your tool's search) before creating. Never create duplicates.
+5. **CHECK BEFORE WRITE.** Always browse the tree and read parent summaries before creating new nodes.
+   Use `kvault search` and native tools such as `rg` before creating. Never create duplicates.
 
 6. **PARENT SUMMARIES ARE ROLLUPS.** Every parent `_summary.md` must be a comprehensive current-state
    summary of all descendant summaries. Do not replace parent summaries with placeholders such as
@@ -60,18 +60,21 @@ Customize this section with your details.
 ## Writing to the Knowledge Base (2-call workflow)
 
 ### 1. NAVIGATE — Find what exists and decide
-Browse the tree and read parent summaries. Use your tool's search/read capabilities and kvault CLI:
+Browse the tree and read parent summaries. Use native text search for exact phrases and kvault CLI
+for structured node discovery:
 ```bash
 kvault status --json                       # Get hierarchy tree
-kvault read <path> --json                  # Returns entity + parent summary (sibling context)
-kvault list [category] --json              # List entities in a category
+rg -n "search phrase" .                    # Raw filesystem search
+kvault search "search phrase" --json       # Structured node search
+kvault read <path> --json                  # Returns node + parent summary
+kvault list [path] --json                  # List child nodes
 ```
 
 Then decide:
 
 | Situation | Action |
 |-----------|--------|
-| Entity exists, info is relevant | **UPDATE** existing |
+| Node exists, info is relevant | **UPDATE** existing |
 | Doesn't exist, is significant | **CREATE** new |
 | Doesn't exist, is trivial | **LOG** in journal only |
 
@@ -92,7 +95,7 @@ Output: `{"success": true, "ancestors": [{path, current_content, has_meta}, ...]
 
 ### 3. PROPAGATE — Batch-update ancestors (Call 2)
 Read the `ancestors` array from Call 1's output. For each ancestor, compose an updated summary
-incorporating the new entity, then batch-update:
+incorporating the new node, then batch-update:
 ```bash
 kvault update-summaries --json <<'EOF'
 [
@@ -105,7 +108,7 @@ EOF
 
 ---
 
-## Entity Format
+## Node Format
 
 ```markdown
 ---
@@ -127,8 +130,8 @@ Context and notes here.
 
 ## CLI Commands Reference
 
-**Entity:** `kvault read`, `kvault write` (stdin), `kvault list`, `kvault delete`, `kvault move`
-**Summary:** `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors`
+**Node:** `kvault search`, `kvault read`, `kvault write` (stdin), `kvault list`
+**Compatibility:** `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors`, `kvault delete`, `kvault move`
 **Journal:** `kvault journal --source TEXT` (stdin JSON)
 **Validation:** `kvault validate`, `kvault check`
 **Status:** `kvault status`, `kvault tree`

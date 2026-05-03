@@ -6,23 +6,23 @@
 pip install knowledgevault
 ```
 
-kvault gives your coding agent persistent, structured memory. It runs as a CLI tool that any agent can call via shell — Claude Code, OpenAI Codex, Cursor, or any tool that can execute commands. kvault itself requires no extra API keys, hosted service, or database.
+kvault gives your coding agent persistent, structured memory. It runs as a CLI tool that any agent can call via shell: terminal coding agents, editors, IDE assistants, or any tool that can execute commands. kvault itself requires no extra API keys, hosted service, or database.
 
-Your agent creates entities (people, projects, notes), navigates the hierarchy via parent summaries, and keeps everything in sync — all through simple CLI commands.
+Your agent creates nodes (people, projects, notes, categories), navigates the hierarchy via parent summaries, and keeps everything in sync — all through simple CLI commands.
 
 ## Who is this for?
 
-Developers using **Claude Code**, **OpenAI Codex**, **Cursor**, **VS Code + Copilot**, or any AI coding tool who want their agent to remember things between sessions — contacts, projects, meeting notes, research — in a structured, navigable format.
+Developers using AI coding tools who want their agent to remember things between sessions — contacts, projects, meeting notes, research — in a structured, navigable format.
 
 ## What makes it different?
 
-| | kvault | [Anthropic memory server](https://github.com/anthropics/claude-code/tree/main/packages/memory) | [Notion AI](https://www.notion.so/product/ai) / [Mem.ai](https://mem.ai) | [obsidian-claude-pkm](https://github.com/4lph4-lab/obsidian-claude-pkm) |
+| | kvault | Flat memory files | Hosted docs / memory apps | Note-vault templates |
 |---|---|---|---|---|
-| **Structure** | Hierarchical entities with navigable tree | Flat JSON | Rich docs, flat search | Obsidian vault |
+| **Structure** | Hierarchical nodes with navigable tree | Flat JSON | Rich docs, flat search | Obsidian vault |
 | **Agent-native** | CLI commands, works in any subprocess | MCP server | Chat/sidebar workflow | Template, not runtime |
 | **Service model** | Plain files + local CLI | Local server | Hosted workspace | Local vault |
 | **Navigation** | Parent summaries at every level | None | AI-generated | Manual |
-| **Search** | Agent uses its own search tools (grep, find, etc.) | Built-in | Built-in | Manual |
+| **Search** | Structured node search + native grep/find | Built-in | Built-in | Manual |
 
 ## Quickstart (30 seconds)
 
@@ -45,45 +45,45 @@ kvault init ./my_kb --name "Your Name"
 Your agent reads the generated `AGENTS.md` for workflow instructions and starts working.
 Use `--kb-root ./my_kb` from the directory containing `my_kb`, or pass an absolute path.
 
-**Tool-specific tips:**
+**Tool setup tips:**
 
 | Tool | Setup |
 |------|-------|
-| **Claude Code** | Works automatically — reads `AGENTS.md` as project instructions |
-| **OpenAI Codex CLI** | Tell it: *"Read AGENTS.md for the kvault workflow, then use shell commands to manage ./my_kb"* |
-| **Gemini CLI** | Symlink `AGENTS.md` → `GEMINI.md`, or paste the workflow rules into your system prompt |
-| **Cursor / Copilot** | Add `AGENTS.md` contents to your `.cursorrules` or workspace instructions |
+| **Project-instruction agents** | Keep `AGENTS.md` in the KB root so the agent reads the workflow automatically |
+| **Terminal agents** | Tell the agent: *"Read AGENTS.md for the kvault workflow, then use shell commands to manage ./my_kb"* |
+| **Custom-instruction agents** | Paste the generated `AGENTS.md` workflow into the workspace or system instructions |
 
-## Try it: import your ChatGPT history
+## Try it: import an exported history
 
-The best way to see kvault in action is to point it at data you already have. ChatGPT lets you export your entire conversation history — years of questions, people mentioned, projects discussed, decisions made — and your agent can turn it into a structured, navigable knowledge base in minutes.
+The best way to see kvault in action is to point it at data you already have. Many chat, email, calendar, and notes tools can export JSON, Markdown, CSV, mbox, or zip archives. Your agent can turn those raw exports into a structured, navigable knowledge base in minutes.
 
-Chat exports can contain sensitive information. kvault stores the files locally in your KB, but your agent may read excerpts while processing them and send those excerpts to its model provider. Review or redact the export first if that matters for your use case.
+Exports can contain sensitive information. kvault stores files locally in your KB, but your agent may read excerpts while processing them and send those excerpts to its model provider. Review or redact exports first if that matters for your use case.
 
-**1. Export your ChatGPT data**
+**1. Export source data**
 
-Download a ChatGPT data export from ChatGPT's export controls. The archive includes `conversations.json`.
+Download an archive from a tool you already use. Keep the raw files under `sources/` so they stay separate from curated nodes.
 
 **2. Unzip it into your KB**
 
 ```bash
-unzip chatgpt-export.zip -d my_kb/sources/chatgpt
+mkdir -p my_kb/sources/conversations
+unzip conversation-export.zip -d my_kb/sources/conversations
 ```
 
 **3. Tell your agent to process it**
 
 ```
-Read through my ChatGPT export in sources/chatgpt/conversations.json.
+Read through the exported files in sources/conversations.
 Extract the people, projects, and ideas I've discussed most frequently.
-Create entities for each one in the knowledge base.
+Create nodes for each one in the knowledge base.
 ```
 
-Your agent will use kvault CLI commands to create structured entries with frontmatter and propagate summaries.
+Your agent will use kvault CLI commands to create structured nodes with frontmatter and propagate summaries.
 
 ## The 2-call write workflow
 
 ```bash
-# Call 1: Write entity (stdin = frontmatter + markdown body)
+# Call 1: Write node (stdin = frontmatter + markdown body)
 kvault write people/contacts/acme --create --reasoning "New customer" --json --kb-root ./my_kb <<'EOF'
 ---
 source: meeting_2026-02-25
@@ -104,9 +104,9 @@ EOF
 # → {"success": true, "updated": ["people/contacts", "people"], "count": 2}
 ```
 
-## What an entity looks like
+## What a node looks like
 
-Each entity is a directory with a single `_summary.md` file containing YAML frontmatter:
+Each node is a directory with a single `_summary.md` file containing YAML frontmatter. Leaf nodes often represent entities such as people, projects, or notes; parent nodes summarize their descendants.
 
 ```markdown
 ---
@@ -156,14 +156,13 @@ my_kb/
 
 | Category | Commands |
 |----------|----------|
-| **Entity** | `kvault read`, `kvault write`, `kvault list`, `kvault delete`, `kvault move` |
-| **Summary** | `kvault read-summary`, `kvault write-summary`, `kvault update-summaries`, `kvault ancestors` |
+| **Node** | `kvault search`, `kvault read`, `kvault write`, `kvault list` |
+| **Compatibility** | `kvault read-summary`, `kvault write-summary`, `kvault ancestors`, `kvault delete`, `kvault move` |
 | **Journal** | `kvault journal` |
 | **Status** | `kvault status`, `kvault tree` |
 | **Validation** | `kvault validate`, `kvault check` |
 | **Artifacts** | `kvault artifact daily` |
 | **Logs** | `kvault log summary` |
-| **UI** | `kvault ui` |
 | **Init** | `kvault init` |
 
 Agent-facing commands support `--json` for machine-readable output. `--kb-root` overrides
@@ -171,16 +170,33 @@ auto-detection on KB-bound commands, and it works before or after the subcommand
 
 ```bash
 kvault read people/friends/alice --json --kb-root ./my_kb
+kvault search "alice project notes" --json --kb-root ./my_kb
 kvault artifact daily --json --kb-root ./my_kb
 ```
 
-## Optional local UI
-
-Install the UI extra to browse a KB in a local read-only web app:
+`kvault search` is structured node discovery: it searches visible `_summary.md` files, ranks title,
+path, alias, heading, and body matches, and returns node paths with snippets. Raw filesystem search
+is still useful for exact text investigation:
 
 ```bash
-pip install "knowledgevault[ui]"
-kvault ui --kb-root ./my_kb
+rg -n "alice|project" ./my_kb
+kvault search "alice project" --json --kb-root ./my_kb
+kvault read people/friends/alice --json --kb-root ./my_kb
+```
+
+`kvault read <path>` is canonical context retrieval. It returns the full requested node plus its
+immediate parent summary by default.
+
+## File-native browsing
+
+kvault is just Markdown files and CLI tools. For navigation, combine structured commands with
+native file search or your preferred Markdown viewer:
+
+```bash
+kvault tree --kb-root ./my_kb
+kvault search "alice project" --json --kb-root ./my_kb
+kvault read people/friends/alice --json --kb-root ./my_kb
+rg -n "alice|project" ./my_kb
 ```
 
 ## Optional MCP compatibility
@@ -226,15 +242,16 @@ Root-pinned config for shared runtimes:
 }
 ```
 
-The compatibility server exposes root-bound tools for status, entity CRUD, listing, summary
-read/write/update, ancestor lookup, journaling, daily artifact generation, validation, and phase
+The compatibility server exposes root-bound tools for node search/read/write/list, legacy entity
+and summary calls, ancestor lookup, journaling, daily artifact generation, validation, and phase
 logging:
 
 | Category | Tools |
 |----------|-------|
 | **Lifecycle** | `kvault_init`, `kvault_status` |
-| **Entities** | `kvault_read_entity`, `kvault_write_entity`, `kvault_list_entities`, `kvault_delete_entity`, `kvault_move_entity` |
-| **Summaries** | `kvault_read_summary`, `kvault_write_summary`, `kvault_update_summaries`, `kvault_get_parent_summaries`, `kvault_get_ancestors`, `kvault_propagate_all` |
+| **Nodes** | `kvault_search`, `kvault_read_node`, `kvault_write_node`, `kvault_list_nodes` |
+| **Compatibility** | `kvault_read_entity`, `kvault_write_entity`, `kvault_list_entities`, `kvault_read_summary`, `kvault_write_summary`, `kvault_delete_entity`, `kvault_move_entity` |
+| **Summaries** | `kvault_update_summaries`, `kvault_get_parent_summaries`, `kvault_get_ancestors`, `kvault_propagate_all` |
 | **Journal / artifacts** | `kvault_write_journal`, `kvault_generate_daily_artifact` |
 | **Validation / logging** | `kvault_validate_kb`, `kvault_log_phase` |
 
@@ -244,9 +261,9 @@ create or reinitialize a KB.
 
 MCP clients should use the same propagation workflow as the CLI:
 
-1. Call `kvault_status` or `kvault_list_entities` to orient.
-2. Call `kvault_read_entity` / `kvault_read_summary` before editing.
-3. Call `kvault_write_entity` with durable frontmatter and body content.
+1. Call `kvault_status`, `kvault_list_nodes`, or `kvault_search` to orient.
+2. Call `kvault_read_node` before editing; it returns the node plus parent context.
+3. Call `kvault_write_node` with durable frontmatter and body content.
 4. Use the returned ancestors or `kvault_get_parent_summaries` to update parent summaries.
 5. Call `kvault_update_summaries` so every parent remains a useful rollup.
 6. Call `kvault_validate_kb` after larger edits.
@@ -267,11 +284,12 @@ from kvault.core import operations as ops
 
 kg_root = Path("my_kb")
 
-# Read/write entities
-entity = ops.read_entity(kg_root, "people/contacts/sarah_chen")
-result = ops.write_entity(kg_root, "people/contacts/new_person", "# Content", create=True)
+# Read/write/search nodes
+node = ops.read_node(kg_root, "people/contacts/sarah_chen")
+result = ops.write_node(kg_root, "people/contacts/new_person", "# Content", create=True)
+matches = ops.search_nodes(kg_root, "sarah follow up")
 
-# Scan and search
+# Entity reconciliation remains available for dedup decisions
 from kvault import scan_entities, EntityResearcher
 entities = scan_entities(kg_root)
 researcher = EntityResearcher(kg_root)
@@ -290,7 +308,7 @@ kvault check --kb-root /absolute/path/to/my_kb
 default, capped at 5 lines, and call out parent summaries that are too short, omit immediate
 children, or contain placeholder/redirect language. Use `--no-summary-quality` to skip that audit.
 
-If your tool supports pre-prompt hooks, you can automate this. For example, in Claude Code's `.claude/settings.json`:
+If your tool supports pre-prompt hooks, you can automate this:
 
 ```json
 {
@@ -311,7 +329,8 @@ kvault produces Markdown with YAML frontmatter in a plain directory. No propriet
 
 | Want to... | Use |
 |---|---|
-| **Semantic search** | Embed the `.md` files with any vector tool (OpenAI, Chroma, txtai, etc.) |
+| **Semantic search** | Embed the `.md` files with any vector tool |
+| **Exact text search** | `rg -n "phrase" ./my_kb` |
 | **Visual browsing** | Open the KB directory in Obsidian or Logseq |
 | **Publish as a site** | Point Hugo, Jekyll, or Astro at the directory |
 | **CI validation** | Run `kvault validate` or `kvault check` in a GitHub Action |
@@ -320,7 +339,7 @@ kvault produces Markdown with YAML frontmatter in a plain directory. No propriet
 ## Development
 
 ```bash
-pip install -e ".[dev,ui,mcp]"
+pip install -e ".[dev,mcp]"
 pytest -q
 ruff check .
 black --check kvault/ tests/

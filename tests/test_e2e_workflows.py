@@ -1,7 +1,7 @@
 """End-to-end workflow tests for kvault operations.
 
 Tests complete user workflows (the 2-call pipeline) against the sample KB fixture.
-Following CJE's testing philosophy: test what users actually do, with real-ish data.
+They focus on what users actually do, with representative data.
 """
 
 from kvault.core import operations as ops
@@ -403,14 +403,14 @@ class TestBatchUpdateSummaries:
         write_result = ops.write_entity(
             initialized_kb,
             path="people/work/hank_brown",
-            content="# Hank Brown\n\nFounder of startup.io. Met at YC Demo Day.\n",
+            content="# Hank Brown\n\nFounder of startup.io. Met at a demo day.\n",
             meta={
                 "source": "conference",
                 "aliases": ["Hank Brown", "hank@startup.io"],
                 "email": "hank@startup.io",
             },
             create=True,
-            reasoning="Met at YC Demo Day, potential CJE adopter",
+            reasoning="Met at demo day, potential evaluation-tool adopter",
         )
         assert write_result["success"]
         assert write_result["journal_logged"] is True

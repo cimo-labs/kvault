@@ -18,8 +18,8 @@ CTO at Startup.io. Building developer tools.
 
 ## Background
 
-- CS degree from MIT
-- Previously at Stripe (senior engineer)
+- CS degree from Example Technical Institute
+- Previously at Example Payments (senior engineer)
 - Founded Startup.io in 2024
 
 ## Notes

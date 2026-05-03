@@ -55,5 +55,5 @@ matching:
     - outlook.com
 
 agent:
-  provider: claude
+  provider: generic
   timeout: 120

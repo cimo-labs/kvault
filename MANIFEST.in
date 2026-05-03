@@ -1,4 +1,3 @@
 global-exclude *.py[cod]
 global-exclude __pycache__
 prune kvault/templates/__pycache__
-prune kvault/ui/templates/__pycache__

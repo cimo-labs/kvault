@@ -1,8 +1,38 @@
 # Core Module
 
-Foundation layer for storage and observability.
+Foundation layer for node operations, structured search, storage, and observability.
 
 ## Components
+
+### Node Operations (`operations.py`)
+
+Shared business logic for CLI and MCP:
+
+```python
+from pathlib import Path
+from kvault.core import operations as ops
+
+root = Path("knowledge_graph")
+
+node = ops.read_node(root, "people/friends/alice")
+result = ops.write_node(root, "people/friends/alice", "# Alice\n\nUpdated.", create=False)
+children = ops.list_nodes(root, "people")
+matches = ops.search_nodes(root, "alice follow up")
+```
+
+`read_node` returns the requested node plus immediate parent context by default.
+
+### Structured Search (`search.py`)
+
+Stateless lexical search over visible `_summary.md` nodes:
+
+```python
+from kvault.core.search import search_nodes
+
+results = search_nodes(Path("knowledge_graph"), "project notes", limit=5)
+```
+
+Search covers root, branch, and leaf summaries and returns ranked node hits with snippets.
 
 ### SimpleStorage + Entity Scanning (`storage.py`)
 
@@ -95,6 +125,8 @@ normalize_entity_id("R&L Carriers")      # "rl_carriers"
 ```
 core/
 ├── __init__.py       # Exports
+├── operations.py     # Node-first business logic
+├── search.py         # Structured lexical node search
 ├── storage.py        # SimpleStorage + scan_entities + count/list
 ├── frontmatter.py    # YAML frontmatter parsing
 ├── research.py       # Entity matching + reconciliation suggestions
@@ -102,7 +134,7 @@ core/
 └── README.md
 ```
 
-## Entity Storage Format
+## Node Storage Format
 
 ### Preferred: YAML Frontmatter
 
@@ -120,7 +152,7 @@ email: alice@example.com
 
 # Alice Smith
 
-Entity content here.
+Node content here.
 ```
 
 ### Legacy: Separate _meta.json

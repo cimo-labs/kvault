@@ -87,6 +87,8 @@ class TestReadCommand:
         )
         assert result.exit_code == 0
         assert "Alice Smith" in result.output
+        assert "Parent summary (people/friends)" in result.output
+        assert "Friends list." in result.output
 
     def test_read_json(self, runner, cli_kb_with_entity):
         result = runner.invoke(
@@ -102,6 +104,15 @@ class TestReadCommand:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["path"] == "people/friends/alice_smith"
+        assert data["parent"]["path"] == "people/friends"
+
+    def test_read_category_json(self, runner, cli_kb):
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "--json", "read", "people"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["path"] == "people"
+        assert data["kind"] == "category"
+        assert data["parent"]["path"] == "."
 
     def test_read_post_command_common_options(self, runner, cli_kb_with_entity):
         result = runner.invoke(
@@ -213,7 +224,7 @@ class TestWriteCommand:
 
 class TestListCommand:
     def test_list_all(self, runner, cli_kb_with_entity):
-        result = runner.invoke(cli, ["--kb-root", str(cli_kb_with_entity), "list"])
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb_with_entity), "list", "--recursive"])
         assert result.exit_code == 0
         assert "alice_smith" in result.output
 
@@ -223,6 +234,28 @@ class TestListCommand:
         data = json.loads(result.output)
         assert isinstance(data, list)
         assert len(data) >= 1
+        assert any(item["path"] == "people" for item in data)
+
+
+# ============================================================================
+# Search
+# ============================================================================
+
+
+class TestSearchCommand:
+    def test_search_json(self, runner, cli_kb_with_entity):
+        result = runner.invoke(
+            cli, ["--kb-root", str(cli_kb_with_entity), "--json", "search", "alice"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["query"] == "alice"
+        assert data["results"][0]["path"] == "people/friends/alice_smith"
+
+    def test_search_plain_text(self, runner, cli_kb_with_entity):
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb_with_entity), "search", "friends"])
+        assert result.exit_code == 0
+        assert "people/friends" in result.output
 
 
 # ============================================================================

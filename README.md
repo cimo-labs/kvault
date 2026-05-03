@@ -80,7 +80,7 @@ Create nodes for each one in the knowledge base.
 
 Your agent will use kvault CLI commands to create structured nodes with frontmatter and propagate summaries.
 
-## The 2-call write workflow
+## The CLI 2-call write workflow
 
 ```bash
 # Call 1: Write node (stdin = frontmatter + markdown body)
@@ -94,14 +94,15 @@ Key customer acquired at trade show...
 EOF
 # → {"success": true, "ancestors": [{path, current_content, has_meta}, ...]}
 
-# Call 2: Agent reads ancestors, composes updated summaries
+# Call 2: Agent reads ancestors, composes updated summaries, including root
 kvault update-summaries --json --kb-root ./my_kb <<'EOF'
 [
   {"path": "people/contacts", "content": "# Contacts\n...updated..."},
-  {"path": "people", "content": "# People\n...updated..."}
+  {"path": "people", "content": "# People\n...updated..."},
+  {"path": ".", "content": "# Knowledge Base\n...updated..."}
 ]
 EOF
-# → {"success": true, "updated": ["people/contacts", "people"], "count": 2}
+# → {"success": true, "updated": ["people/contacts", "people", "."], "count": 3}
 ```
 
 ## What a node looks like
@@ -251,7 +252,7 @@ logging:
 | **Lifecycle** | `kvault_init`, `kvault_status` |
 | **Nodes** | `kvault_search`, `kvault_read_node`, `kvault_write_node`, `kvault_list_nodes` |
 | **Compatibility** | `kvault_read_entity`, `kvault_write_entity`, `kvault_list_entities`, `kvault_read_summary`, `kvault_write_summary`, `kvault_delete_entity`, `kvault_move_entity` |
-| **Summaries** | `kvault_update_summaries`, `kvault_get_parent_summaries`, `kvault_get_ancestors`, `kvault_propagate_all` |
+| **Summaries** | `kvault_prepare_summary_update`, `kvault_write_parent_summary`, `kvault_update_summaries`, `kvault_get_parent_summaries`, `kvault_get_ancestors`, `kvault_propagate_all` |
 | **Journal / artifacts** | `kvault_write_journal`, `kvault_generate_daily_artifact` |
 | **Validation / logging** | `kvault_validate_kb`, `kvault_log_phase` |
 
@@ -259,14 +260,25 @@ Compatibility tools accept an optional `kg_root` argument for older clients, but
 server-bound root. `kvault_init` reports bound-root status and rejects mismatched roots; it does not
 create or reinitialize a KB.
 
-MCP clients should use the same propagation workflow as the CLI:
+MCP clients should prefer the strict parent-summary workflow:
 
 1. Call `kvault_status`, `kvault_list_nodes`, or `kvault_search` to orient.
 2. Call `kvault_read_node` before editing; it returns the node plus parent context.
-3. Call `kvault_write_node` with durable frontmatter and body content.
-4. Use the returned ancestors or `kvault_get_parent_summaries` to update parent summaries.
-5. Call `kvault_update_summaries` so every parent remains a useful rollup.
-6. Call `kvault_validate_kb` after larger edits.
+3. Call `kvault_write_node` with Markdown body content and durable metadata in `meta`.
+4. For each returned ancestor, closest-first, call `kvault_prepare_summary_update`.
+5. Compose the parent summary from the returned parent and immediate child summaries.
+6. Call `kvault_write_parent_summary` with the new content and the returned `children_digest`.
+7. Call `kvault_validate_kb` after larger edits.
+
+`children_digest` is stateless and only proves the direct child summaries have not changed since
+the prepare call. If another write changes a direct child first, `kvault_write_parent_summary`
+returns `workflow_error`; call `kvault_prepare_summary_update` again and compose from the current
+children.
+
+When a parent has more than 10 direct children, `kvault_prepare_summary_update` returns a
+`hierarchy_hint`. This is advisory: split the hierarchy when natural groups are obvious, otherwise
+still keep the parent summary comprehensive. Compatibility tools such as `kvault_update_summaries`
+and `kvault_write_summary` remain available for older clients and manual maintenance.
 
 ## Optional root pinning (multi-tenant hardening)
 
@@ -288,6 +300,13 @@ kg_root = Path("my_kb")
 node = ops.read_node(kg_root, "people/contacts/sarah_chen")
 result = ops.write_node(kg_root, "people/contacts/new_person", "# Content", create=True)
 matches = ops.search_nodes(kg_root, "sarah follow up")
+prepared = ops.prepare_summary_update(kg_root, "people/contacts")
+ops.write_parent_summary(
+    kg_root,
+    "people/contacts",
+    "# Contacts\n\nUpdated rollup.",
+    prepared["children_digest"],
+)
 
 # Entity reconciliation remains available for dedup decisions
 from kvault import scan_entities, EntityResearcher

@@ -18,9 +18,19 @@ node = ops.read_node(root, "people/friends/alice")
 result = ops.write_node(root, "people/friends/alice", "# Alice\n\nUpdated.", create=False)
 children = ops.list_nodes(root, "people")
 matches = ops.search_nodes(root, "alice follow up")
+prepared = ops.prepare_summary_update(root, "people/friends")
+ops.write_parent_summary(
+    root,
+    "people/friends",
+    "# Friends\n\nUpdated comprehensive rollup.",
+    prepared["children_digest"],
+)
 ```
 
 `read_node` returns the requested node plus immediate parent context by default.
+`prepare_summary_update` returns the parent summary, all immediate child summaries, a stateless
+digest, and any advisory hierarchy hint. `write_parent_summary` rejects stale digests so callers
+rewrite parent rollups from current direct children.
 
 ### Structured Search (`search.py`)
 
@@ -144,13 +154,12 @@ Single `_summary.md` file with embedded metadata:
 ---
 created: 2026-01-23
 updated: 2026-01-23
-source: imessage:abc123
-aliases: [Alice, alice@example.com, +14155551234]
-phone: +14155551234
-email: alice@example.com
+source: meeting_notes_2026_01_23
+aliases: [Morgan Lee, Morgan]
+topic: research collaboration
 ---
 
-# Alice Smith
+# Morgan Lee
 
 Node content here.
 ```

@@ -2,7 +2,25 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
-## 0.9.0 - Unreleased
+## 0.10.0 - Unreleased
+
+### Added
+
+- **Strict MCP parent-summary updates**: Added `kvault_prepare_summary_update` and
+  `kvault_write_parent_summary` so MCP clients can read all direct child summaries before writing
+  a parent rollup.
+- **Stateless child-summary digests**: Parent summary writes can now reject stale MCP update
+  attempts when a direct child summary changed after preparation.
+- **Hierarchy pressure hints**: Strict prepare calls return an advisory `hierarchy_hint` when a
+  parent has more than 10 direct children.
+
+### Compatibility
+
+- Existing summary tools, including `kvault_update_summaries`, `kvault_write_summary`,
+  `kvault_get_parent_summaries`, `kvault_get_ancestors`, and `kvault_propagate_all`, remain
+  available unchanged.
+
+## 0.9.0 - 2026-05-03
 
 ### Added
 

@@ -106,6 +106,18 @@ kvault update-summaries --json <<'EOF'
 EOF
 ```
 
+MCP clients should use strict parent-summary tools when available:
+
+1. Call `kvault_write_node` with Markdown body content and metadata in `meta`.
+2. For each returned ancestor, closest-first, call `kvault_prepare_summary_update`.
+3. Compose the parent summary from the returned parent and immediate child summaries.
+4. Call `kvault_write_parent_summary` with the new content and returned `children_digest`.
+5. If `workflow_error` reports a stale digest, prepare that parent again and rewrite from the
+   current direct children.
+6. If a `hierarchy_hint` is returned, split the hierarchy when there is an obvious grouping;
+   otherwise still keep the parent summary comprehensive.
+7. Call `kvault_validate_kb` after larger edits.
+
 ---
 
 ## Node Format

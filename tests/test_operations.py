@@ -3,6 +3,8 @@
 These tests call operations functions directly (no MCP server initialization).
 """
 
+import shutil
+
 import pytest
 from kvault.core import operations as ops
 
@@ -33,6 +35,14 @@ def empty_ops_kb(tmp_path):
     (kb / "projects" / "_summary.md").write_text("# Projects\n\nAll projects.\n")
     (kb / ".kvault").mkdir()
     return kb
+
+
+def _add_child(kb, parent, name, content=None):
+    path = kb / parent / name if parent != "." else kb / name
+    path.mkdir(parents=True, exist_ok=True)
+    body = content or f"# {name.replace('_', ' ').title()}\n\nChild summary for {name}.\n"
+    (path / "_summary.md").write_text(body)
+    return path
 
 
 # ============================================================================
@@ -263,6 +273,196 @@ class TestWriteNode:
 
 
 # ============================================================================
+# Strict parent summary updates
+# ============================================================================
+
+
+class TestStrictSummaryUpdates:
+    def test_prepare_returns_parent_children_digest_and_no_hint_under_threshold(self, empty_ops_kb):
+        result = ops.prepare_summary_update(empty_ops_kb, "people")
+
+        assert result["success"] is True
+        assert result["path"] == "people"
+        assert result["parent"]["path"] == "people"
+        assert [child["path"] for child in result["children"]] == ["people/friends"]
+        assert result["child_count"] == 1
+        assert result["digest_algorithm"] == ops.SUMMARY_UPDATE_DIGEST_ALGORITHM
+        assert result["children_digest"].startswith("sha256:")
+        assert result["max_direct_children"] == ops.MAX_DIRECT_CHILDREN
+        assert result["hierarchy_hint"] is None
+
+    def test_prepare_root_works(self, empty_ops_kb):
+        result = ops.prepare_summary_update(empty_ops_kb, ".")
+
+        assert result["success"] is True
+        assert result["parent"]["kind"] == "root"
+        assert sorted(child["path"] for child in result["children"]) == ["people", "projects"]
+
+    def test_prepare_ignores_hidden_directories_and_grandchildren(self, empty_ops_kb):
+        _add_child(empty_ops_kb, "people/friends", "alice")
+        hidden = empty_ops_kb / "people" / ".hidden" / "secret"
+        hidden.mkdir(parents=True)
+        (hidden / "_summary.md").write_text("# Secret\n\nHidden child.\n")
+
+        result = ops.prepare_summary_update(empty_ops_kb, "people")
+
+        assert result["success"] is True
+        assert [child["path"] for child in result["children"]] == ["people/friends"]
+
+    def test_digest_is_stable_when_children_are_unchanged(self, empty_ops_kb):
+        first = ops.prepare_summary_update(empty_ops_kb, "people")
+        second = ops.prepare_summary_update(empty_ops_kb, "people")
+
+        assert first["children_digest"] == second["children_digest"]
+
+    def test_digest_changes_when_direct_child_body_changes(self, empty_ops_kb):
+        before = ops.prepare_summary_update(empty_ops_kb, "people")
+        (empty_ops_kb / "people" / "friends" / "_summary.md").write_text(
+            "# Friends\n\nUpdated direct child body.\n"
+        )
+
+        after = ops.prepare_summary_update(empty_ops_kb, "people")
+
+        assert before["children_digest"] != after["children_digest"]
+
+    def test_digest_changes_when_direct_child_frontmatter_changes(self, empty_ops_kb):
+        before = ops.prepare_summary_update(empty_ops_kb, "people")
+        (empty_ops_kb / "people" / "friends" / "_summary.md").write_text(
+            "---\nsource: seed\naliases: [Friends]\n---\n\n# Friends\n\nFriends list.\n"
+        )
+
+        after = ops.prepare_summary_update(empty_ops_kb, "people")
+
+        assert before["children_digest"] != after["children_digest"]
+
+    def test_digest_changes_when_direct_child_is_added_or_removed(self, empty_ops_kb):
+        before = ops.prepare_summary_update(empty_ops_kb, "people")
+        added = _add_child(empty_ops_kb, "people", "contacts")
+
+        after_add = ops.prepare_summary_update(empty_ops_kb, "people")
+        shutil.rmtree(added)
+        after_remove = ops.prepare_summary_update(empty_ops_kb, "people")
+
+        assert before["children_digest"] != after_add["children_digest"]
+        assert after_remove["children_digest"] == before["children_digest"]
+
+    def test_prepare_returns_hierarchy_hint_above_threshold(self, empty_ops_kb):
+        for index in range(ops.MAX_DIRECT_CHILDREN + 1):
+            _add_child(empty_ops_kb, "projects", f"child_{index}")
+
+        result = ops.prepare_summary_update(empty_ops_kb, "projects")
+
+        assert result["success"] is True
+        assert result["child_count"] == ops.MAX_DIRECT_CHILDREN + 1
+        assert result["hierarchy_hint"] == {
+            "code": "too_many_direct_children",
+            "message": "Parent has 11 direct children; consider introducing intermediate branch nodes.",
+            "child_count": 11,
+            "max_direct_children": ops.MAX_DIRECT_CHILDREN,
+        }
+
+    def test_write_parent_summary_succeeds_with_fresh_digest(self, empty_ops_kb):
+        prepared = ops.prepare_summary_update(empty_ops_kb, "people")
+
+        result = ops.write_parent_summary(
+            empty_ops_kb,
+            "people",
+            "# People\n\nUpdated from direct child summaries.\n",
+            prepared["children_digest"],
+        )
+
+        assert result["success"] is True
+        assert (empty_ops_kb / "people" / "_summary.md").read_text() == (
+            "# People\n\nUpdated from direct child summaries.\n"
+        )
+
+    def test_write_parent_summary_preserves_frontmatter_when_meta_omitted(self, empty_ops_kb):
+        (empty_ops_kb / "people" / "_summary.md").write_text(
+            "---\nsource: seed\naliases: [People]\n---\n\n# People\n\nAll contacts.\n"
+        )
+        prepared = ops.prepare_summary_update(empty_ops_kb, "people")
+
+        result = ops.write_parent_summary(
+            empty_ops_kb,
+            "people",
+            "# People\n\nUpdated with preserved metadata.\n",
+            prepared["children_digest"],
+        )
+
+        assert result["success"] is True
+        node = ops.read_node(empty_ops_kb, "people")
+        assert node["meta"]["source"] == "seed"
+        assert node["meta"]["aliases"] == ["People"]
+        assert "Updated with preserved metadata" in node["content"]
+
+    def test_write_parent_summary_applies_explicit_meta(self, empty_ops_kb):
+        prepared = ops.prepare_summary_update(empty_ops_kb, "people")
+
+        result = ops.write_parent_summary(
+            empty_ops_kb,
+            "people",
+            "# People\n\nUpdated with explicit metadata.\n",
+            prepared["children_digest"],
+            meta={"source": "manual", "aliases": ["Contacts"]},
+        )
+
+        assert result["success"] is True
+        node = ops.read_node(empty_ops_kb, "people")
+        assert node["meta"] == {"source": "manual", "aliases": ["Contacts"]}
+
+    def test_write_parent_summary_rejects_stale_digest(self, empty_ops_kb):
+        prepared = ops.prepare_summary_update(empty_ops_kb, "people")
+        _add_child(empty_ops_kb, "people", "contacts")
+
+        result = ops.write_parent_summary(
+            empty_ops_kb,
+            "people",
+            "# People\n\nStale update.\n",
+            prepared["children_digest"],
+        )
+
+        assert result["success"] is False
+        assert result["error_code"] == "workflow_error"
+        assert result["details"]["received_digest"] == prepared["children_digest"]
+        assert result["details"]["expected_digest"].startswith("sha256:")
+
+    def test_write_parent_summary_still_succeeds_above_threshold_with_fresh_digest(
+        self, empty_ops_kb
+    ):
+        for index in range(ops.MAX_DIRECT_CHILDREN + 1):
+            _add_child(empty_ops_kb, "projects", f"child_{index}")
+        prepared = ops.prepare_summary_update(empty_ops_kb, "projects")
+
+        result = ops.write_parent_summary(
+            empty_ops_kb,
+            "projects",
+            "# Projects\n\nComprehensive summary despite many direct children.\n",
+            prepared["children_digest"],
+        )
+
+        assert result["success"] is True
+        assert result["hierarchy_hint"]["code"] == "too_many_direct_children"
+
+    def test_write_parent_summary_rejects_missing_digest(self, empty_ops_kb):
+        result = ops.write_parent_summary(empty_ops_kb, "people", "# People\n", "")
+
+        assert result["success"] is False
+        assert result["error_code"] == "validation_error"
+
+    def test_prepare_rejects_escape_paths(self, empty_ops_kb):
+        result = ops.prepare_summary_update(empty_ops_kb, "../escaped")
+
+        assert result["success"] is False
+        assert result["error_code"] == "validation_error"
+
+    def test_prepare_missing_parent_returns_not_found(self, empty_ops_kb):
+        result = ops.prepare_summary_update(empty_ops_kb, "people/missing")
+
+        assert result["success"] is False
+        assert result["error_code"] == "not_found"
+
+
+# ============================================================================
 # Write + propagate workflow
 # ============================================================================
 
@@ -298,6 +498,46 @@ class TestWritePropagateWorkflow:
         entity = ops.read_entity(empty_ops_kb, "people/friends/gina")
         assert entity is not None
         assert "New friend" in entity["content"]
+
+    def test_strict_parent_update_workflow_detects_out_of_order_digest(self, empty_ops_kb):
+        write_result = ops.write_node(
+            empty_ops_kb,
+            "people/friends/gina",
+            "# Gina\n\nNew friend.\n",
+            create=True,
+        )
+        assert write_result["success"] is True
+
+        stale_people = ops.prepare_summary_update(empty_ops_kb, "people")
+        touched = []
+        for path in ["people/friends", "people", "."]:
+            prepared = ops.prepare_summary_update(empty_ops_kb, path)
+            content = prepared["parent"]["content"].rstrip() + f"\n\nUpdated rollup for {path}.\n"
+            result = ops.write_parent_summary(
+                empty_ops_kb,
+                path,
+                content,
+                prepared["children_digest"],
+            )
+            assert result["success"] is True
+            touched.append(path)
+
+        assert touched == ["people/friends", "people", "."]
+        assert (
+            "Updated rollup for people/friends"
+            in (empty_ops_kb / "people" / "friends" / "_summary.md").read_text()
+        )
+        assert "Updated rollup for people" in (empty_ops_kb / "people" / "_summary.md").read_text()
+        assert "Updated rollup for ." in (empty_ops_kb / "_summary.md").read_text()
+
+        stale_result = ops.write_parent_summary(
+            empty_ops_kb,
+            "people",
+            "# People\n\nOut-of-order stale summary.\n",
+            stale_people["children_digest"],
+        )
+        assert stale_result["success"] is False
+        assert stale_result["error_code"] == "workflow_error"
 
 
 # ============================================================================

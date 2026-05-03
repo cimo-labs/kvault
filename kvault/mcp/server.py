@@ -308,6 +308,33 @@ def create_server(kb_root: Path | str) -> Any:
         assert root is not None
         return ops.write_summary(root, path, content, meta=meta)
 
+    @server.tool(name="kvault_prepare_summary_update")
+    def kvault_prepare_summary_update(
+        path: str,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Read a parent summary and all direct child summaries for a strict update."""
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        return ops.prepare_summary_update(root, path)
+
+    @server.tool(name="kvault_write_parent_summary")
+    def kvault_write_parent_summary(
+        path: str,
+        content: str,
+        children_digest: str,
+        meta: Optional[Dict[str, Any]] = None,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Write one parent summary after verifying direct children were read."""
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        return ops.write_parent_summary(root, path, content, children_digest, meta=meta)
+
     @server.tool(name="kvault_update_summaries")
     def kvault_update_summaries(
         updates: List[Dict[str, Any]], kg_root: Optional[str] = None

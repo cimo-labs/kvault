@@ -3,11 +3,16 @@
 All functions take ``kg_root: Path`` as first argument — no globals, no
 sessions.  Used by both the MCP server and CLI commands.
 
-Key workflow (2-call write):
+CLI workflow (2-call write):
   1. write_entity(kg_root, path, ...) → ancestors + optional auto-journal
   2. update_summaries(kg_root, updates) → batch propagation
+
+MCP strict parent workflow:
+  1. prepare_summary_update(kg_root, path) → parent + direct children + digest
+  2. write_parent_summary(kg_root, path, content, digest) → stale-child guard
 """
 
+import hashlib
 import json
 import os
 import re
@@ -35,6 +40,8 @@ from kvault.core.validation import (
 _ALLOWED_ROOTS_ENV = "KVAULT_ALLOWED_ROOTS"
 _NODE_COMPONENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _HEADING_RE = re.compile(r"^\s{0,3}#\s+(.+?)\s*$", re.MULTILINE)
+SUMMARY_UPDATE_DIGEST_ALGORITHM = "direct-child-summary-sha256-v1"
+MAX_DIRECT_CHILDREN = 10
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +292,60 @@ def _propagation_targets(kg_root: Path, path: str) -> List[Dict[str, Any]]:
                 }
             )
     return targets
+
+
+def _summary_update_node(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the public node shape used by strict summary update tools."""
+    return {
+        "path": raw["path"],
+        "kind": raw["kind"],
+        "summary_path": raw["summary_path"],
+        "title": raw["title"],
+        "meta": raw["meta"],
+        "content": raw["content"],
+        "has_frontmatter": raw["has_frontmatter"],
+    }
+
+
+def _direct_child_raw_nodes(kg_root: Path, path: str) -> List[Dict[str, Any]]:
+    children: List[Dict[str, Any]] = []
+    for child_path in _child_node_paths(kg_root, path):
+        raw = _read_node_raw(kg_root, child_path)
+        if raw is not None:
+            children.append(raw)
+    return children
+
+
+def _children_digest(parent_path: str, children: List[Dict[str, Any]]) -> str:
+    sorted_children = sorted(children, key=lambda child: child["path"])
+    payload = {
+        "algorithm": SUMMARY_UPDATE_DIGEST_ALGORITHM,
+        "parent_path": parent_path,
+        "children": [
+            {
+                "path": child["path"],
+                "summary_path": child["summary_path"],
+                "raw_sha256": hashlib.sha256(child["raw_content"].encode("utf-8")).hexdigest(),
+            }
+            for child in sorted_children
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _hierarchy_hint(child_count: int) -> Optional[Dict[str, Any]]:
+    if child_count <= MAX_DIRECT_CHILDREN:
+        return None
+    return {
+        "code": "too_many_direct_children",
+        "message": (
+            f"Parent has {child_count} direct children; consider introducing "
+            "intermediate branch nodes."
+        ),
+        "child_count": child_count,
+        "max_direct_children": MAX_DIRECT_CHILDREN,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -635,6 +696,84 @@ def write_summary(
         full_content = content
     summary_path.write_text(full_content)
     return {"success": True, "path": path}
+
+
+def prepare_summary_update(kg_root: Path, path: str) -> Dict[str, Any]:
+    """Return parent and direct-child summaries for a strict parent update."""
+    path = _normalize_node_path(path)
+    is_valid, err_msg = _validate_node_path(path)
+    if not is_valid:
+        return error_response(ErrorCode.VALIDATION_ERROR, err_msg or "Invalid path")
+    if not validate_within_root(kg_root, path):
+        return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
+
+    parent_raw = _read_node_raw(kg_root, path)
+    if parent_raw is None:
+        return error_response(ErrorCode.NOT_FOUND, f"Parent node not found: {path}")
+
+    children_raw = _direct_child_raw_nodes(kg_root, path)
+    child_count = len(children_raw)
+    digest = _children_digest(path, children_raw)
+    return {
+        "success": True,
+        "path": path,
+        "parent": _summary_update_node(parent_raw),
+        "children": [_summary_update_node(child) for child in children_raw],
+        "child_count": child_count,
+        "children_digest": digest,
+        "digest_algorithm": SUMMARY_UPDATE_DIGEST_ALGORITHM,
+        "max_direct_children": MAX_DIRECT_CHILDREN,
+        "hierarchy_hint": _hierarchy_hint(child_count),
+    }
+
+
+def write_parent_summary(
+    kg_root: Path,
+    path: str,
+    content: str,
+    children_digest: str,
+    meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Write a parent summary only if direct children match *children_digest*."""
+    if not isinstance(children_digest, str) or not children_digest.strip():
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            "children_digest is required",
+            hint="Call prepare_summary_update first and pass its children_digest.",
+        )
+
+    prepared = prepare_summary_update(kg_root, path)
+    if not prepared.get("success"):
+        return prepared
+
+    expected_digest = prepared["children_digest"]
+    if children_digest != expected_digest:
+        return error_response(
+            ErrorCode.WORKFLOW_ERROR,
+            "children_digest is stale for parent summary update",
+            details={
+                "path": prepared["path"],
+                "received_digest": children_digest,
+                "expected_digest": expected_digest,
+                "child_count": prepared["child_count"],
+                "hierarchy_hint": prepared["hierarchy_hint"],
+            },
+            hint="Call kvault_prepare_summary_update again and rewrite from current children.",
+        )
+
+    result = write_summary(kg_root, prepared["path"], content, meta=meta)
+    if not result.get("success"):
+        return result
+
+    return {
+        "success": True,
+        "path": prepared["path"],
+        "child_count": prepared["child_count"],
+        "children_digest": expected_digest,
+        "digest_algorithm": SUMMARY_UPDATE_DIGEST_ALGORITHM,
+        "max_direct_children": MAX_DIRECT_CHILDREN,
+        "hierarchy_hint": prepared["hierarchy_hint"],
+    }
 
 
 def update_summaries(

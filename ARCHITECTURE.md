@@ -1,7 +1,7 @@
 # kvault Architecture
 
 Canonical architecture for the `knowledgevault` package.
-Last updated: 2026-05-02
+Last updated: 2026-05-03
 
 ## Overview
 
@@ -45,11 +45,15 @@ and `--json`; command groups and server-launching commands may have command-spec
 
 Thin compatibility server exposed through `kvault-mcp`. Each process is bound to one KB
 root from `--kb-root` or `KVAULT_KB_ROOT`, enforces `KVAULT_ALLOWED_ROOTS`, and delegates
-tool behavior to `kvault.core.operations`.
+tool behavior to `kvault.core.operations`. MCP clients should prefer
+`kvault_prepare_summary_update` and `kvault_write_parent_summary` for parent rollups so direct
+children are read before a parent summary is rewritten.
 
 ### Operations Layer (`kvault/core/operations.py`)
 
-Stateless functions — all take `kg_root: Path` as first arg. Shared by CLI and tests.
+Stateless functions — all take `kg_root: Path` as first arg. Shared by CLI, MCP, and tests.
+Includes node read/write/list/search, compatibility entity/summary operations, and strict
+parent-summary helpers backed by direct-child digests.
 
 ### Core Layer (`kvault/core/`)
 
@@ -87,13 +91,25 @@ New writes use frontmatter in `_summary.md`.
 
 ## Write Workflow
 
-The canonical 2-call agent write flow:
+The canonical CLI write flow:
 
 1. Navigate via `kvault list`, `kvault read`, or agent file tools
 2. `kvault write <path> --create --reasoning "..." --json` (returns ancestors)
 3. `kvault update-summaries --json` (batch-update ancestor summaries from stdin)
 4. Optional: `kvault journal` for additional logging (auto-journal happens on write with `--reasoning`)
 5. Optional: `kvault validate` to check integrity
+
+The canonical MCP parent-summary flow is stricter:
+
+1. `kvault_write_node(...)`
+2. For each returned ancestor, closest-first:
+   - `kvault_prepare_summary_update(path)`
+   - compose the parent from the returned parent and immediate child summaries
+   - `kvault_write_parent_summary(path, content, children_digest)`
+3. `kvault_validate_kb(...)` after larger edits
+
+Strict parent writes use a stateless digest over direct child summaries. The digest excludes mtime
+and changes when a direct child summary body, frontmatter, path, or existence changes.
 
 Parent summaries are expected to be comprehensive rollups of descendants. `kvault check`
 emits warn-only `SUMMARY:` findings when a parent omits immediate child coverage, is too
@@ -144,6 +160,8 @@ pytest -q
 
 ## Version Notes
 
+- 0.10.0: strict MCP parent-summary updates with stateless child digests and hierarchy hints.
+- 0.9.0: node-first interface, structured lexical search, optional UI removed.
 - 0.8.0: UI, summary-quality audit, MCP compatibility restored, arbitrary-depth entity paths.
 - 0.7.0: CLI-first. MCP server removed. Operations layer extracted to `core/operations.py`.
 - 0.6.2: shared research primitives, architecture cleanup.

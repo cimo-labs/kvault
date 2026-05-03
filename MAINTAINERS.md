@@ -29,11 +29,13 @@ kvault/
 2. A node is any non-hidden directory with `_summary.md`, including root, branches, and leaves.
 3. Nodes are written as `_summary.md` with frontmatter (legacy `_meta.json` read fallback only).
 4. Path handling must never allow escape outside configured KB root.
-5. If `KVAULT_ALLOWED_ROOTS` is configured, operations must reject non-allowed roots.
+5. If `KVAULT_ALLOWED_ROOTS` is configured, CLI and MCP boundaries must reject non-allowed roots.
 6. CLI uses `default_source="auto:cli"`.
 7. MCP uses `default_source="auto:mcp"` and is bound to one KB root per process.
 8. Parent summaries should be comprehensive rollups of all descendants; `kvault check`
    emits warn-only `SUMMARY:` findings for weak rollups.
+9. MCP parent-summary writes should use strict prepare/write tools so direct child summaries are
+   read before a parent rollup is rewritten.
 
 ## Core APIs
 
@@ -45,6 +47,8 @@ ops.read_node(kg_root, path, parents="immediate")
 ops.write_node(kg_root, path, content, meta=..., create=...)
 ops.list_nodes(kg_root, path=".", recursive=False)
 ops.search_nodes(kg_root, query, limit=10)
+ops.prepare_summary_update(kg_root, path)
+ops.write_parent_summary(kg_root, path, content, children_digest, meta=...)
 ops.read_entity(kg_root, path)
 ops.write_entity(kg_root, path, content, meta=..., create=..., reasoning=...)
 ops.update_summaries(kg_root, updates)
@@ -110,15 +114,17 @@ kvault journal --source TEXT [--date YYYY-MM-DD] [--json] < actions.json
 kvault status [--json]
 kvault tree [--depth N]
 kvault validate [--json]
-kvault check [--kb-root PATH] [--json] [--no-summary-quality]
+kvault check [--kb-root PATH] [--json] [--no-summary-quality] [--summary-max-warnings N]
 
 # Init & artifacts
 kvault init <path> [--name NAME]
-kvault artifact daily [--kb-root PATH] [--date YYYY-MM-DD] [--force] [--json]
+kvault artifact daily [--kb-root PATH] [--date YYYY-MM-DD] [--force] [--stdout] [--json]
 kvault log summary [--db PATH] [--session-id ID] [--json]
 
 # MCP compatibility
 kvault-mcp --kb-root PATH
+# Preferred MCP summary flow:
+# kvault_prepare_summary_update -> kvault_write_parent_summary
 
 # Version
 kvault status --json

@@ -72,4 +72,4 @@ def empty_kb(tmp_path):
 
 ## Stats
 
-**185+ tests, runs in a few seconds.**
+**The full suite runs in a few seconds.**

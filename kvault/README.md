@@ -47,7 +47,8 @@ from kvault import (
 - CLI commands (`kvault`) are the primary runtime interface.
 - Core operations layer (`kvault/core/operations.py`) provides shared node-first business logic.
 - Core search layer (`kvault/core/search.py`) provides structured lexical node search.
-- MCP compatibility server (`kvault/mcp/server.py`) exposes root-bound tools backed by operations.
+- MCP compatibility server (`kvault/mcp/server.py`) exposes root-bound tools backed by operations,
+  including strict parent-summary prepare/write tools.
 - Core modules provide reusable library behavior.
 
 ## CLI Quick Start
@@ -61,6 +62,11 @@ kvault artifact daily --kb-root my_kb --date 2026-02-17
 kvault log summary --db my_kb/.kvault/logs.db
 kvault-mcp --kb-root my_kb
 ```
+
+MCP clients should update parent summaries with `kvault_prepare_summary_update` followed by
+`kvault_write_parent_summary` for each ancestor, closest-first. The prepare call returns all direct
+child summaries, a stateless digest, and an advisory hierarchy hint when a parent has more than 10
+direct children.
 
 ## Development
 

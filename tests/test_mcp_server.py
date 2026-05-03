@@ -79,8 +79,12 @@ def test_mcp_server_exposes_compatible_tools_and_calls(tmp_path):
         "kvault_move_entity",
         "kvault_read_summary",
         "kvault_write_summary",
+        "kvault_prepare_summary_update",
+        "kvault_write_parent_summary",
         "kvault_update_summaries",
         "kvault_get_parent_summaries",
+        "kvault_get_ancestors",
+        "kvault_propagate_all",
         "kvault_write_journal",
         "kvault_generate_daily_artifact",
         "kvault_validate_kb",
@@ -130,6 +134,184 @@ def test_mcp_server_exposes_compatible_tools_and_calls(tmp_path):
         item["path"] == "people/contacts/professional/education/person"
         for item in search["results"]
     )
+
+
+def test_mcp_strict_summary_update_tools_prepare_and_write(tmp_path):
+    kb = _make_kb(tmp_path)
+    server = create_server(kb)
+
+    prepared = _run_tool(server, "kvault_prepare_summary_update", {"path": "people/contacts"})
+    assert prepared["success"] is True
+    assert prepared["parent"]["path"] == "people/contacts"
+    assert [child["path"] for child in prepared["children"]] == ["people/contacts/professional"]
+    assert prepared["children_digest"].startswith("sha256:")
+
+    write = _run_tool(
+        server,
+        "kvault_write_parent_summary",
+        {
+            "path": "people/contacts",
+            "content": "# Contacts\n\nProfessional contacts are summarized here.\n",
+            "children_digest": prepared["children_digest"],
+        },
+    )
+    assert write["success"] is True
+    assert write["path"] == "people/contacts"
+    assert (
+        "Professional contacts are summarized here"
+        in (kb / "people" / "contacts" / "_summary.md").read_text()
+    )
+
+
+def test_mcp_strict_summary_update_rejects_stale_digest(tmp_path):
+    kb = _make_kb(tmp_path)
+    server = create_server(kb)
+
+    prepared = _run_tool(server, "kvault_prepare_summary_update", {"path": "people/contacts"})
+    (kb / "people" / "contacts" / "vendors").mkdir()
+    (kb / "people" / "contacts" / "vendors" / "_summary.md").write_text(
+        "# Vendors\n\nVendor contacts.\n"
+    )
+
+    result = _run_tool(
+        server,
+        "kvault_write_parent_summary",
+        {
+            "path": "people/contacts",
+            "content": "# Contacts\n\nStale write.\n",
+            "children_digest": prepared["children_digest"],
+        },
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "workflow_error"
+    assert result["details"]["expected_digest"].startswith("sha256:")
+
+
+def test_mcp_strict_summary_update_returns_hierarchy_hint(tmp_path):
+    kb = _make_kb(tmp_path)
+    server = create_server(kb)
+    parent = kb / "projects"
+    parent.mkdir()
+    (parent / "_summary.md").write_text("# Projects\n\nProject rollup.\n")
+    for index in range(11):
+        child = parent / f"child_{index}"
+        child.mkdir()
+        (child / "_summary.md").write_text(f"# Child {index}\n\nProject child.\n")
+
+    prepared = _run_tool(server, "kvault_prepare_summary_update", {"path": "projects"})
+
+    assert prepared["success"] is True
+    assert prepared["child_count"] == 11
+    assert prepared["hierarchy_hint"]["code"] == "too_many_direct_children"
+
+
+def test_mcp_root_bound_mismatch_rejected(tmp_path):
+    bound = _make_kb(tmp_path, "bound")
+    other = _make_kb(tmp_path, "other")
+    server = create_server(bound)
+
+    result = _run_tool(
+        server,
+        "kvault_prepare_summary_update",
+        {"path": ".", "kg_root": str(other)},
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "validation_error"
+    assert "different KB root" in result["error"]
+
+
+def test_mcp_legacy_summary_tools_remain_callable(tmp_path):
+    kb = _make_kb(tmp_path)
+    server = create_server(kb)
+
+    write = _run_tool(
+        server,
+        "kvault_write_summary",
+        {"path": "people", "content": "# People\n\nLegacy summary write.\n"},
+    )
+    assert write["success"] is True
+
+    read = _run_tool(server, "kvault_read_summary", {"path": "people"})
+    assert read["success"] is True
+    assert "Legacy summary write" in read["content"]
+
+    ancestors = _run_tool(
+        server,
+        "kvault_get_ancestors",
+        {"path": "people/contacts/professional/education"},
+    )
+    assert ancestors["success"] is True
+    assert any(item["path"] == "people/contacts" for item in ancestors["ancestors"])
+
+    propagated = _run_tool(
+        server,
+        "kvault_propagate_all",
+        {"path": "people/contacts/professional/education"},
+    )
+    assert propagated["success"] is True
+
+    batch = _run_tool(
+        server,
+        "kvault_update_summaries",
+        {"updates": [{"path": "people", "content": "# People\n\nBatch compatibility write.\n"}]},
+    )
+    assert batch["success"] is True
+
+
+def test_mcp_strict_parent_workflow_for_written_deep_node(tmp_path):
+    kb = _make_kb(tmp_path)
+    server = create_server(kb)
+
+    write = _run_tool(
+        server,
+        "kvault_write_node",
+        {
+            "path": "people/contacts/professional/education/person",
+            "content": "# Person\n\nDeep node from MCP workflow.\n",
+            "create": True,
+        },
+    )
+    assert write["success"] is True
+
+    stale_contacts = _run_tool(
+        server,
+        "kvault_prepare_summary_update",
+        {"path": "people/contacts"},
+    )
+
+    for path in [
+        "people/contacts/professional/education",
+        "people/contacts/professional",
+        "people/contacts",
+        "people",
+        ".",
+    ]:
+        prepared = _run_tool(server, "kvault_prepare_summary_update", {"path": path})
+        result = _run_tool(
+            server,
+            "kvault_write_parent_summary",
+            {
+                "path": path,
+                "content": prepared["parent"]["content"].rstrip()
+                + f"\n\nStrict rollup updated for {path}.\n",
+                "children_digest": prepared["children_digest"],
+            },
+        )
+        assert result["success"] is True
+
+    stale = _run_tool(
+        server,
+        "kvault_write_parent_summary",
+        {
+            "path": "people/contacts",
+            "content": "# Contacts\n\nOut-of-order stale update.\n",
+            "children_digest": stale_contacts["children_digest"],
+        },
+    )
+    assert stale["success"] is False
+    assert stale["error_code"] == "workflow_error"
 
 
 def test_mcp_allowed_roots_blocks_disallowed_root(tmp_path, monkeypatch):

@@ -5,21 +5,21 @@ source: email
 name: Sarah Chen
 aliases:
 - Sarah Chen
-- sarah@anthropic.com
-email: sarah@anthropic.com
+- sarah@research.example
+email: sarah@research.example
 relationship_type: colleague
-context: Met through CJE paper review
+context: Met through evaluation paper review
 ---
 
 # Sarah Chen
 
-Research scientist at Anthropic. Works on model evaluation.
+Research scientist at Example Research Lab. Works on model evaluation.
 
 ## Background
 
-- PhD in Machine Learning from Berkeley
+- PhD in Machine Learning from Example University
 - Published on LLM evaluation methodology
-- Reviewed CJE paper draft
+- Reviewed evaluation paper draft
 
 ## Notes
 

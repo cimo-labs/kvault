@@ -14,6 +14,7 @@ from kvault.core.summary_quality import (
     audit_summary_quality,
     format_summary_quality_warnings,
 )
+from kvault.core.search import SearchDocument, SearchResult, scan_search_documents, search_nodes
 
 __all__ = [
     "parse_frontmatter",
@@ -30,4 +31,8 @@ __all__ = [
     "SummaryQualityIssue",
     "audit_summary_quality",
     "format_summary_quality_warnings",
+    "SearchDocument",
+    "SearchResult",
+    "scan_search_documents",
+    "search_nodes",
 ]

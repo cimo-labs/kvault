@@ -18,32 +18,52 @@ from kvault.core import operations as ops
 
 @click.command("read")
 @click.argument("path")
+@click.option(
+    "--parents",
+    type=click.Choice(["none", "immediate", "all"]),
+    default="immediate",
+    show_default=True,
+    help="Parent context to include.",
+)
 @common_options
 @click.pass_context
-def read_entity(ctx: click.Context, path: str, kb_root: Optional[Path], as_json: bool) -> None:
-    """Read an entity and its parent summary."""
+def read_entity(
+    ctx: click.Context,
+    path: str,
+    parents: str,
+    kb_root: Optional[Path],
+    as_json: bool,
+) -> None:
+    """Read a node and its parent summary."""
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
-    result = ops.read_entity(kb_root, path)
+    result = ops.read_node(kb_root, path, parents=parents)
     if result is None:
         if ctx.obj.get("as_json"):
-            output_json({"success": False, "error": f"Entity not found: {path}"})
+            output_json({"success": False, "error": f"Node not found: {path}"})
             ctx.exit(1)
         else:
-            raise click.ClickException(f"Entity not found: {path}")
+            raise click.ClickException(f"Node not found: {path}")
     if ctx.obj.get("as_json"):
         output_json(result)
     else:
         meta = result.get("meta", {})
         click.echo(f"Path: {result['path']}")
+        click.echo(f"Kind: {result['kind']}")
         if meta.get("name"):
             click.echo(f"Name: {meta['name']}")
         if meta.get("aliases"):
             click.echo(f"Aliases: {', '.join(str(a) for a in meta['aliases'])}")
         if meta.get("source"):
             click.echo(f"Source: {meta['source']}")
-        if result.get("parent_path"):
-            click.echo(f"Parent: {result['parent_path']}")
+        if result.get("parent"):
+            parent = result["parent"]
+            click.echo(f"Parent: {parent['path']}")
+            click.echo()
+            click.echo(f"Parent summary ({parent['path']}):")
+            click.echo(parent.get("content", "").rstrip())
+            click.echo()
+            click.echo("Node content:")
         click.echo()
         click.echo(result.get("content", ""))
 
@@ -64,7 +84,7 @@ def write_entity(
     kb_root: Optional[Path],
     as_json: bool,
 ) -> None:
-    """Write an entity from stdin (frontmatter + markdown body).
+    """Write a node from stdin (frontmatter + markdown body).
 
     Content is read from stdin. Include YAML frontmatter for metadata,
     or omit it to use defaults.
@@ -78,7 +98,7 @@ def write_entity(
 
     meta, body = parse_frontmatter(raw)
 
-    result = ops.write_entity(
+    result = ops.write_node(
         kb_root,
         path,
         body if meta else raw,
@@ -103,24 +123,29 @@ def write_entity(
 
 
 @click.command("list")
-@click.argument("category", required=False, default=None)
+@click.argument("path", required=False, default=".")
+@click.option("--recursive", is_flag=True, help="List descendant nodes recursively.")
 @common_options
 @click.pass_context
 def list_entities(
-    ctx: click.Context, category: Optional[str], kb_root: Optional[Path], as_json: bool
+    ctx: click.Context,
+    path: str,
+    recursive: bool,
+    kb_root: Optional[Path],
+    as_json: bool,
 ) -> None:
-    """List entities, optionally filtered by category."""
+    """List child nodes under a path."""
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
-    entities = ops.list_entities(kb_root, category=category)
+    entities = ops.list_nodes(kb_root, path=path, recursive=recursive)
     if ctx.obj.get("as_json"):
         output_json(entities)
     else:
         if not entities:
-            click.echo("No entities found.")
+            click.echo("No nodes found.")
             return
         for e in entities:
-            click.echo(f"  {e['path']}  ({e['name']}, updated {e['last_updated']})")
+            click.echo(f"  {e['path']}  ({e['title']}, {e['kind']})")
 
 
 @click.command("delete")

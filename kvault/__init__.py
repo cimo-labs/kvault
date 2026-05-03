@@ -13,7 +13,7 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("knowledgevault")
 except PackageNotFoundError:
-    __version__ = "0.8.0"
+    __version__ = "0.9.0"
 
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
 from kvault.core.daily_artifacts import DailyArtifactResult, generate_daily_artifact, parse_iso_date
@@ -24,6 +24,7 @@ from kvault.core.summary_quality import (
     audit_summary_quality,
     format_summary_quality_warnings,
 )
+from kvault.core.search import SearchDocument, SearchResult, scan_search_documents, search_nodes
 from kvault.core.storage import (
     SimpleStorage,
     normalize_entity_id,
@@ -52,4 +53,8 @@ __all__ = [
     "SummaryQualityIssue",
     "audit_summary_quality",
     "format_summary_quality_warnings",
+    "SearchDocument",
+    "SearchResult",
+    "scan_search_documents",
+    "search_nodes",
 ]

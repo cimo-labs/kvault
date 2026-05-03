@@ -6,9 +6,9 @@
 
 - CLI commands via `kvault` entry point (`kvault/cli/`)
 - stateless operations layer (`kvault/core/operations.py`)
+- structured lexical search (`kvault/core/search.py`)
 - filesystem storage with frontmatter summaries (`kvault/core/`)
 - thin root-bound MCP compatibility server (`kvault/mcp/server.py`)
-- optional read-only web UI (`kvault/ui/`)
 
 ## Repository Layout
 
@@ -16,23 +16,23 @@
 kvault/
 ├── kvault/
 │   ├── cli/         # CLI commands (primary interface)
-│   ├── core/        # Operations, storage, validation, frontmatter
+│   ├── core/        # Operations, search, storage, validation, frontmatter
 │   ├── mcp/         # MCP compatibility server
 │   ├── templates/   # KB init templates (AGENTS.md)
-│   ├── ui/          # Read-only Starlette UI
 │   └── py.typed     # PEP 561 marker
 └── tests/
 ```
 
 ## Critical Invariants
 
-1. `operations.py` is the shared business logic layer — both CLI and MCP use it.
-2. Entities are written as `_summary.md` with frontmatter (legacy `_meta.json` read fallback only).
-3. Path handling must never allow escape outside configured KB root.
-4. If `KVAULT_ALLOWED_ROOTS` is configured, operations must reject non-allowed roots.
-5. CLI uses `default_source="auto:cli"`.
-6. MCP uses `default_source="auto:mcp"` and is bound to one KB root per process.
-7. Parent summaries should be comprehensive rollups of all descendants; `kvault check`
+1. `operations.py` is the shared business logic layer — CLI and MCP use it.
+2. A node is any non-hidden directory with `_summary.md`, including root, branches, and leaves.
+3. Nodes are written as `_summary.md` with frontmatter (legacy `_meta.json` read fallback only).
+4. Path handling must never allow escape outside configured KB root.
+5. If `KVAULT_ALLOWED_ROOTS` is configured, operations must reject non-allowed roots.
+6. CLI uses `default_source="auto:cli"`.
+7. MCP uses `default_source="auto:mcp"` and is bound to one KB root per process.
+8. Parent summaries should be comprehensive rollups of all descendants; `kvault check`
    emits warn-only `SUMMARY:` findings for weak rollups.
 
 ## Core APIs
@@ -41,6 +41,10 @@ kvault/
 from kvault.core import operations as ops
 
 # Stateless — all functions take kg_root: Path as first arg
+ops.read_node(kg_root, path, parents="immediate")
+ops.write_node(kg_root, path, content, meta=..., create=...)
+ops.list_nodes(kg_root, path=".", recursive=False)
+ops.search_nodes(kg_root, query, limit=10)
 ops.read_entity(kg_root, path)
 ops.write_entity(kg_root, path, content, meta=..., create=..., reasoning=...)
 ops.update_summaries(kg_root, updates)
@@ -61,6 +65,10 @@ from kvault.core import (
     EntityResearcher,
     ResearchCandidate,
     ObservabilityLogger,
+    SearchDocument,
+    SearchResult,
+    scan_search_documents,
+    search_nodes,
     SummaryQualityIssue,
     audit_summary_quality,
     format_summary_quality_warnings,
@@ -81,14 +89,15 @@ from kvault.core.storage import (
 ## CLI Commands
 
 ```bash
-# Entity operations
-kvault read <path> [--json]
+# Node operations
+kvault search <query> [--json]
+kvault read <path> [--parents none|immediate|all] [--json]
 kvault write <path> [--create] [--reasoning TEXT] [--json] < content.md
-kvault list [category] [--json]
+kvault list [path] [--recursive] [--json]
+
+# Compatibility operations
 kvault delete <path> [--force] [--json]
 kvault move <source> <target> [--json]
-
-# Summary operations
 kvault read-summary <path> [--json]
 kvault write-summary <path> [--json] < content.md
 kvault update-summaries [--json] < updates.json
@@ -107,7 +116,6 @@ kvault check [--kb-root PATH] [--json] [--no-summary-quality]
 kvault init <path> [--name NAME]
 kvault artifact daily [--kb-root PATH] [--date YYYY-MM-DD] [--force] [--json]
 kvault log summary [--db PATH] [--session-id ID] [--json]
-kvault ui [--kb-root PATH] [--port PORT] [--host HOST]
 
 # MCP compatibility
 kvault-mcp --kb-root PATH
@@ -127,7 +135,9 @@ Prefer adding tests in `tests/` whenever changing:
 - operations layer behavior
 - validation/path logic
 - CLI commands/output
+- MCP compatibility tools
 - research/matching heuristics
+- structured search ranking/output
 
 ## Release Hygiene
 

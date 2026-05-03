@@ -10,10 +10,11 @@ Key workflow (2-call write):
 
 import json
 import os
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from kvault.core.frontmatter import build_frontmatter, parse_frontmatter
 from kvault.core.storage import (
@@ -32,6 +33,8 @@ from kvault.core.validation import (
 )
 
 _ALLOWED_ROOTS_ENV = "KVAULT_ALLOWED_ROOTS"
+_NODE_COMPONENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_HEADING_RE = re.compile(r"^\s{0,3}#\s+(.+?)\s*$", re.MULTILINE)
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +120,173 @@ def derive_display_alias(entity_path: str) -> str:
     return leaf.replace("_", " ").strip().title() or leaf
 
 
+def _normalize_node_path(path: str) -> str:
+    path = normalize_path(path or ".")
+    return "." if path in ("", ".") else path
+
+
+def _validate_node_path(path: str) -> Tuple[bool, Optional[str]]:
+    if path == ".":
+        return True, None
+    parts = path.split("/")
+    for part in parts:
+        if not _NODE_COMPONENT_RE.match(part):
+            return (
+                False,
+                f"Invalid path component: '{part}' (must be lowercase alphanumeric with underscores)",
+            )
+    return True, None
+
+
+def _summary_path_for_node(kg_root: Path, path: str) -> Path:
+    return kg_root / "_summary.md" if path == "." else kg_root / path / "_summary.md"
+
+
+def _summary_rel_path(path: str) -> str:
+    return "_summary.md" if path == "." else f"{path}/_summary.md"
+
+
+def _safe_iterdir(path: Path) -> Iterable[Path]:
+    try:
+        return list(path.iterdir())
+    except OSError:
+        return []
+
+
+def _parent_path(path: str) -> Optional[str]:
+    if path == ".":
+        return None
+    parts = Path(path).parts
+    if len(parts) <= 1:
+        return "."
+    return str(Path(*parts[:-1]))
+
+
+def _ancestor_node_paths(path: str) -> List[str]:
+    if path == ".":
+        return []
+    ancestors: List[str] = []
+    current = _parent_path(path)
+    while current is not None:
+        ancestors.append(current)
+        current = _parent_path(current)
+    return ancestors
+
+
+def _node_kind(kg_root: Path, path: str) -> str:
+    if path == ".":
+        return "root"
+    parts = Path(path).parts
+    node_dir = kg_root / path
+    has_child_nodes = any(
+        child.is_dir() and not child.name.startswith(".") and (child / "_summary.md").exists()
+        for child in _safe_iterdir(node_dir)
+    )
+    if len(parts) < 2 or has_child_nodes:
+        return "category"
+    return "entity"
+
+
+def _extract_title(path: str, meta: Dict[str, Any], content: str) -> str:
+    for key in ("name", "title", "topic"):
+        value = meta.get(key)
+        if value:
+            return str(value)
+    match = _HEADING_RE.search(content)
+    if match:
+        return match.group(1).strip()
+    if path == ".":
+        return "Root"
+    return path.split("/")[-1].replace("_", " ").title()
+
+
+def _read_node_raw(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
+    path = _normalize_node_path(path)
+    is_valid, err_msg = _validate_node_path(path)
+    if not is_valid or not validate_within_root(kg_root, path):
+        return None
+
+    summary_path = _summary_path_for_node(kg_root, path)
+    if not summary_path.exists():
+        return None
+    raw = summary_path.read_text()
+    meta, body = parse_frontmatter(raw)
+    if not meta:
+        meta_path = (kg_root if path == "." else kg_root / path) / "_meta.json"
+        if meta_path.exists():
+            with open(meta_path) as f:
+                meta = json.load(f)
+    content = body if meta else raw
+    return {
+        "path": path,
+        "kind": _node_kind(kg_root, path),
+        "summary_path": _summary_rel_path(path),
+        "meta": meta,
+        "content": content,
+        "raw_content": raw,
+        "has_frontmatter": bool(meta),
+        "title": _extract_title(path, meta, content),
+    }
+
+
+def _node_handle(kg_root: Path, path: str) -> Dict[str, Any]:
+    raw = _read_node_raw(kg_root, path) or {}
+    return {
+        "path": path,
+        "kind": _node_kind(kg_root, path),
+        "title": raw.get("title")
+        or _extract_title(path, raw.get("meta", {}), raw.get("content", "")),
+        "summary_path": _summary_rel_path(path),
+    }
+
+
+def _child_node_paths(kg_root: Path, path: str) -> List[str]:
+    node_dir = kg_root if path == "." else kg_root / path
+    children: List[str] = []
+    for child in _safe_iterdir(node_dir):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if not (child / "_summary.md").exists():
+            continue
+        rel_path = str(child.relative_to(kg_root))
+        children.append(rel_path)
+    return sorted(children)
+
+
+def _read_node_shallow(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
+    raw = _read_node_raw(kg_root, path)
+    if raw is None:
+        return None
+    node = {
+        "path": raw["path"],
+        "kind": raw["kind"],
+        "summary_path": raw["summary_path"],
+        "meta": raw["meta"],
+        "content": raw["content"],
+        "has_frontmatter": raw["has_frontmatter"],
+        "title": raw["title"],
+        "children": [
+            _node_handle(kg_root, child) for child in _child_node_paths(kg_root, raw["path"])
+        ],
+    }
+    return node
+
+
+def _propagation_targets(kg_root: Path, path: str) -> List[Dict[str, Any]]:
+    targets = []
+    for ancestor in _ancestor_node_paths(path):
+        summary_data = read_summary(kg_root, ancestor)
+        if summary_data:
+            targets.append(
+                {
+                    "path": ancestor,
+                    "current_content": summary_data.get("content", ""),
+                    "has_meta": bool(summary_data.get("meta")),
+                }
+            )
+    return targets
+
+
 # ---------------------------------------------------------------------------
 # KB info (replaces _init_infrastructure output)
 # ---------------------------------------------------------------------------
@@ -167,17 +337,46 @@ def _read_entity_raw(kg_root: Path, entity_path: str) -> Optional[Dict[str, Any]
 
 def read_entity(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
     """Read entity with parent summary for sibling context."""
-    entity_data = _read_entity_raw(kg_root, path)
-    if not entity_data:
+    node = read_node(kg_root, path, parents="immediate")
+    if not node:
         return None
-    storage = SimpleStorage(kg_root)
-    ancestors = storage.get_ancestors(path)
-    if ancestors:
-        parent_summary_path = kg_root / ancestors[0] / "_summary.md"
-        if parent_summary_path.exists():
-            entity_data["parent_summary"] = parent_summary_path.read_text()
-            entity_data["parent_path"] = ancestors[0]
+    entity_data = {
+        "path": node["path"],
+        "meta": node.get("meta", {}),
+        "content": node.get("content", ""),
+        "has_frontmatter": node.get("has_frontmatter", False),
+    }
+    parent = node.get("parent")
+    if parent:
+        entity_data["parent_summary"] = parent.get("content", "")
+        entity_data["parent_path"] = parent.get("path")
     return entity_data
+
+
+def read_node(kg_root: Path, path: str, parents: str = "immediate") -> Optional[Dict[str, Any]]:
+    """Read any node summary, with parent context by default."""
+    path = _normalize_node_path(path)
+    node = _read_node_shallow(kg_root, path)
+    if node is None:
+        return None
+
+    if parents not in {"none", "immediate", "all"}:
+        return None
+
+    node["parent"] = None
+    if parents in {"immediate", "all"}:
+        parent_path = _parent_path(path)
+        if parent_path is not None:
+            node["parent"] = _read_node_shallow(kg_root, parent_path)
+
+    if parents == "all":
+        node["parents"] = [
+            parent
+            for ancestor in _ancestor_node_paths(path)
+            if (parent := _read_node_shallow(kg_root, ancestor)) is not None
+        ]
+
+    return node
 
 
 def read_summary(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
@@ -216,7 +415,7 @@ def _resolve_entity_meta(
     meta: Dict[str, Any] = dict(incoming_meta or {})
     existing_meta: Dict[str, Any] = {}
 
-    existing = _read_entity_raw(kg_root, entity_path)
+    existing = _read_node_raw(kg_root, entity_path)
     if existing and isinstance(existing.get("meta"), dict):
         existing_meta = dict(existing["meta"])
 
@@ -255,27 +454,55 @@ def write_entity(
 
     Returns result dict with path, ancestors, and journal info.
     """
-    storage = SimpleStorage(kg_root)
-
     path = normalize_path(path)
     is_valid, err_msg = validate_entity_path(path)
     if not is_valid:
         return error_response(ErrorCode.VALIDATION_ERROR, err_msg or "Invalid path")
 
-    full_path = kg_root / path
-    summary_path = full_path / "_summary.md"
+    return write_node(
+        kg_root,
+        path=path,
+        content=content,
+        meta=meta,
+        create=create,
+        reasoning=reasoning,
+        journal_source=journal_source,
+        default_source=default_source,
+    )
+
+
+def write_node(
+    kg_root: Path,
+    path: str,
+    content: str,
+    meta: Optional[Dict[str, Any]] = None,
+    create: bool = False,
+    reasoning: Optional[str] = None,
+    journal_source: Optional[str] = None,
+    default_source: str = "auto:cli",
+) -> Dict[str, Any]:
+    """Write any node summary with YAML frontmatter."""
+    path = _normalize_node_path(path)
+    is_valid, err_msg = _validate_node_path(path)
+    if not is_valid:
+        return error_response(ErrorCode.VALIDATION_ERROR, err_msg or "Invalid path")
+    if not validate_within_root(kg_root, path):
+        return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
+
+    full_path = kg_root if path == "." else kg_root / path
+    summary_path = _summary_path_for_node(kg_root, path)
 
     # Check existence
-    if create and full_path.exists():
+    if create and summary_path.exists():
         return error_response(
             ErrorCode.ALREADY_EXISTS,
-            f"Entity already exists: {path}",
+            f"Node already exists: {path}",
             hint="Use create=false to update existing entity",
         )
-    if not create and not full_path.exists():
+    if not create and not summary_path.exists():
         return error_response(
             ErrorCode.NOT_FOUND,
-            f"Entity doesn't exist: {path}",
+            f"Node doesn't exist: {path}",
             hint="Use create=true to create new entity",
         )
 
@@ -355,20 +582,8 @@ def write_entity(
             "aliases": autofilled_aliases,
         }
 
-    # Fetch ancestor summaries for propagation
-    ancestor_paths = storage.get_ancestors(path)
-    ancestor_paths.append(".")
-    propagation_targets = []
-    for ancestor in ancestor_paths:
-        summary_data = read_summary(kg_root, ancestor)
-        if summary_data:
-            propagation_targets.append(
-                {
-                    "path": ancestor,
-                    "current_content": summary_data.get("content", ""),
-                    "has_meta": bool(summary_data.get("meta")),
-                }
-            )
+    # Fetch ancestor summaries for propagation.
+    propagation_targets = _propagation_targets(kg_root, path)
     result["ancestors"] = propagation_targets
     result["propagation_required"] = len(propagation_targets) > 0
 
@@ -402,14 +617,20 @@ def write_summary(
     meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Write a single ``_summary.md``."""
-    path = normalize_path(path)
+    path = _normalize_node_path(path)
     if not validate_within_root(kg_root, path):
         return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
-    dir_path = kg_root / path
-    summary_path = dir_path / "_summary.md"
+    is_valid, err_msg = _validate_node_path(path)
+    if not is_valid:
+        return error_response(ErrorCode.VALIDATION_ERROR, err_msg or "Invalid path")
+    dir_path = kg_root if path == "." else kg_root / path
+    summary_path = _summary_path_for_node(kg_root, path)
     dir_path.mkdir(parents=True, exist_ok=True)
-    if meta:
-        full_content = build_frontmatter(meta) + content
+    existing = _read_node_raw(kg_root, path)
+    preserved_meta = existing.get("meta", {}) if existing and meta is None else {}
+    final_meta = meta if meta is not None else preserved_meta
+    if final_meta:
+        full_content = build_frontmatter(final_meta) + content
     else:
         full_content = content
     summary_path.write_text(full_content)
@@ -465,6 +686,45 @@ def list_entities(kg_root: Path, category: Optional[str] = None) -> List[Dict[st
         }
         for e in entries
     ]
+
+
+def list_nodes(kg_root: Path, path: str = ".", recursive: bool = False) -> List[Dict[str, Any]]:
+    """List child nodes under *path*."""
+    path = _normalize_node_path(path)
+    if _read_node_raw(kg_root, path) is None:
+        return []
+
+    nodes: List[Dict[str, Any]] = []
+
+    def _walk(parent: str) -> None:
+        for child in _child_node_paths(kg_root, parent):
+            nodes.append(_node_handle(kg_root, child))
+            if recursive:
+                _walk(child)
+
+    _walk(path)
+    return nodes
+
+
+def search_nodes(
+    kg_root: Path,
+    query: str,
+    limit: int = 10,
+    include_content: bool = False,
+    content_max_chars: int = 6000,
+    total_max_chars: int = 20000,
+) -> Dict[str, Any]:
+    """Search visible kvault node summaries."""
+    from kvault.core.search import search_nodes as _search_nodes
+
+    return _search_nodes(
+        kg_root,
+        query=query,
+        limit=limit,
+        include_content=include_content,
+        content_max_chars=content_max_chars,
+        total_max_chars=total_max_chars,
+    )
 
 
 def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:

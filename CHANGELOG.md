@@ -2,6 +2,36 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.9.0 - Unreleased
+
+### Added
+
+- **Node-first interface**: `kvault read`, `kvault write`, and `kvault list` now operate on any
+  visible `_summary.md` node, including root, parent branches, and leaf entities.
+- **Structured lexical search**: Added `kvault search`, Python `search_nodes(...)`, and MCP
+  `kvault_search` for node-aware discovery across path, title, aliases, headings, and body text.
+- **Node MCP tools**: Added `kvault_read_node`, `kvault_write_node`, and `kvault_list_nodes`.
+
+### Changed
+
+- **Read context**: Node reads return the full requested node plus immediate parent context by
+  default, with options for no parents or full ancestry.
+- **Write behavior**: Node writes preserve existing frontmatter when stdin omits frontmatter, and
+  still return ancestor summaries for propagation.
+- **CI dependencies**: Development validation now installs `[dev,mcp]` only.
+- **Docs and fixtures**: Public examples and test fixtures now use neutral sample data; maintainer
+  notes moved to a provider-neutral filename.
+- **Packaging metadata**: Release builds use SPDX-style license metadata.
+
+### Removed
+
+- **Optional web UI**: Removed `kvault ui`, the `[ui]` extra, and the Starlette/Jinja/htmx UI
+  package to keep kvault focused on files, CLI, MCP, and Python APIs.
+
+### Compatibility
+
+- Existing entity and summary CLI/MCP names remain available as compatibility aliases.
+
 ## 0.8.0 - 2026-02-27
 
 ### Added
@@ -47,8 +77,8 @@ All notable changes to `knowledgevault` are documented in this file.
 
 ### Changed
 
-- **Multi-tool compatibility**: Renamed `kvault/templates/CLAUDE.md` → `AGENTS.md`. `kvault init` now generates `AGENTS.md` instead of `CLAUDE.md`. Template language generalized for all AI coding agents (Claude Code, OpenAI Codex, Gemini CLI, Cursor, GitHub Copilot).
-- **README**: Added multi-tool quickstart tips table; integrity hook section now shows CLI command first with tool-specific hook as an example; replaced Claude Code-specific tool references with generic language.
+- **Multi-tool compatibility**: Renamed the tool-specific agent template to `AGENTS.md`. `kvault init` now generates `AGENTS.md`. Template language generalized for AI coding agents.
+- **README**: Added multi-tool quickstart tips table; integrity hook section now shows CLI command first with generic tool language.
 
 ### Fixed
 
@@ -69,8 +99,8 @@ All notable changes to `knowledgevault` are documented in this file.
 ### Changed
 
 - **`kvault init` output**: Changed "Next steps" from MCP config JSON to CLI usage instructions.
-- **Templates**: `kvault/templates/CLAUDE.md` rewritten for CLI workflow (shell commands, not MCP tool calls). (Renamed to `AGENTS.md` in 0.7.1.)
-- **Documentation**: README, CLAUDE.md, and CHANGELOG updated for CLI-first architecture.
+- **Templates**: The generated agent instructions were rewritten for CLI workflow (shell commands, not MCP tool calls). (Renamed to `AGENTS.md` in 0.7.1.)
+- **Documentation**: README, generated agent instructions, and CHANGELOG updated for CLI-first architecture.
 
 ### Removed
 

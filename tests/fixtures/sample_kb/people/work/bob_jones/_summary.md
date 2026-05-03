@@ -9,15 +9,15 @@ aliases:
 - Bobby
 email: bob@bigcorp.com
 relationship_type: colleague
-context: Ex-coworker from Stitch Fix
+context: Ex-coworker from Example Retail
 ---
 
 # Bob Jones
 
-Senior engineer at BigCorp. Previously at Stitch Fix.
+Senior engineer at BigCorp. Previously at Example Retail.
 
 ## Background
 
 - 10 years in data engineering
-- Built ML pipelines at Stitch Fix
+- Built ML pipelines at Example Retail
 - Now leading platform team at BigCorp

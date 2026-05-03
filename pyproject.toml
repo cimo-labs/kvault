@@ -1,22 +1,22 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledgevault"
-version = "0.8.0"
+version = "0.9.0"
 description = "CLI-first personal knowledge base for AI agents — structured, navigable, zero extra cost"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 authors = [
     {name = "Eddie Landesberg"}
 ]
-keywords = ["knowledge-graph", "entity-extraction", "llm", "data-processing", "claude-code", "personal-knowledge-base", "pkm", "llm-memory", "agent-memory", "openai-codex"]
+keywords = ["knowledge-graph", "entity-extraction", "llm", "data-processing", "personal-knowledge-base", "pkm", "llm-memory", "agent-memory"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
@@ -39,17 +39,6 @@ dev = [
     "types-PyYAML>=6.0",
     "ruff>=0.1.0",
     "pre-commit>=3.0",
-    "httpx>=0.24.0",
-]
-# Optional: Agent SDK dependencies for downstream automation integrations
-sdk = [
-    "claude-code-sdk>=0.1.0",
-]
-ui = [
-    "starlette>=0.27.0",
-    "uvicorn[standard]>=0.23.0",
-    "jinja2>=3.1.0",
-    "mistune>=3.0.0",
 ]
 mcp = [
     "mcp>=1.0.0; python_version >= '3.10'",
@@ -69,7 +58,7 @@ where = ["."]
 include = ["kvault*"]
 
 [tool.setuptools.package-data]
-kvault = ["templates/**/*", "ui/static/*", "ui/templates/**/*", "py.typed"]
+kvault = ["templates/**/*", "py.typed"]
 
 [tool.setuptools.exclude-package-data]
 "*" = ["__pycache__/*", "*.py[cod]"]

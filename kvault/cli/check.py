@@ -1,4 +1,4 @@
-"""KB Integrity Checker for Claude Code UserPromptSubmit Hook.
+"""KB integrity checker for agent hooks and manual validation.
 
 Checks:
 1. PROPAGATE: Parent summaries should be as recent as children
@@ -8,7 +8,7 @@ Checks:
 
 Exit codes:
     0 = All hard checks pass (summary-quality warnings are warn-only)
-    1 = Hard warnings found (minimal output for Claude context)
+    1 = Hard warnings found (minimal output for agent context)
 """
 
 import json

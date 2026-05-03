@@ -32,6 +32,14 @@ def _make_kb(tmp_path, name="kb"):
     (kb / "_summary.md").write_text("# Test KB\n\nMCP test knowledge base.\n")
     (kb / "people").mkdir()
     (kb / "people" / "_summary.md").write_text("# People\n\nAll contacts.\n")
+    (kb / "people" / "contacts" / "professional" / "education").mkdir(parents=True)
+    (kb / "people" / "contacts" / "_summary.md").write_text("# Contacts\n\nAll contacts.\n")
+    (kb / "people" / "contacts" / "professional" / "_summary.md").write_text(
+        "# Professional\n\nProfessional contacts.\n"
+    )
+    (kb / "people" / "contacts" / "professional" / "education" / "_summary.md").write_text(
+        "# Education\n\nEducation contacts.\n"
+    )
     return kb
 
 
@@ -60,6 +68,10 @@ def test_mcp_server_exposes_compatible_tools_and_calls(tmp_path):
     assert {
         "kvault_init",
         "kvault_status",
+        "kvault_search",
+        "kvault_read_node",
+        "kvault_write_node",
+        "kvault_list_nodes",
         "kvault_read_entity",
         "kvault_write_entity",
         "kvault_list_entities",
@@ -97,6 +109,27 @@ def test_mcp_server_exposes_compatible_tools_and_calls(tmp_path):
     )
     assert read["success"] is True
     assert read["meta"]["source"] == "auto:mcp"
+
+    node = _run_tool(
+        server,
+        "kvault_read_node",
+        {"path": "people/contacts/professional/education/person"},
+    )
+    assert node["success"] is True
+    assert node["parent"]["path"] == "people/contacts/professional/education"
+
+    nodes = _run_tool(server, "kvault_list_nodes", {"path": "people", "recursive": True})
+    assert nodes["success"] is True
+    assert any(
+        item["path"] == "people/contacts/professional/education/person" for item in nodes["nodes"]
+    )
+
+    search = _run_tool(server, "kvault_search", {"query": "deep path", "limit": 3})
+    assert search["success"] is True
+    assert any(
+        item["path"] == "people/contacts/professional/education/person"
+        for item in search["results"]
+    )
 
 
 def test_mcp_allowed_roots_blocks_disallowed_root(tmp_path, monkeypatch):

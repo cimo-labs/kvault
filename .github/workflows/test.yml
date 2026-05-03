@@ -23,7 +23,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e ".[dev,ui,mcp]"
+          pip install -e ".[dev,mcp]"
 
       - name: Lint
         run: ruff check .

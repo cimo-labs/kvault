@@ -378,6 +378,19 @@ class TestSearchNodes:
         assert len(hit["content"]) <= 20
         assert hit["content_truncated"] is True
 
+    def test_search_snippets_are_long_enough_for_context(self, ops_kb):
+        long_note = ops_kb / "projects" / "long_note"
+        long_note.mkdir(parents=True)
+        (long_note / "_summary.md").write_text(
+            "# Long Note\n\nneedle " + ("context detail " * 50) + "\n"
+        )
+
+        result = ops.search_nodes(ops_kb, "needle", limit=1)
+
+        snippet = result["results"][0]["snippet"]
+        assert result["results"][0]["path"] == "projects/long_note"
+        assert len(snippet) > 400
+
     def test_search_ignores_hidden_directories(self, ops_kb):
         hidden = ops_kb / ".hidden" / "secret"
         hidden.mkdir(parents=True)

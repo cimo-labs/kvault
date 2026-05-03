@@ -17,6 +17,7 @@ from kvault.core.frontmatter import parse_frontmatter
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _H_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", re.MULTILINE)
+_SNIPPET_MAX_CHARS = 440
 
 
 @dataclass(frozen=True)
@@ -240,7 +241,10 @@ def _idf(documents: Sequence[SearchDocument], query_tokens: Sequence[str]) -> Di
 
 
 def _snippet(
-    doc: SearchDocument, query: str, query_tokens: Sequence[str], max_chars: int = 220
+    doc: SearchDocument,
+    query: str,
+    query_tokens: Sequence[str],
+    max_chars: int = _SNIPPET_MAX_CHARS,
 ) -> str:
     text = re.sub(r"\s+", " ", doc.content).strip()
     if not text:

@@ -6,9 +6,10 @@ All notable changes to `knowledgevault` are documented in this file.
 
 ### Added
 
-- **Claude Code skill** (`skills/kvault/SKILL.md`): a generic, copy-into-`~/.claude/skills/`
-  skill carrying the orient → research → write → propagate workflow and the maintenance
-  playbook. README documents the one-command install.
+- **Agent skill** (`skills/kvault/SKILL.md`): the orient → research → write → propagate
+  workflow and maintenance playbook in the portable `SKILL.md` agent-skills format, usable
+  by any skills-aware agent runtime (Claude Code, OpenClaw, etc.). README documents
+  per-tool installs.
 
 ### Changed
 

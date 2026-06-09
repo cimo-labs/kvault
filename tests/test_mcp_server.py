@@ -68,6 +68,7 @@ def test_mcp_server_exposes_compatible_tools_and_calls(tmp_path):
     assert {
         "kvault_init",
         "kvault_status",
+        "kvault_tree",
         "kvault_search",
         "kvault_read_node",
         "kvault_write_node",
@@ -327,3 +328,32 @@ def test_mcp_allowed_roots_blocks_disallowed_root(tmp_path, monkeypatch):
 
     assert result["success"] is False
     assert result["error_code"] == "validation_error"
+
+
+def test_mcp_tree_outline(tmp_path):
+    kb = _make_kb(tmp_path)
+    server = create_server(kb)
+
+    text_result = _run_tool(server, "kvault_tree", {})
+    assert text_result["success"] is True
+    assert text_result["total_nodes"] == 5
+    assert text_result["shown_nodes"] == 5
+    assert isinstance(text_result["outline"], str)
+    assert "[1 children, 4 total]" in text_result["outline"]
+
+    depth_result = _run_tool(server, "kvault_tree", {"depth": 1})
+    assert "…3 nodes below" in depth_result["outline"]
+    assert depth_result["shown_nodes"] == 2
+
+    json_result = _run_tool(server, "kvault_tree", {"format": "json"})
+    assert json_result["success"] is True
+    assert json_result["outline"]["path"] == "."
+    assert json_result["outline"]["descendants_count"] == 4
+
+    bad_format = _run_tool(server, "kvault_tree", {"format": "xml"})
+    assert bad_format["success"] is False
+    assert "format" in bad_format["error"]
+
+    missing = _run_tool(server, "kvault_tree", {"path": "nope"})
+    assert missing["success"] is False
+    assert missing["error_code"] == "not_found"

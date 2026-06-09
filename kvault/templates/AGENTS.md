@@ -63,7 +63,9 @@ Customize this section with your details.
 Browse the tree and read parent summaries. Use native text search for exact phrases and kvault CLI
 for structured node discovery:
 ```bash
-kvault status --json                       # Get hierarchy tree
+kvault tree                                # Annotated outline of every node — orient here first
+kvault tree people --depth 2 --gist        # Zoom into a branch with one-line gists
+kvault status --json                       # Health, entity count, compact hierarchy
 rg -n "search phrase" .                    # Raw filesystem search
 kvault search "search phrase" --json       # Structured node search
 kvault read <path> --json                  # Returns node + parent summary
@@ -108,6 +110,8 @@ EOF
 
 MCP clients should use strict parent-summary tools when available:
 
+0. Orient first with `kvault_tree` (annotated outline with counts, recency, and explicit
+   truncation markers — far cheaper than recursive `kvault_list_nodes`).
 1. Call `kvault_write_node` with Markdown body content and metadata in `meta`.
 2. For each returned ancestor, closest-first, call `kvault_prepare_summary_update`.
 3. Compose the parent summary from the returned parent and immediate child summaries.
@@ -146,7 +150,7 @@ Context and notes here.
 **Compatibility:** `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors`, `kvault delete`, `kvault move`
 **Journal:** `kvault journal --source TEXT` (stdin JSON)
 **Validation:** `kvault validate`, `kvault check`
-**Status:** `kvault status`, `kvault tree`
+**Status:** `kvault status`, `kvault tree [path] [--depth N] [--max-children N] [--gist]`
 
 All agent-facing commands support `--json` for machine-readable output and `--kb-root` to specify
 the KB root (auto-detected from cwd by default). These flags work before or after the subcommand:

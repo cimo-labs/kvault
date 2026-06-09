@@ -176,18 +176,58 @@ def status(ctx: click.Context, kb_root: Optional[Path], as_json: bool) -> None:
 
 
 @cli.command("tree")
-@click.option("--depth", type=int, default=3, help="Max depth to display")
+@click.argument("path", default=".", required=False)
+@click.option(
+    "--depth", type=int, default=None, help="Levels to show below PATH (default: unlimited)"
+)
+@click.option(
+    "--max-children",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Children shown per node before eliding",
+)
+@click.option("--gist", is_flag=True, default=False, help="Append a one-line gist per node")
 @common_options
 @click.pass_context
-def tree(ctx: click.Context, depth: int, kb_root: Optional[Path], as_json: bool) -> None:
-    """Print KB hierarchy tree."""
+def tree(
+    ctx: click.Context,
+    path: str,
+    depth: Optional[int],
+    max_children: int,
+    gist: bool,
+    kb_root: Optional[Path],
+    as_json: bool,
+) -> None:
+    """Print an annotated outline of the KB node tree.
+
+    Shows titles, child/descendant counts, and most-recent activity per
+    node. Anything pruned by --depth or --max-children is called out with
+    an explicit truncation marker.
+    """
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
-    hierarchy = ops.build_hierarchy_tree(kb_root, max_depth=depth)
+    outline = ops.build_outline(
+        kb_root, path=path, depth=depth, max_children=max_children, include_gist=gist
+    )
+    if outline is None:
+        raise click.ClickException(f"Node not found: {path}")
+    counts = ops.outline_counts(outline)
     if ctx.obj.get("as_json"):
-        output_json({"kg_root": str(kb_root), "depth": depth, "hierarchy": hierarchy})
+        output_json(
+            {
+                "kg_root": str(kb_root),
+                "path": outline["path"],
+                "depth": depth,
+                "max_children": max_children,
+                "include_gist": gist,
+                "total_nodes": counts["total_nodes"],
+                "shown_nodes": counts["shown_nodes"],
+                "outline": outline,
+            }
+        )
     else:
-        click.echo(hierarchy)
+        click.echo(ops.render_outline_text(outline))
 
 
 @cli.group("artifact")

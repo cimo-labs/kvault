@@ -233,6 +233,46 @@ def create_server(kb_root: Path | str) -> Any:
         nodes = ops.list_nodes(root, path=path, recursive=recursive)
         return success_response({"nodes": nodes, "count": len(nodes)})
 
+    @server.tool(name="kvault_tree")
+    def kvault_tree(
+        path: str = ".",
+        depth: Optional[int] = None,
+        max_children: int = 20,
+        gist: bool = False,
+        format: str = "text",
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Annotated outline of the node tree — orient here before reading.
+
+        Shows titles, child/descendant counts, and most-recent activity per
+        node, with explicit markers for anything pruned by depth or
+        max_children. Text format is the cheapest full-tree view.
+        """
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        if format not in {"text", "json"}:
+            return error_response(
+                ErrorCode.VALIDATION_ERROR,
+                "format must be one of: text, json",
+            )
+        outline = ops.build_outline(
+            root, path=path, depth=depth, max_children=max_children, include_gist=gist
+        )
+        if outline is None:
+            return error_response(ErrorCode.NOT_FOUND, f"Node not found: {path}")
+        counts = ops.outline_counts(outline)
+        rendered: Any = ops.render_outline_text(outline) if format == "text" else outline
+        return success_response(
+            {
+                "path": outline["path"],
+                "total_nodes": counts["total_nodes"],
+                "shown_nodes": counts["shown_nodes"],
+                "outline": rendered,
+            }
+        )
+
     @server.tool(name="kvault_search")
     def kvault_search(
         query: str,

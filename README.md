@@ -160,7 +160,7 @@ my_kb/
 | **Node** | `kvault search`, `kvault read`, `kvault write`, `kvault list` |
 | **Compatibility** | `kvault read-summary`, `kvault write-summary`, `kvault ancestors`, `kvault delete`, `kvault move` |
 | **Journal** | `kvault journal` |
-| **Status** | `kvault status`, `kvault tree` |
+| **Status** | `kvault status`, `kvault tree [path] [--depth N] [--max-children N] [--gist]` |
 | **Validation** | `kvault validate`, `kvault check` |
 | **Artifacts** | `kvault artifact daily` |
 | **Logs** | `kvault log summary` |
@@ -250,7 +250,7 @@ logging:
 | Category | Tools |
 |----------|-------|
 | **Lifecycle** | `kvault_init`, `kvault_status` |
-| **Nodes** | `kvault_search`, `kvault_read_node`, `kvault_write_node`, `kvault_list_nodes` |
+| **Nodes** | `kvault_tree`, `kvault_search`, `kvault_read_node`, `kvault_write_node`, `kvault_list_nodes` |
 | **Compatibility** | `kvault_read_entity`, `kvault_write_entity`, `kvault_list_entities`, `kvault_read_summary`, `kvault_write_summary`, `kvault_delete_entity`, `kvault_move_entity` |
 | **Summaries** | `kvault_prepare_summary_update`, `kvault_write_parent_summary`, `kvault_update_summaries`, `kvault_get_parent_summaries`, `kvault_get_ancestors`, `kvault_propagate_all` |
 | **Journal / artifacts** | `kvault_write_journal`, `kvault_generate_daily_artifact` |
@@ -262,7 +262,8 @@ create or reinitialize a KB.
 
 MCP clients should prefer the strict parent-summary workflow:
 
-1. Call `kvault_status`, `kvault_list_nodes`, or `kvault_search` to orient.
+1. Call `kvault_tree` (annotated outline with counts, recency, and explicit truncation
+   markers — the cheapest full-tree view), `kvault_search`, or `kvault_list_nodes` to orient.
 2. Call `kvault_read_node` before editing; it returns the node plus parent context.
 3. Call `kvault_write_node` with Markdown body content and durable metadata in `meta`.
 4. For each returned ancestor, closest-first, call `kvault_prepare_summary_update`.

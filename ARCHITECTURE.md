@@ -1,7 +1,7 @@
 # kvault Architecture
 
 Canonical architecture for the `knowledgevault` package.
-Last updated: 2026-05-03
+Last updated: 2026-06-09
 
 ## Overview
 
@@ -160,6 +160,8 @@ pytest -q
 
 ## Version Notes
 
+- 0.11.0: annotated tree outline (`build_outline`/`render_outline_text`) with counts, recency,
+  and explicit truncation markers; MCP `kvault_tree`; no-op writes preserve `updated`.
 - 0.10.0: strict MCP parent-summary updates with stateless child digests and hierarchy hints.
 - 0.9.0: node-first interface, structured lexical search, optional UI removed.
 - 0.8.0: UI, summary-quality audit, MCP compatibility restored, arbitrary-depth entity paths.

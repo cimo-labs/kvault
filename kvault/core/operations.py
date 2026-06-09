@@ -19,7 +19,7 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from kvault.core.frontmatter import build_frontmatter, parse_frontmatter
 from kvault.core.storage import (
@@ -93,31 +93,185 @@ def validate_within_root(kg_root: Path, path: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def build_hierarchy_tree(root: Path, max_depth: int = 3) -> str:
-    """Build a text tree representation of the KB hierarchy."""
+def _default_title(slug: str) -> str:
+    """Default display title derived from a path slug."""
+    if slug == ".":
+        return "Root"
+    return slug.replace("_", " ").title()
+
+
+def _meta_date(value: Any) -> Optional[str]:
+    """Coerce a frontmatter date (str or datetime.date) to YYYY-MM-DD, or None."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text[:10] if text else None
+
+
+def _extract_gist(content: str, limit: int = 80) -> Optional[str]:
+    """First non-heading, non-empty body line, capped at *limit* chars."""
+    for line in content.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if len(line) > limit:
+            return line[: limit - 1].rstrip() + "…"
+        return line
+    return None
+
+
+def build_outline(
+    kg_root: Path,
+    path: str = ".",
+    depth: Optional[int] = None,
+    max_children: Optional[int] = 20,
+    include_gist: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Build an annotated outline of the node tree rooted at *path*.
+
+    Always walks the full subtree to compute descendant counts and recency
+    (``updated_max``), then prunes the returned structure to *depth* levels
+    below *path* and *max_children* shown per node. Pruned regions are
+    described by explicit ``truncated`` markers so nothing is hidden
+    silently. Returns ``None`` when *path* is invalid or not a node.
+    """
+    path = _normalize_node_path(path)
+    is_valid, _ = _validate_node_path(path)
+    if not is_valid or not validate_within_root(kg_root, path):
+        return None
+    visited: Set[Path] = set()
+    return _walk_outline(kg_root, path, depth, max_children, include_gist, 0, visited)
+
+
+def _walk_outline(
+    kg_root: Path,
+    path: str,
+    depth: Optional[int],
+    max_children: Optional[int],
+    include_gist: bool,
+    level: int,
+    visited: Set[Path],
+) -> Optional[Dict[str, Any]]:
+    raw = _read_node_raw(kg_root, path)
+    if raw is None:
+        return None
+    node_dir = (kg_root if path == "." else kg_root / path).resolve()
+    if node_dir in visited:  # symlink cycle guard — depth may be unbounded
+        return None
+    visited.add(node_dir)
+
+    slug = "." if path == "." else path.split("/")[-1]
+    updated = _meta_date(raw["meta"].get("updated"))
+
+    children: List[Dict[str, Any]] = []
+    for child_path in _child_node_paths(kg_root, path):
+        child = _walk_outline(
+            kg_root, child_path, depth, max_children, include_gist, level + 1, visited
+        )
+        if child is not None:
+            children.append(child)
+
+    descendants = sum(1 + c["descendants_count"] for c in children)
+    updated_max = updated
+    for c in children:
+        cm = c["updated_max"]
+        if cm is not None and (updated_max is None or cm > updated_max):
+            updated_max = cm
+
+    node: Dict[str, Any] = {
+        "path": path,
+        "slug": slug,
+        "title": raw["title"],
+        "title_differs": raw["title"] != _default_title(slug),
+        "kind": raw["kind"],
+        "updated": updated,
+        "updated_max": updated_max,
+        "children_count": len(children),
+        "descendants_count": descendants,
+        "children": children,
+        "truncated": None,
+    }
+    if include_gist:
+        node["gist"] = _extract_gist(raw["content"])
+
+    if depth is not None and level >= depth and children:
+        hidden_max = None
+        for c in children:
+            cm = c["updated_max"]
+            if cm is not None and (hidden_max is None or cm > hidden_max):
+                hidden_max = cm
+        node["children"] = []
+        node["truncated"] = {
+            "kind": "depth",
+            "hidden_children": len(children),
+            "hidden_nodes": descendants,
+            "hidden_updated_max": hidden_max,
+        }
+    elif max_children is not None and len(children) > max_children:
+        hidden = children[max_children:]
+        hidden_max = None
+        for c in hidden:
+            cm = c["updated_max"]
+            if cm is not None and (hidden_max is None or cm > hidden_max):
+                hidden_max = cm
+        node["children"] = children[:max_children]
+        node["truncated"] = {
+            "kind": "max_children",
+            "hidden_children": len(hidden),
+            "hidden_nodes": sum(1 + c["descendants_count"] for c in hidden),
+            "hidden_updated_max": hidden_max,
+        }
+    return node
+
+
+def outline_counts(outline: Dict[str, Any]) -> Dict[str, int]:
+    """Total nodes in the walked subtree vs nodes shown after pruning."""
+
+    def _shown(node: Dict[str, Any]) -> int:
+        return 1 + sum(_shown(c) for c in node["children"])
+
+    return {
+        "total_nodes": outline["descendants_count"] + 1,
+        "shown_nodes": _shown(outline),
+    }
+
+
+def render_outline_text(outline: Dict[str, Any]) -> str:
+    """Render a ``build_outline`` structure as a compact annotated text tree."""
     lines: List[str] = []
 
-    def _walk(path: Path, prefix: str = "", depth: int = 0) -> None:
-        if depth > max_depth:
-            return
-        if path.name.startswith("."):
-            return
-        try:
-            subdirs = sorted(p for p in path.iterdir() if p.is_dir() and not p.name.startswith("."))
-        except PermissionError:
-            return
-        for i, subdir in enumerate(subdirs):
-            is_last = i == len(subdirs) - 1
-            connector = "└── " if is_last else "├── "
-            extension = "    " if is_last else "│   "
-            has_summary = (subdir / "_summary.md").exists()
-            marker = " ✓" if has_summary else ""
-            lines.append(f"{prefix}{connector}{subdir.name}/{marker}")
-            _walk(subdir, prefix + extension, depth + 1)
+    def _fmt(node: Dict[str, Any], label: str) -> str:
+        parts = [label]
+        if node["title_differs"]:
+            parts.append(f"« {node['title']} »")
+        if node["children_count"]:
+            parts.append(f"[{node['children_count']} children, {node['descendants_count']} total]")
+        if node["updated_max"]:
+            parts.append(f"~{node['updated_max']}")
+        line = " ".join(parts)
+        if node.get("gist"):
+            line += f" — {node['gist']}"
+        return line
 
-    has_root_summary = (root / "_summary.md").exists()
-    lines.append(f"./{' ✓' if has_root_summary else ''}")
-    _walk(root, "", 0)
+    def _walk(node: Dict[str, Any], indent: str, label: str) -> None:
+        lines.append(indent + _fmt(node, label))
+        for child in node["children"]:
+            _walk(child, indent + "  ", child["slug"])
+        truncated = node["truncated"]
+        if truncated is None:
+            return
+        if truncated["kind"] == "depth":
+            marker = f"…{truncated['hidden_nodes']} nodes below"
+            if truncated["hidden_updated_max"]:
+                marker += f" (deepest activity ~{truncated['hidden_updated_max']})"
+        else:
+            marker = (
+                f"…{truncated['hidden_children']} more children "
+                f"({truncated['hidden_nodes']} nodes) elided"
+            )
+        lines.append(indent + "  " + marker)
+
+    _walk(outline, "", outline["path"])
     return "\n".join(lines)
 
 
@@ -202,9 +356,7 @@ def _extract_title(path: str, meta: Dict[str, Any], content: str) -> str:
     match = _HEADING_RE.search(content)
     if match:
         return match.group(1).strip()
-    if path == ".":
-        return "Root"
-    return path.split("/")[-1].replace("_", " ").title()
+    return _default_title("." if path == "." else path.split("/")[-1])
 
 
 def _read_node_raw(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
@@ -357,10 +509,11 @@ def get_kb_info(kg_root: Path) -> Dict[str, Any]:
     """Return hierarchy, entity count, and root summary for *kg_root*."""
     root_summary_path = kg_root / "_summary.md"
     root_summary = root_summary_path.read_text() if root_summary_path.exists() else ""
+    outline = build_outline(kg_root, depth=2)
     return {
         "kg_root": str(kg_root),
         "root_summary": root_summary,
-        "hierarchy": build_hierarchy_tree(kg_root),
+        "hierarchy": render_outline_text(outline) if outline else "",
         "entity_count": count_entities(kg_root),
     }
 
@@ -532,6 +685,24 @@ def write_entity(
     )
 
 
+def _is_noop_node_write(
+    existing: Dict[str, Any], content: str, resolved_meta: Dict[str, Any]
+) -> bool:
+    """True when *content* and *resolved_meta* match the existing node.
+
+    ``created``/``updated`` are excluded from the comparison — they are the
+    fields a no-op write must not refresh. Body comparison mirrors the
+    ``parse_frontmatter`` round-trip (leading newlines stripped).
+    """
+
+    def _stable(meta: Dict[str, Any]) -> Dict[str, Any]:
+        return {k: v for k, v in meta.items() if k not in ("created", "updated")}
+
+    return existing["content"] == content.lstrip("\n") and _stable(
+        existing.get("meta") or {}
+    ) == _stable(resolved_meta)
+
+
 def write_node(
     kg_root: Path,
     path: str,
@@ -615,11 +786,22 @@ def write_node(
             if isinstance(first, str):
                 meta["name"] = first
 
-    # Date fields
+    # Date fields — a no-op rewrite (same body, same meta) keeps existing
+    # created/updated so bulk re-writes don't flatten the recency signal.
     today = datetime.now().strftime("%Y-%m-%d")
     if create:
         meta["created"] = today
-    meta["updated"] = today
+        meta["updated"] = today
+    else:
+        existing = _read_node_raw(kg_root, path)
+        if existing is not None and _is_noop_node_write(existing, content, meta):
+            for key in ("created", "updated"):
+                if key in existing["meta"]:
+                    meta[key] = existing["meta"][key]
+                else:
+                    meta.pop(key, None)
+        else:
+            meta["updated"] = today
 
     # Write
     frontmatter = build_frontmatter(meta)

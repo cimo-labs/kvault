@@ -67,6 +67,22 @@ The agent reads the generated `AGENTS.md` and starts working.
 | **Terminal agents** | Tell the agent: *"Read AGENTS.md for the kvault workflow, then use shell commands to manage ./my_kb"* |
 | **Custom-instruction agents** | Paste the generated `AGENTS.md` workflow into the workspace or system instructions |
 
+**Agent skill included.** [`skills/kvault/SKILL.md`](https://github.com/cimo-labs/kvault/blob/main/skills/kvault/SKILL.md)
+carries the full workflow in the portable `SKILL.md` agent-skills format, so the agent loads
+it on demand from any directory — no per-KB setup. Install it wherever your tool discovers
+skills:
+
+```bash
+# Claude Code
+cp -r skills/kvault ~/.claude/skills/kvault
+
+# OpenClaw (per workspace)
+cp -r skills/kvault ~/.openclaw/workspace/skills/kvault
+
+# Other agents: copy into your tool's skills directory, or paste the
+# SKILL.md body into its custom instructions
+```
+
 Already have data? Point your agent at an export from a chat, email, or notes tool — see
 [docs/importing-data.md](https://github.com/cimo-labs/kvault/blob/main/docs/importing-data.md).
 

@@ -2,6 +2,21 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## Unreleased
+
+### Added
+
+- **Agent skill** (`skills/kvault/SKILL.md`): the orient → research → write → propagate
+  workflow and maintenance playbook in the portable `SKILL.md` agent-skills format, usable
+  by any skills-aware agent runtime (Claude Code, OpenClaw, etc.). README documents
+  per-tool installs.
+
+### Changed
+
+- **README overhauled**: leads with real annotated `kvault tree` output, motivates the
+  parent-summaries-as-index design, adds the maintenance loop; comparison table removed,
+  import tutorial moved to `docs/importing-data.md`, MCP section condensed.
+
 ## 0.11.1 - 2026-06-09
 
 ### Added

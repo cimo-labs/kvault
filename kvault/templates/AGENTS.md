@@ -124,6 +124,23 @@ MCP clients should use strict parent-summary tools when available:
 
 ---
 
+## Periodic Maintenance
+
+Start KB sessions with an orientation pass: `kvault tree`. The annotated outline shows child
+counts, descendant totals, and most-recent activity (`~date`) per branch. Act on what it shows:
+
+| Signal | Action |
+|--------|--------|
+| Branch with >10 children (`[N children, ...]`) | Split into subgroups — by type first, else alphabetical (`a_m`/`n_z`), else temporal (by year). Create new parent dirs with `_summary.md` → `kvault move` each entity → update ancestor summaries → `kvault validate` |
+| Branch `~updated_max` older than ~6 months | Review for stale or dead content; update, merge, or prune |
+| `SUMMARY:` warnings from `kvault check` | Rewrite the flagged parent summaries as comprehensive rollups — this is real maintenance work even though the command exits 0 |
+| Near-duplicate titles or aliases | Verify identifiers exactly (email/phone) → merge into the canonical entity → delete the duplicate |
+
+Before creating any node: `kvault search "<name/topic>" --json` and `kvault tree <target-branch>`.
+Update beats create; journal-only beats trivial create.
+
+---
+
 ## Node Format
 
 ```markdown

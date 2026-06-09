@@ -2,6 +2,16 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.11.1 - 2026-06-09
+
+### Added
+
+- **Periodic Maintenance guidance in generated `AGENTS.md`**: `kvault init` now ships a
+  maintenance playbook with deterministic refactor triggers driven by `kvault tree`
+  annotations (child counts, subtree recency) and `kvault check` summary-quality warnings —
+  split fat branches, review stale branches, rewrite flagged rollups, merge duplicates.
+  Reinforces search-before-create discipline.
+
 ## 0.11.0 - 2026-06-09
 
 ### Added

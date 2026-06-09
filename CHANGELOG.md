@@ -2,6 +2,20 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## Unreleased
+
+### Added
+
+- **Claude Code skill** (`skills/kvault/SKILL.md`): a generic, copy-into-`~/.claude/skills/`
+  skill carrying the orient → research → write → propagate workflow and the maintenance
+  playbook. README documents the one-command install.
+
+### Changed
+
+- **README overhauled**: leads with real annotated `kvault tree` output, motivates the
+  parent-summaries-as-index design, adds the maintenance loop; comparison table removed,
+  import tutorial moved to `docs/importing-data.md`, MCP section condensed.
+
 ## 0.11.1 - 2026-06-09
 
 ### Added

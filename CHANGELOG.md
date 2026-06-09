@@ -2,7 +2,7 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
-## 0.11.0 - Unreleased
+## 0.11.0 - 2026-06-09
 
 ### Added
 

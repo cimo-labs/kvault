@@ -72,7 +72,57 @@ class TestHelp:
     def test_tree(self, runner, cli_kb):
         result = runner.invoke(cli, ["--kb-root", str(cli_kb), "tree"])
         assert result.exit_code == 0
-        assert "people/" in result.output
+        assert "people" in result.output
+        assert "[2 children, 3 total]" in result.output
+
+
+# ============================================================================
+# Tree (annotated outline)
+# ============================================================================
+
+
+class TestTree:
+    def test_default_depth_unlimited(self, runner, cli_kb_with_entity):
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb_with_entity), "tree"])
+        assert result.exit_code == 0
+        assert "alice_smith" in result.output  # depth 3 — hidden under the old default
+        assert "…" not in result.output
+
+    def test_depth_truncation_marker(self, runner, cli_kb_with_entity):
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb_with_entity), "tree", "--depth", "1"])
+        assert result.exit_code == 0
+        assert "alice_smith" not in result.output
+        assert "…2 nodes below" in result.output
+
+    def test_max_children_elision(self, runner, cli_kb):
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "tree", "--max-children", "1"])
+        assert result.exit_code == 0
+        assert "more children" in result.output
+
+    def test_gist_flag(self, runner, cli_kb):
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "tree", "--gist"])
+        assert result.exit_code == 0
+        assert "— All contacts." in result.output
+
+    def test_subtree_path(self, runner, cli_kb):
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "tree", "people"])
+        assert result.exit_code == 0
+        assert result.output.splitlines()[0].startswith("people")
+        assert "projects" not in result.output
+
+    def test_json_envelope(self, runner, cli_kb):
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "--json", "tree"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["path"] == "."
+        assert data["total_nodes"] == 4
+        assert data["shown_nodes"] == 4
+        assert data["outline"]["children_count"] == 2
+
+    def test_missing_node_fails(self, runner, cli_kb):
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "tree", "nope"])
+        assert result.exit_code != 0
+        assert "Node not found" in result.output
 
 
 # ============================================================================

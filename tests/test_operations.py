@@ -687,3 +687,220 @@ class TestSecurity:
     def test_delete_rejects_escape(self, ops_kb):
         result = ops.delete_entity(ops_kb, "../escaped")
         assert not result["success"]
+
+
+# ============================================================================
+# Outline (annotated tree)
+# ============================================================================
+
+
+@pytest.fixture
+def outline_kb(tmp_path):
+    """Four-level KB with dates, custom titles, and a non-node directory."""
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / ".kvault").mkdir()
+    (kb / "_summary.md").write_text("# Test KB\n\nRoot gist line.\n")
+    (kb / "journal").mkdir()  # no _summary.md — not a node
+    (kb / "people").mkdir()
+    (kb / "people" / "_summary.md").write_text(
+        "---\nupdated: '2026-01-10'\n---\n\n# People\n\nAll people.\n"
+    )
+    (kb / "people" / "contacts").mkdir()
+    (kb / "people" / "contacts" / "_summary.md").write_text("# Contacts\n")
+    (kb / "people" / "friends").mkdir()
+    (kb / "people" / "friends" / "_summary.md").write_text(
+        "---\nupdated: '2026-02-01'\n---\n\n# Friends\n\nFriend list.\n"
+    )
+    (kb / "people" / "friends" / "alice").mkdir()
+    (kb / "people" / "friends" / "alice" / "_summary.md").write_text(
+        "---\nname: Alice Q\nupdated: '2026-03-05'\n---\n\n# Alice Q\n\n"
+        + "A very long gist line that should be capped because it exceeds the eighty "
+        + "character limit by a fair margin.\n"
+    )
+    (kb / "people" / "friends" / "bob").mkdir()
+    # unquoted date → YAML parses a datetime.date object
+    (kb / "people" / "friends" / "bob" / "_summary.md").write_text(
+        "---\nupdated: 2026-04-01\n---\n\n# Bob\n"
+    )
+    (kb / "projects").mkdir()
+    (kb / "projects" / "_summary.md").write_text(
+        "---\nupdated: '2026-01-20'\n---\n\n# Projects\n\nAll projects.\n"
+    )
+    return kb
+
+
+class TestBuildOutline:
+    def test_counts(self, outline_kb):
+        outline = ops.build_outline(outline_kb)
+        assert outline is not None
+        assert outline["children_count"] == 2  # journal/ excluded (no _summary.md)
+        assert outline["descendants_count"] == 6
+        people = next(c for c in outline["children"] if c["path"] == "people")
+        assert people["children_count"] == 2
+        assert people["descendants_count"] == 4
+        assert ops.outline_counts(outline) == {"total_nodes": 7, "shown_nodes": 7}
+
+    def test_non_node_dirs_excluded(self, outline_kb):
+        outline = ops.build_outline(outline_kb)
+        assert "journal" not in [c["path"] for c in outline["children"]]
+
+    def test_updated_max_bubbles(self, outline_kb):
+        outline = ops.build_outline(outline_kb)
+        assert outline["updated_max"] == "2026-04-01"  # bob, three levels down
+        people = next(c for c in outline["children"] if c["path"] == "people")
+        assert people["updated"] == "2026-01-10"
+        assert people["updated_max"] == "2026-04-01"
+
+    def test_yaml_date_object_coerced(self, outline_kb):
+        friends = ops.build_outline(outline_kb, path="people/friends")
+        bob = next(c for c in friends["children"] if c["slug"] == "bob")
+        assert bob["updated"] == "2026-04-01"
+
+    def test_missing_updated_renders_without_tilde(self, outline_kb):
+        outline = ops.build_outline(outline_kb)
+        text = ops.render_outline_text(outline)
+        contacts_line = next(line for line in text.splitlines() if "contacts" in line)
+        assert "~" not in contacts_line
+
+    def test_title_differs(self, outline_kb):
+        friends = ops.build_outline(outline_kb, path="people/friends")
+        alice = next(c for c in friends["children"] if c["slug"] == "alice")
+        assert alice["title"] == "Alice Q"
+        assert alice["title_differs"] is True
+        assert friends["title_differs"] is False  # "Friends" == default for slug
+        text = ops.render_outline_text(friends)
+        assert "« Alice Q »" in text
+        assert "« Friends »" not in text
+
+    def test_gist_off_by_default(self, outline_kb):
+        outline = ops.build_outline(outline_kb)
+        assert "gist" not in outline
+
+    def test_gist_extraction_and_cap(self, outline_kb):
+        outline = ops.build_outline(outline_kb, include_gist=True)
+        assert outline["gist"] == "Root gist line."
+        friends = ops.build_outline(outline_kb, path="people/friends", include_gist=True)
+        alice = next(c for c in friends["children"] if c["slug"] == "alice")
+        assert len(alice["gist"]) <= 80
+        assert alice["gist"].endswith("…")
+        bob = next(c for c in friends["children"] if c["slug"] == "bob")
+        assert bob["gist"] is None  # heading-only body
+
+    def test_depth_truncation(self, outline_kb):
+        outline = ops.build_outline(outline_kb, depth=1)
+        people = next(c for c in outline["children"] if c["path"] == "people")
+        assert people["children"] == []
+        assert people["children_count"] == 2  # real count survives pruning
+        assert people["truncated"] == {
+            "kind": "depth",
+            "hidden_children": 2,
+            "hidden_nodes": 4,
+            "hidden_updated_max": "2026-04-01",
+        }
+        text = ops.render_outline_text(outline)
+        assert "…4 nodes below (deepest activity ~2026-04-01)" in text
+        assert ops.outline_counts(outline) == {"total_nodes": 7, "shown_nodes": 3}
+
+    def test_max_children_truncation(self, outline_kb):
+        friends = ops.build_outline(outline_kb, path="people/friends", max_children=1)
+        assert [c["slug"] for c in friends["children"]] == ["alice"]  # alphabetical
+        assert friends["descendants_count"] == 2  # aggregates unaffected by pruning
+        assert friends["truncated"] == {
+            "kind": "max_children",
+            "hidden_children": 1,
+            "hidden_nodes": 1,
+            "hidden_updated_max": "2026-04-01",
+        }
+        text = ops.render_outline_text(friends)
+        assert "…1 more children (1 nodes) elided" in text
+
+    def test_subtree_start_path(self, outline_kb):
+        outline = ops.build_outline(outline_kb, path="people")
+        assert outline["path"] == "people"
+        text = ops.render_outline_text(outline)
+        assert text.splitlines()[0].startswith("people")
+
+    def test_invalid_and_missing_paths(self, outline_kb):
+        assert ops.build_outline(outline_kb, path="bad-component") is None
+        assert ops.build_outline(outline_kb, path="../escape") is None
+        assert ops.build_outline(outline_kb, path="nope") is None
+
+    def test_uppercase_path_normalized(self, outline_kb):
+        # normalize_path lowercases — "People" resolves like read_node does
+        outline = ops.build_outline(outline_kb, path="People")
+        assert outline is not None
+        assert outline["path"] == "people"
+
+    def test_symlink_cycle_guard(self, outline_kb):
+        (outline_kb / "people" / "loop").symlink_to(outline_kb)
+        outline = ops.build_outline(outline_kb)
+        assert outline is not None
+        people = next(c for c in outline["children"] if c["path"] == "people")
+        assert "loop" not in [c["slug"] for c in people["children"]]
+
+    def test_get_kb_info_uses_outline(self, outline_kb):
+        info = ops.get_kb_info(outline_kb)
+        assert "[2 children, 6 total]" in info["hierarchy"]
+
+    def test_get_kb_info_tolerates_missing_root_summary(self, tmp_path):
+        kb = tmp_path / "bare"
+        kb.mkdir()
+        info = ops.get_kb_info(kb)
+        assert info["hierarchy"] == ""
+
+
+# ============================================================================
+# No-op writes preserve dates
+# ============================================================================
+
+
+class TestNoopWritePreservesDates:
+    @pytest.fixture
+    def dated_entity(self, empty_ops_kb):
+        result = ops.write_entity(
+            empty_ops_kb,
+            "people/friends/carol",
+            "# Carol\n\nA friend.\n",
+            meta={"source": "test", "aliases": ["Carol"]},
+            create=True,
+        )
+        assert result["success"]
+        summary = empty_ops_kb / "people" / "friends" / "carol" / "_summary.md"
+        from datetime import datetime
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        summary.write_text(
+            summary.read_text()
+            .replace(f"created: '{today}'", "created: '2026-01-15'")
+            .replace(f"updated: '{today}'", "updated: '2026-01-15'")
+        )
+        return empty_ops_kb
+
+    def test_noop_write_preserves_dates(self, dated_entity):
+        body = ops.read_node(dated_entity, "people/friends/carol")["content"]
+        result = ops.write_node(dated_entity, "people/friends/carol", body)
+        assert result["success"]
+        meta = ops.read_node(dated_entity, "people/friends/carol")["meta"]
+        assert str(meta["updated"]) == "2026-01-15"
+        assert str(meta["created"]) == "2026-01-15"
+
+    def test_body_change_bumps_updated(self, dated_entity):
+        from datetime import datetime
+
+        result = ops.write_node(dated_entity, "people/friends/carol", "# Carol\n\nA dear friend.\n")
+        assert result["success"]
+        meta = ops.read_node(dated_entity, "people/friends/carol")["meta"]
+        assert str(meta["updated"]) == datetime.now().strftime("%Y-%m-%d")
+        assert str(meta["created"]) == "2026-01-15"
+
+    def test_meta_change_bumps_updated(self, dated_entity):
+        from datetime import datetime
+
+        body = ops.read_node(dated_entity, "people/friends/carol")["content"]
+        result = ops.write_node(
+            dated_entity, "people/friends/carol", body, meta={"email": "carol@example.com"}
+        )
+        assert result["success"]
+        meta = ops.read_node(dated_entity, "people/friends/carol")["meta"]
+        assert str(meta["updated"]) == datetime.now().strftime("%Y-%m-%d")

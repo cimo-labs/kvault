@@ -2,7 +2,46 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
-## 0.10.0 - Unreleased
+## 0.11.0 - 2026-06-09
+
+### Added
+
+- **Annotated tree outline**: `kvault tree` now prints a compact annotated outline — node
+  titles (when they differ from the slug), `[N children, M total]` counts on branches, and
+  `~date` most-recent-activity markers (max frontmatter `updated` across each subtree).
+- **Explicit truncation markers**: anything pruned by `--depth` or `--max-children` is called
+  out in place (`…M nodes below (deepest activity ~DATE)`, `…K more children (M nodes) elided`)
+  so a partial view can never silently hide nodes. Counts and recency are always computed from
+  the full walk, even for pruned subtrees.
+- **Tree options**: `kvault tree [PATH]` accepts a subtree start path, `--max-children`
+  (default 20), and `--gist` (one-line summary excerpt per node).
+- **MCP `kvault_tree`**: the outline over MCP (params: `path`, `depth`, `max_children`,
+  `gist`, `format: text|json`). Text format is roughly 3-4x cheaper in tokens than
+  `kvault_list_nodes(recursive=true)` while carrying more information.
+- **Python API**: `build_outline(...)`, `render_outline_text(...)`, and `outline_counts(...)`
+  in `kvault.core.operations`.
+
+### Changed
+
+- **`kvault tree` depth default**: now unlimited (was 3). The old default silently hid most
+  nodes in deep KBs; prefer explicit `--depth` plus the new truncation markers.
+- **`kvault tree --json`**: returns a structured outline envelope (`total_nodes`,
+  `shown_nodes`, nested `outline` with counts and `truncated` markers) instead of a wrapped
+  text string.
+- **`kvault status` hierarchy**: uses the annotated outline (depth 2) instead of the bare
+  directory tree.
+- **No-op writes preserve dates**: `kvault write` / `kvault_write_node` with an identical
+  body and meta no longer refreshes `updated` (or `created`), so bulk re-writes don't flatten
+  the recency signal.
+
+### Removed
+
+- **`build_hierarchy_tree`**: replaced by `build_outline` + `render_outline_text`.
+- **Tree output of non-node directories**: directories without `_summary.md` (e.g. raw
+  `journal/` subfolders) no longer appear in `kvault tree`; the `✓` summary markers are gone
+  since every listed node has a summary by definition.
+
+## 0.10.0 - 2026-05-03
 
 ### Added
 

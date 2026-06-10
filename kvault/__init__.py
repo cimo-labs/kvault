@@ -13,7 +13,7 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("knowledgevault")
 except PackageNotFoundError:
-    __version__ = "0.11.1"
+    __version__ = "0.11.2"
 
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
 from kvault.core.daily_artifacts import DailyArtifactResult, generate_daily_artifact, parse_iso_date

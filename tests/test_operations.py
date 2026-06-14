@@ -670,6 +670,64 @@ class TestValidateKB:
         assert "summary" in result
 
 
+class TestIncompleteEntity:
+    """The incomplete_entity heuristic flags stubs, not real fields named TBD."""
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "# Acme",  # title only, empty body
+            "# Acme\n\nTBD\n",  # bare placeholder
+            "# Acme\n\nContext TBD\n",  # template placeholder
+            "# Acme\n\nContext: TBD\n",  # labelled placeholder
+            "# Acme\n\n- TODO\n",  # list-marker placeholder
+            "# Acme\n\nBackground: to be determined\n",
+            "# Acme\n\nContext TBD\nNotes: TBD\n",  # all lines placeholder
+        ],
+    )
+    def test_stub_flagged(self, content):
+        assert ops._is_incomplete_entity(content) is True
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "# Acme\n\nReal customer in robotics. Lead time: TBD pending quote.\n",
+            "# Acme\n\nFounded 1988.\n\n## Pricing\nLead time: TBD\nMargin: 30%\n",
+            "# Acme\n\nA precision robotics manufacturer with active RFQs.\n",
+            "# Sarah Chen\n\nResearch scientist. Follow-up: TODO next week.\n",
+        ],
+    )
+    def test_filled_entity_with_tbd_field_not_flagged(self, content):
+        assert ops._is_incomplete_entity(content) is False
+
+    def test_regression_rich_entity_not_flagged_via_validate(self, empty_ops_kb):
+        ops.write_entity(
+            empty_ops_kb,
+            "people/contacts/cisco_drive",
+            "# Cisco Drive\n\nActive RFQ for friction plates.\n\n"
+            "## Pricing\nLead time: TBD\nVolume: 5000 units\n",
+            meta={"source": "test", "aliases": ["Cisco Drive"]},
+            create=True,
+        )
+        result = ops.validate_kb(empty_ops_kb)
+        incomplete = [i for i in result["issues"] if i["type"] == "incomplete_entity"]
+        assert incomplete == []
+
+    def test_actual_stub_flagged_via_validate(self, empty_ops_kb):
+        ops.write_entity(
+            empty_ops_kb,
+            "people/contacts/stub_co",
+            "# Stub Co\n\nContext TBD\n",
+            meta={"source": "test", "aliases": ["Stub Co"]},
+            create=True,
+        )
+        result = ops.validate_kb(empty_ops_kb)
+        incomplete = [i for i in result["issues"] if i["type"] == "incomplete_entity"]
+        assert len(incomplete) == 1
+        assert incomplete[0]["path"] == "people/contacts/stub_co"
+        assert incomplete[0]["severity"] == "info"
+
+
 # ============================================================================
 # Security
 # ============================================================================

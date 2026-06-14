@@ -40,6 +40,16 @@ from kvault.core.validation import (
 _ALLOWED_ROOTS_ENV = "KVAULT_ALLOWED_ROOTS"
 _NODE_COMPONENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _HEADING_RE = re.compile(r"^\s{0,3}#\s+(.+?)\s*$", re.MULTILINE)
+# A body line that is *only* a placeholder marker — optionally prefixed by a list
+# marker and a scaffolding label ("Context: TBD", "- TODO"). Deliberately anchored
+# to the whole line so a real datum like "Lead time: TBD" inside a filled entity
+# does NOT match.
+_PLACEHOLDER_LINE_RE = re.compile(
+    r"^[-*\s]*"
+    r"(?:(?:context|background|details|notes|summary|overview)\s*[:\-]?\s*)?"
+    r"(?:tbd|tbc|todo|to be determined|to be added|placeholder|\(placeholder\)|fill in)\.?$",
+    re.IGNORECASE,
+)
 SUMMARY_UPDATE_DIGEST_ALGORITHM = "direct-child-summary-sha256-v1"
 MAX_DIRECT_CHILDREN = 10
 
@@ -1172,6 +1182,21 @@ def write_journal(
 # ---------------------------------------------------------------------------
 
 
+def _is_incomplete_entity(content: str) -> bool:
+    """True only for stub entities — empty bodies or pure placeholder scaffolding.
+
+    An entity is incomplete when, after dropping the title/headings and blank lines,
+    it has no substantive prose, OR every remaining line is just a placeholder marker
+    (``TBD``, ``Context: TBD``, ``TODO`` …). A single placeholder field inside an
+    otherwise filled entity (e.g. ``Lead time: TBD``) does NOT count — that's a real
+    datum, not a stub.
+    """
+    body_lines = [s for ln in content.splitlines() if (s := ln.strip()) and not s.startswith("#")]
+    if not body_lines:
+        return True
+    return all(_PLACEHOLDER_LINE_RE.match(ln) for ln in body_lines)
+
+
 def validate_kb(kg_root: Path) -> Dict[str, Any]:
     """Check KB integrity and report issues."""
     issues: List[Dict[str, Any]] = []
@@ -1181,7 +1206,7 @@ def validate_kb(kg_root: Path) -> Dict[str, Any]:
         entity_data = _read_entity_raw(kg_root, entity.path)
         if entity_data:
             content = entity_data.get("content", "")
-            if "Context TBD" in content or "TBD" in content:
+            if _is_incomplete_entity(content):
                 issues.append(
                     {
                         "type": "incomplete_entity",

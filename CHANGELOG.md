@@ -2,6 +2,17 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.11.3 - 2026-06-14
+
+### Fixed
+
+- **`kvault validate` no longer false-flags filled entities as stubs.** The
+  `incomplete_entity` check matched the bare substring `"TBD"` anywhere in an entity
+  body, so a fully-populated entity with one real field like `Lead time: TBD` was
+  reported as placeholder content. It now flags an entity only when its body is empty
+  or consists *entirely* of placeholder lines (`TBD`, `Context: TBD`, `TODO`, …),
+  matched whole-line rather than as a substring.
+
 ## 0.11.2 - 2026-06-09
 
 ### Added

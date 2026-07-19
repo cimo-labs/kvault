@@ -1,181 +1,155 @@
-# Knowledge Base — Operating Rules
+# Knowledge Base Operating Rules
 
-> Instructions for AI coding agents that can read files or run shell commands.
+This knowledge base belongs to **{{OWNER_NAME}}**. Use kvault as its only mutation interface.
 
-## RULES (read these first, every session)
+## Non-negotiable rules
 
-1. **PROPAGATE ALL ANCESTORS.** After any node write, update EVERY `_summary.md` from parent to root.
-   If the node is at `people/contacts/professional/education/stella/`, update ALL FIVE:
-   - `people/contacts/professional/education/_summary.md`
-   - `people/contacts/professional/_summary.md`
-   - `people/contacts/_summary.md`
-   - `people/_summary.md`
-   - `_summary.md` (root)
+1. **Capture first.** Log every admitted memory candidate as an immutable event before navigating
+   or changing semantic nodes.
+2. **Use an absolute root.** Pass `--kb-root` on every command; do not depend on the current
+   directory in delegated or automated work.
+3. **One writer.** A coordinator may delegate read-only analysis, but only the coordinator may
+   apply, approve, or recover a reconciliation.
+4. **No direct edits.** Do not edit `_summary.md`, event, policy, schema, lock, or transaction files
+   with filesystem tools. Legacy direct mutation commands are not a substitute for reconciliation.
+5. **Search before create.** Inspect the bounded tree, search aliases and body text, and read the
+   likely node before proposing a create.
+6. **Keep evidence.** Never fabricate facts, discard conflicts, or merge identities on fuzzy
+   similarity. Use a stable identifier or request review.
+7. **Verify completion.** A semantic write is incomplete until ancestor summaries are current,
+   integrity checks pass, and every event has a recorded outcome.
+8. **Respect authority.** Do not approve destructive or sensitive work, or commit and push KB
+   changes, unless the user explicitly authorizes it.
 
-2. **FIX INTEGRITY WARNINGS FIRST.** If `kvault check` reports `[KB]` issues (or a pre-prompt hook
-   surfaces them), fix every PROPAGATE and LOG warning before doing anything else. If it reports
-   `SUMMARY:` warnings, improve those parent rollups when touching that area; they are warn-only.
+## Journal-first workflow
 
-3. **JOURNAL EVERY SESSION.** If you modified any node today, `journal/YYYY-MM/log.md`
-   must have an entry for today before the session ends. (Auto-logged if you pass `--reasoning` to `kvault write`.)
+Set the root once for the session:
 
-4. **FRONTMATTER REQUIRED.** Every node needs `source` and `aliases` in YAML frontmatter.
-   `created` and `updated` are set automatically by kvault.
-
-5. **CHECK BEFORE WRITE.** Always browse the tree and read parent summaries before creating new nodes.
-   Use `kvault search` and native tools such as `rg` before creating. Never create duplicates.
-
-6. **PARENT SUMMARIES ARE ROLLUPS.** Every parent `_summary.md` must be a comprehensive current-state
-   summary of all descendant summaries. Do not replace parent summaries with placeholders such as
-   "see child files for details."
-
----
-
-## About the Owner
-
-**This knowledge base belongs to {{OWNER_NAME}}.**
-
-Customize this section with your details.
-
----
-
-## Structure
-
-```
-./
-├── _summary.md              # Root: executive view
-├── people/
-│   ├── family/
-│   ├── friends/
-│   └── contacts/
-├── projects/
-├── accomplishments/
-├── journal/YYYY-MM/log.md
-└── .kvault/
-    └── logs.db              # Observability
-```
-
----
-
-## Writing to the Knowledge Base (2-call workflow)
-
-### 1. NAVIGATE — Find what exists and decide
-Browse the tree and read parent summaries. Use native text search for exact phrases and kvault CLI
-for structured node discovery:
 ```bash
-kvault tree                                # Annotated outline of every node — orient here first
-kvault tree people --depth 2 --gist        # Zoom into a branch with one-line gists
-kvault status --json                       # Health, entity count, compact hierarchy
-rg -n "search phrase" .                    # Raw filesystem search
-kvault search "search phrase" --json       # Structured node search
-kvault read <path> --json                  # Returns node + parent summary
-kvault list [path] --json                  # List child nodes
+KB_ROOT="/absolute/path/to/this/knowledge-base"
 ```
 
-Then decide:
+### 1. Capture
 
-| Situation | Action |
-|-----------|--------|
-| Node exists, info is relevant | **UPDATE** existing |
-| Doesn't exist, is significant | **CREATE** new |
-| Doesn't exist, is trivial | **LOG** in journal only |
+Put the exact memory candidate on stdin:
 
-### 2. WRITE — Create/update (Call 1)
 ```bash
-kvault write <path> --create --reasoning "why" --json <<'EOF'
----
-source: meeting_2026-02-25
-aliases: [Alice Smith, alice@acme.com]
----
-
-# Alice Smith
-
-Context and notes here.
-EOF
+kvault --kb-root "$KB_ROOT" --json capture \
+  --source "conversation" \
+  --source-ref "message:stable-id" \
+  --occurred-at "2026-07-19T12:34:00Z" \
+  --sensitivity personal < candidate.md
 ```
-Output: `{"success": true, "ancestors": [{path, current_content, has_meta}, ...], "journal_logged": true}`
 
-### 3. PROPAGATE — Batch-update ancestors (Call 2)
-Read the `ancestors` array from Call 1's output. For each ancestor, compose an updated summary
-incorporating the new node, then batch-update:
+Retain the event ID. If `source + source_ref` already exists with the same content, reuse the
+existing event. Treat different content under the same stable reference as a conflict.
+
+One source record normally becomes one event. Preserve its wording and omit optional occurrence
+time or source-reference metadata when the source does not supply them; never invent an identity,
+absolute date, or provenance value. Ambiguity blocks semantic promotion, not capture. When capture
+returns an existing event, inspect it with `events show` and reconcile it only if it is pending.
+
+### 2. Orient and research
+
+Start bounded, then drill into only relevant branches:
+
 ```bash
-kvault update-summaries --json <<'EOF'
-[
-  {"path": "people/friends", "content": "# Friends\n\nUpdated..."},
-  {"path": "people", "content": "# People\n\nUpdated..."},
-  {"path": ".", "content": "# Root\n\nUpdated..."}
-]
-EOF
+kvault --kb-root "$KB_ROOT" --json tree --depth 2 --max-children 20
+kvault --kb-root "$KB_ROOT" --json search "name or topic"
+kvault --kb-root "$KB_ROOT" --json tree people --depth 2 --gist
+kvault --kb-root "$KB_ROOT" --json read people/contacts/example
 ```
 
-MCP clients should use strict parent-summary tools when available:
+An `…` marker means the view is partial. Inspect that branch when it may contain the target.
 
-0. Orient first with `kvault_tree` (annotated outline with counts, recency, and explicit
-   truncation markers — far cheaper than recursive `kvault_list_nodes`).
-1. Call `kvault_write_node` with Markdown body content and metadata in `meta`.
-2. For each returned ancestor, closest-first, call `kvault_prepare_summary_update`.
-3. Compose the parent summary from the returned parent and immediate child summaries.
-4. Call `kvault_write_parent_summary` with the new content and returned `children_digest`.
-5. If `workflow_error` reports a stale digest, prepare that parent again and rewrite from the
-   current direct children.
-6. If a `hierarchy_hint` is returned, split the hierarchy when there is an obvious grouping;
-   otherwise still keep the parent summary comprehensive.
-7. Call `kvault_validate_kb` after larger edits.
+Choose one outcome per event:
 
----
+| Evidence | Decision |
+|---|---|
+| Existing identity and compatible durable fact | `update` |
+| New durable subject under an existing parent | `create` |
+| Evidence is useful but not semantic current state | `journal_only` |
+| Evidence adds nothing | `no_op` or `duplicate` |
+| Identity, replacement, structure, or authority is uncertain | leave pending / `needs_review` analyst signal |
 
-## Periodic Maintenance
+### 3. Prepare and reconcile
 
-Start KB sessions with an orientation pass: `kvault tree`. The annotated outline shows child
-counts, descendant totals, and most-recent activity (`~date`) per branch. Act on what it shows:
-
-| Signal | Action |
-|--------|--------|
-| Branch with >10 children (`[N children, ...]`) | Split into subgroups — by type first, else alphabetical (`a_m`/`n_z`), else temporal (by year). Create new parent dirs with `_summary.md` → `kvault move` each entity → update ancestor summaries → `kvault validate` |
-| Branch `~updated_max` older than ~6 months | Review for stale or dead content; update, merge, or prune |
-| `SUMMARY:` warnings from `kvault check` | Rewrite the flagged parent summaries as comprehensive rollups — this is real maintenance work even though the command exits 0 |
-| Near-duplicate titles or aliases | Verify identifiers exactly (email/phone) → merge into the canonical entity → delete the duplicate |
-
-Before creating any node: `kvault search "<name/topic>" --json` and `kvault tree <target-branch>`.
-Update beats create; journal-only beats trivial create.
-
----
-
-## Node Format
-
-```markdown
----
-created: 2026-01-23
-updated: 2026-01-23
-source: manual
-aliases: [Alice Smith, alice@acme.com]
----
-
-# Alice Smith
-
-Context and notes here.
+```bash
+kvault --kb-root "$KB_ROOT" --json reconcile prepare EVENT_ID [EVENT_ID ...] \
+  --path people/contacts/example --path people/contacts --path people --path .
+kvault --kb-root "$KB_ROOT" --json reconcile apply < plan.json
 ```
 
-**Required:** `source`, `aliases`
-**Auto-set:** `created`, `updated`
+Build the plan from current revisions returned by `prepare`. Include complete proposed node
+content and every affected parent summary through root. A move affects both old and new ancestor
+chains. kvault validates policy, source references, hierarchy, revisions, and propagation before
+committing the transaction.
 
----
+Pass every batch event ID positionally to one prepare command. The plan uses schema version 1,
+lists every event ID exactly once in `decisions`, and contains
+batch-level `reasoning` and `requested_by`. Decision outcomes are `apply`, `journal_only`,
+`duplicate`, or `no_op`. Mutations use `create`, `update`, `summary`, `move`, `merge`, or `delete`;
+existing targets carry their `sha256:` revision from `prepare`.
 
-## CLI Commands Reference
+`needs_review` is a policy result or a pre-plan signal, not a plan decision. Use `journal_only`
+only when the evidence is intentionally not semantic current state; unresolved dates, identity, or
+authority remain pending for clarification.
 
-**Node:** `kvault search`, `kvault read`, `kvault write` (stdin), `kvault list`
-**Compatibility:** `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors`, `kvault delete`, `kvault move`
-**Journal:** `kvault journal --source TEXT` (stdin JSON)
-**Validation:** `kvault validate`, `kvault check`
-**Status:** `kvault status`, `kvault tree [path] [--depth N] [--max-children N] [--gist]`
+Policy may return `needs_review` instead of applying:
 
-All agent-facing commands support `--json` for machine-readable output and `--kb-root` to specify
-the KB root (auto-detected from cwd by default). These flags work before or after the subcommand:
-`kvault read people/friends/alice --json --kb-root ~/example_kb`.
+```bash
+kvault --kb-root "$KB_ROOT" --json reconcile status RECONCILIATION_ID
+kvault --kb-root "$KB_ROOT" --json reconcile approve RECONCILIATION_ID --actor "human-id"
+```
 
----
+Never bypass review by changing files or decomposing a destructive plan into direct commands.
+Re-prepare a `stale_plan`. For an interrupted transaction, inspect and use `reconcile recover`;
+never delete its lock or staging directory.
 
-## Session Startup
+### 4. Verify
 
-No init call needed. kvault CLI auto-detects the KB root from the current directory.
-Just `cd` into (or use `--kb-root` to point at) the knowledge base and start working.
+```bash
+kvault --kb-root "$KB_ROOT" --json reconcile status RECONCILIATION_ID
+kvault --kb-root "$KB_ROOT" --json validate
+kvault --kb-root "$KB_ROOT" --json check
+```
+
+Check the process exit code and JSON `success`, `error`, and `errors` fields for every command.
+Parseable JSON is not proof of success. Leave failed work pending and report its exact blocker.
+
+## Read-only delegation
+
+Subagents may run only `events show`, `tree`, `search`, `read`, and `list`. Give each worker the
+absolute root, event IDs, branch scope, applicable rules from this file, and a JSON result contract.
+Scope is a navigation budget, not a confidentiality boundary. Workers return proposals; they do
+not capture, mutate, approve, recover, migrate, or run Git. The coordinator deduplicates all
+proposals and performs one serialized reconciliation after every worker finishes.
+
+Use delegation for multi-event or multi-branch analysis, not routine single-node updates.
+
+## Maintenance
+
+Run bounded orientation and `check` periodically. Treat these as review signals, not permission to
+perform unrelated restructuring:
+
+| Signal | Response |
+|---|---|
+| Truncated or crowded branch | Drill down; propose restructuring separately if navigation suffers |
+| Old subtree activity | Review whether current state is still accurate |
+| Missing child coverage or stale digest | Reconcile a corrected parent rollup |
+| Similar names or aliases | Compare stable identifiers; request review if identity is uncertain |
+| Pending or interrupted events | Resolve, retry, or recover them before new maintenance writes |
+
+Parent summaries describe current state. Put dated maintenance history in event/reconciliation
+records rather than accumulating it in the root summary.
+
+## Commands
+
+| Task | Commands |
+|---|---|
+| Intake | `capture`, `events list`, `events show`, `events import` |
+| Read | `tree`, `search`, `read`, `list` |
+| Reconcile | `reconcile prepare`, `reconcile apply`, `reconcile approve`, `reconcile status`, `reconcile recover` |
+| Integrity | `validate`, `check`, `status` |
+| Upgrade | `migrate`, `migrate --dry-run` |
+| Skill | `skill path`, `skill install` |

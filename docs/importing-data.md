@@ -1,44 +1,75 @@
-# Importing exported data
+# Importing source data
 
-The fastest way to see kvault working on real content is to point your agent at data you
-already have. Many chat, email, calendar, and notes tools can export JSON, Markdown, CSV,
-mbox, or zip archives. Your agent can turn those raw exports into a structured, navigable
-knowledge base in minutes.
+Chat, email, calendar, and note exports can contain durable memory candidates. Treat the raw export
+as source material, not as semantic nodes.
 
-> **Privacy note:** exports can contain sensitive information. kvault stores files locally in
-> your KB, but your agent may read excerpts while processing them and send those excerpts to
-> its model provider. Review or redact exports first if that matters for your use case.
+> Exports may contain sensitive information. kvault stores evidence locally, but the agent used to
+> interpret it may send excerpts to its model provider. Redact or choose a local provider when the
+> source requires it.
 
-## 1. Export source data
+## Keep raw data separate
 
-Download an archive from a tool you already use. Keep the raw files under `sources/` so they
-stay separate from curated nodes.
-
-## 2. Unzip it into your KB
+Place exports outside the KB root so structural validation never mistakes raw folders for semantic
+nodes:
 
 ```bash
-mkdir -p my_kb/sources/conversations
-unzip conversation-export.zip -d my_kb/sources/conversations
+mkdir -p source-data/conversations
+unzip conversation-export.zip -d source-data/conversations
+KB_ROOT="$(cd my_kb && pwd)"
+SOURCE_ROOT="$(cd source-data && pwd)"
 ```
 
-## 3. Tell your agent to process it
+## Capture candidates in bounded batches
 
+Have the importer extract one coherent memory candidate at a time and call `capture` before doing
+semantic research:
+
+```bash
+kvault --kb-root "$KB_ROOT" --json capture \
+  --source "conversation-export" \
+  --source-ref "conversation:42:message:8" \
+  --occurred-at "2026-07-01T15:20:00Z" \
+  --sensitivity personal < candidate.md
 ```
-Read through the exported files in sources/conversations.
-Extract the people, projects, and ideas I've discussed most frequently.
-Create nodes for each one in the knowledge base.
+
+Use a stable source reference when the export supplies one. This makes retries idempotent. Reusing
+a stable reference with different content is a conflict that must be investigated.
+
+Do not combine unrelated facts solely to reduce the event count. Do not create nodes directly from
+raw files or mark an event applied before reconciliation succeeds.
+
+## Reconcile after capture
+
+For each batch:
+
+1. List pending events with `kvault events list`.
+2. Inspect each candidate with `kvault events show`.
+3. Use a bounded `tree`, then scoped `search` and `read` commands.
+4. Prepare and apply one reconciliation for the batch.
+5. Confirm reconciliation status, `validate`, and `check`.
+
+Read-only subagents can analyze separate branches for a large batch, but one coordinator must merge
+their proposals and perform the serialized reconciliation.
+
+Watch the first batch closely. Correct capture granularity, stable references, sensitivity labels,
+and semantic placement before scaling up.
+
+## Importing an older capture queue
+
+`kvault events import` imports supported queue formats without bypassing the ledger. For the Moss
+OpenClaw JSONL format:
+
+```bash
+kvault --kb-root "$KB_ROOT" --json events import \
+  --format moss-capture --input /path/to/kb-inbox.jsonl \
+  --processed /path/to/kb-inbox.processed.jsonl --dry-run
+kvault --kb-root "$KB_ROOT" --json events import \
+  --format moss-capture --input /path/to/kb-inbox.jsonl \
+  --processed /path/to/kb-inbox.processed.jsonl
 ```
 
-The agent will use kvault CLI commands to create structured nodes with frontmatter and
-propagate summaries. Expect it to follow the workflow from the generated `AGENTS.md`:
-search for existing nodes before creating, write with `--reasoning`, and batch-update
-ancestor summaries after each write.
+Open records become pending. Previously processed records become `legacy_archived_unknown` because
+the old queue cannot prove whether they were promoted into semantic nodes. Import is repeat-safe;
+review aggregate counts and conflicts after both the dry-run and applying pass.
 
-## Tips
-
-- Process in batches (one week of conversations, one folder of notes) and let the agent
-  run `kvault validate` between batches.
-- Watch the first few nodes it creates and correct the structure early — category choices
-  compound.
-- After a large import, run `kvault tree` and apply the maintenance loop: split branches
-  that exceeded ~10 children, and fix any `SUMMARY:` warnings from `kvault check`.
+See [migrating-0.12.md](migrating-0.12.md) before importing into a pre-0.12 vault.

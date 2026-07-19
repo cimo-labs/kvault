@@ -1,171 +1,195 @@
 # kvault Architecture
 
-Canonical architecture for the `knowledgevault` package.
-Last updated: 2026-06-09
+Canonical architecture for `knowledgevault` 0.12.
 
-## Overview
+## Design
 
-`kvault` is a CLI-first knowledge base for AI agents. It stores nodes in Markdown
-with YAML frontmatter and exposes a stateless operations layer used by the CLI, the
-thin MCP compatibility server, and tests.
+kvault is a provider-neutral memory substrate for long-lived agents. It separates immutable source
+evidence from curated current state and derived navigation:
 
-## Design Goals
-
-1. CLI-first: agents call `kvault` commands via shell.
-2. Deterministic, Git-friendly file storage.
-3. Explicit workflow and validation boundaries.
-4. Zero external service dependencies.
-5. Portable across agent runtimes that can run shell commands or MCP tools.
-
-## System Layers
-
-```
-AI Tool Runtime
-  -> shell exec
-  -> kvault CLI (Click commands) or kvault-mcp tools
-  -> kvault.core.operations (stateless business logic)
-  -> core modules (search/storage/frontmatter/research/observability/artifacts)
-  -> filesystem knowledge base
+```text
+host agent runtime
+  → CLI or root-bound MCP
+  → capture / read / reconciliation services
+  → policy + revision + integrity enforcement
+  → transactional filesystem storage
+      ├── immutable temporal events
+      ├── curated semantic nodes
+      └── derived parent-summary indexes
 ```
 
-### CLI Layer (`kvault/cli/`)
+The agent performs semantic interpretation. kvault supplies deterministic intake, concurrency,
+policy, storage, and validation. It never calls a model provider.
 
-Primary interface. Agent-facing KB commands support `--kb-root` (auto-detected from cwd)
-and `--json`; command groups and server-launching commands may have command-specific flags.
+## Storage model
 
-- `entity.py`: node-first read, write, list; compatibility delete/move
-- `search.py`: structured lexical node search
-- `summary.py`: read-summary, write-summary, update-summaries, ancestors
-- `journal.py`: journal
-- `validate.py`: validate
-- `check.py`: check (propagation staleness and summary-quality warnings)
-- `main.py`: init, status, tree, artifact daily, log summary
-
-### MCP Layer (`kvault/mcp/`)
-
-Thin compatibility server exposed through `kvault-mcp`. Each process is bound to one KB
-root from `--kb-root` or `KVAULT_KB_ROOT`, enforces `KVAULT_ALLOWED_ROOTS`, and delegates
-tool behavior to `kvault.core.operations`. MCP clients should prefer
-`kvault_prepare_summary_update` and `kvault_write_parent_summary` for parent rollups so direct
-children are read before a parent summary is rewritten.
-
-### Operations Layer (`kvault/core/operations.py`)
-
-Stateless functions — all take `kg_root: Path` as first arg. Shared by CLI, MCP, and tests.
-Includes node read/write/list/search, compatibility entity/summary operations, and strict
-parent-summary helpers backed by direct-child digests.
-
-### Core Layer (`kvault/core/`)
-
-- `storage.py`: filesystem CRUD + `scan_entities` / entity records.
-- `search.py`: stateless structured lexical search over visible `_summary.md` nodes.
-- `frontmatter.py`: parse/build/merge YAML frontmatter.
-- `validation.py`: path validation, error codes, input normalization.
-- `research.py`: reusable entity matching and reconciliation suggestions.
-- `observability.py`: structured logs to `.kvault/logs.db`.
-- `daily_artifacts.py`: deterministic daily artifact generation.
-- `summary_quality.py`: warn-only parent-summary quality audit used by `kvault check`.
-
-## Storage Model
-
-### Node Format
-
-Each node is a directory containing a `_summary.md` with YAML frontmatter:
-
-```markdown
----
-created: 2026-02-17
-updated: 2026-02-17
-source: manual
-aliases: [Alice Smith, alice@example.com]
----
-# Alice Smith
-
-Entity body...
+```text
+knowledge-base/
+├── _summary.md
+├── people/.../_summary.md
+├── projects/.../_summary.md
+├── journal/
+│   ├── events/YYYY/MM/<event-id>.md
+│   ├── reconciliations/YYYY/MM/<reconciliation-id>/
+│   │   ├── plan.md
+│   │   └── result.md
+│   └── YYYY-MM/log.md                 # preserved legacy journal
+└── .kvault/
+    ├── schema.json
+    ├── policy.yaml
+    ├── transactions/<id>/
+    └── logs.db                        # noncanonical observability
 ```
 
-### Legacy Compatibility
+### Temporal events
 
-`scan_entities` supports legacy `_meta.json` fallback for read compatibility.
-New writes use frontmatter in `_summary.md`.
+An event is immutable evidence containing:
 
-## Write Workflow
+- schema version and sortable event ID
+- UTC capture time and optional occurrence time
+- source and optional stable source reference
+- exact candidate text and its SHA-256 digest
+- tags and sensitivity (`public`, `personal`, `sensitive`, or `restricted`)
 
-The canonical CLI write flow:
+`source + source_ref` is the idempotency key when a stable reference exists. Repeating that key
+with the same digest returns the existing event. Different content under the same key is a
+`source_ref_conflict`.
 
-1. Navigate via `kvault list`, `kvault read`, or agent file tools
-2. `kvault write <path> --create --reasoning "..." --json` (returns ancestors)
-3. `kvault update-summaries --json` (batch-update ancestor summaries from stdin)
-4. Optional: `kvault journal` for additional logging (auto-journal happens on write with `--reasoning`)
-5. Optional: `kvault validate` to check integrity
+Event state is derived from immutable event and reconciliation records. Operational states are
+`pending`, `reconciling`, `needs_review`, and `resolved`. Terminal outcomes are `applied`,
+`journal_only`, `duplicate`, `no_op`, and `legacy_archived_unknown`. A failed attempt stays pending
+and retryable.
 
-The canonical MCP parent-summary flow is stricter:
+### Semantic nodes and summaries
 
-1. `kvault_write_node(...)`
-2. For each returned ancestor, closest-first:
-   - `kvault_prepare_summary_update(path)`
-   - compose the parent from the returned parent and immediate child summaries
-   - `kvault_write_parent_summary(path, content, children_digest)`
-3. `kvault_validate_kb(...)` after larger edits
+Every visible node is a directory containing `_summary.md` with mapping-shaped YAML frontmatter and
+a Markdown body. A node may be a leaf or a parent. Every visible ancestor must itself be a node;
+orphan directories are invalid.
 
-Strict parent writes use a stateless digest over direct child summaries. The digest excludes mtime
-and changes when a direct child summary body, frontmatter, path, or existence changes.
+Node metadata unions `journal:<event-id>` entries into `source_refs`, preserving existing sources
+and aliases. Parent metadata stores a digest of its immediate child summaries. Propagation checks
+compare exact content digests rather than dates or filesystem mtimes.
 
-Parent summaries are expected to be comprehensive rollups of descendants. `kvault check`
-emits warn-only `SUMMARY:` findings when a parent omits immediate child coverage, is too
-short for its subtree, or contains placeholder/redirect language.
+Parent summaries are comprehensive current-state rollups. Temporal activity belongs in the event
+ledger, not in continuously appended root-summary history.
 
-## Daily Artifact Flow
+## Public workflow
 
-`kvault artifact daily` composes from:
+### Capture and inspect
 
-- root summary
-- people summary
-- projects summary
-- recent journal sections
+- `kvault capture`
+- `kvault events list`
+- `kvault events show`
+- `kvault events import`
 
-Artifact output path: `.kvault/artifacts/daily/YYYY-MM-DD.md`
+Capture is atomic and precedes semantic navigation. The read commands `tree`, `search`, `read`, and
+`list` remain available for bounded research.
 
-## Runtime Boundaries
+### Reconcile
 
-What belongs in `kvault`:
+- `kvault reconcile prepare`
+- `kvault reconcile apply`
+- `kvault reconcile approve`
+- `kvault reconcile status`
+- `kvault reconcile recover`
 
-- canonical data model and on-disk invariants
-- CLI commands and operations layer
-- reusable research/reconciliation logic
-- validation and artifact generation
+`prepare` returns source events, active policy, bounded orientation metadata, and current node
+revisions. The host agent supplies a versioned JSON plan containing event decisions, complete
+proposed content, expected revisions, and every affected ancestor summary.
 
-What belongs in host runtimes:
+Core validation derives the required ancestor set. Missing, unrelated, or stale summary changes
+are rejected. A move includes both the old and new chains. Every event in the request receives a
+decision, including journal-only and no-op outcomes.
 
-- workspace-specific permissions/tool routing
-- cron scheduling/inbox queue orchestration
-- persona prompts and delivery policy
+### Policy
 
-## Testing
+`.kvault/policy.yaml` is explicit, local, and versioned with the KB. The default policy:
 
-Primary test suites live under `tests/` and cover:
+- auto-resolves duplicate, no-op, and journal-only decisions
+- permits a create only beneath an existing valid parent
+- permits additive updates only with matching revisions and union-only metadata
+- permits derived ancestor updates only against matching parent and child revisions
+- requires review for merge, move, delete, restructuring, conflicting replacement, and sensitive
+  or restricted events
 
-- core modules (storage, frontmatter, research)
-- operations layer (read, write, delete, move, validate, journal)
-- CLI commands (CliRunner integration tests)
-- end-to-end write/propagation workflows
-- CLI checks and artifacts
-- MCP compatibility tools
+Approval records the actor and rechecks every expected revision. A stale approved plan must be
+prepared again; approval never weakens integrity checks.
 
-Run:
+### Transaction protocol
 
-```bash
-pytest -q
-```
+All mutations use one per-KB cross-platform lock and this order:
 
-## Version Notes
+1. Persist the immutable reconciliation plan.
+2. Recheck expected revisions under the lock.
+3. Stage complete resulting files in `.kvault/transactions/<id>/`.
+4. Validate paths, policy, hierarchy, frontmatter, source references, and ancestor coverage.
+5. Replace leaves followed by ancestors using same-directory atomic replacement and fsync.
+6. Run the unified integrity audit.
+7. Roll back from backups on failure.
+8. Persist the immutable result and release the lock.
 
-- 0.11.0: annotated tree outline (`build_outline`/`render_outline_text`) with counts, recency,
-  and explicit truncation markers; MCP `kvault_tree`; no-op writes preserve `updated`.
-- 0.10.0: strict MCP parent-summary updates with stateless child digests and hierarchy hints.
-- 0.9.0: node-first interface, structured lexical search, optional UI removed.
-- 0.8.0: UI, summary-quality audit, MCP compatibility restored, arbitrary-depth entity paths.
-- 0.7.0: CLI-first. MCP server removed. Operations layer extracted to `core/operations.py`.
-- 0.6.2: shared research primitives, architecture cleanup.
-- 0.6.1: MCP path hardening, manifest/status reliability.
-- 0.6.0: 2-call write workflow, batch summary updates, auto-journaling.
+`reconcile recover` inspects interrupted state and deterministically completes finalization or
+rollback. Unknown locks and transactions are surfaced, never silently discarded.
+
+One coordinator is the only writer. Parallel workers may perform read-only navigation and return
+proposals. This parallelizes interpretation without racing leaf files or convergent ancestors.
+
+## Safety and integrity
+
+All supported mutation paths pass through one symlink-aware resolver. It rejects traversal, paths
+outside the resolved KB root, root deletion, hidden/internal targets, journal deletion, and
+non-node destructive targets.
+
+One core integrity audit is consumed identically by CLI and MCP. It checks:
+
+- strict mapping-shaped YAML frontmatter
+- safe and valid visible-node paths
+- complete ancestor-node hierarchy
+- immutable event and reconciliation references
+- expected source references
+- exact child-summary digests
+- incomplete or placeholder semantic content
+
+Structured command failures use nonzero exit codes. JSON output does not change failure semantics.
+
+`SimpleStorage` is a deprecated, path-contained compatibility adapter and emits
+`DeprecationWarning`. Legacy `_meta.json` is read-only compatibility data; no 0.12 operation
+creates it. It is not an agent-facing mutation surface.
+
+## Schema and migration
+
+`.kvault/schema.json` records the on-disk protocol version. A pre-0.12 KB remains readable, but
+mutations return `migration_required` until `kvault migrate` succeeds.
+
+Migration is transactional and repeat-safe. It creates schema and default policy state, validates
+all existing nodes, and backfills child digests without altering semantic bodies, historical dates,
+or legacy monthly journals. `migrate --dry-run` reports the proposed changes.
+
+`events import --format moss-capture` imports legacy OpenClaw inbox data. Open records become
+pending events; processed records become `legacy_archived_unknown`, preserving evidence without
+claiming semantic promotion.
+
+Legacy direct mutation commands are non-mutating compatibility stubs. They return
+`workflow_required` and direct callers to capture and reconcile.
+
+## Interfaces and ownership
+
+- **CLI:** primary automation interface; agent-facing commands accept an absolute `--kb-root` and
+  machine-readable `--json`.
+- **Python:** typed event, policy, reconciliation, migration, and integrity models plus stateless
+  service functions.
+- **MCP:** root-bound parity for capture, read, reconciliation, migration, and validation; no direct
+  mutation tools.
+- **Host runtime:** owns model calls, scheduling, inbox discovery, persona, retention decisions,
+  approval identity, and read-only subagent orchestration.
+
+The portable skill is canonical at `skills/kvault/` and installed in distributions under
+`share/knowledgevault/skills/kvault`. `kvault skill path` discovers it and `kvault skill install`
+copies the complete folder to an agent runtime.
+
+## Release invariants
+
+- A published GitHub release is the only PyPI publication trigger.
+- The release tag must equal `v` plus the `pyproject.toml` version.
+- CI installs and tests the built wheel, validates the packaged skill, and never publishes.
+- CLI, Python, MCP, templates, and skill documentation describe the same protocol.

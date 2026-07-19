@@ -1,76 +1,64 @@
-# kvault Package
+# kvault Python package
 
-Main Python package for `knowledgevault`.
+`knowledgevault` 0.12 exposes a journal-first library as well as the primary `kvault` CLI.
 
-## Module Structure
-
-```
-kvault/
-├── __init__.py
-├── cli/                 # CLI commands (primary interface)
-├── core/                # operations, search, storage, frontmatter, research, observability, artifacts
-├── mcp/                 # thin MCP compatibility server
-└── templates/           # default KB templates
-```
-
-## Primary Exports
+## Supported mutation API
 
 ```python
+from pathlib import Path
+
 from kvault import (
-    SimpleStorage,
-    normalize_entity_id,
-    scan_entities,
-    count_entities,
-    list_entity_records,
-    EntityRecord,
-    parse_frontmatter,
-    build_frontmatter,
-    merge_frontmatter,
-    EntityResearcher,
-    ResearchCandidate,
-    ObservabilityLogger,
-    SearchDocument,
-    SearchResult,
-    scan_search_documents,
-    search_nodes,
-    SummaryQualityIssue,
-    audit_summary_quality,
-    format_summary_quality_warnings,
-    generate_daily_artifact,
-    DailyArtifactResult,
-    parse_iso_date,
+    ReconciliationPlan,
+    apply_reconciliation,
+    capture_event,
+    prepare_reconciliation,
 )
+
+root = Path("/absolute/path/to/knowledge-base")
+captured = capture_event(
+    root,
+    "Alice owns the revised launch agenda.",
+    source="conversation",
+    source_ref="message:stable-id",
+)
+context = prepare_reconciliation(root, [captured.event_id], paths=["projects", "."])
+
+# An external agent performs bounded reads and constructs a complete, revision-bound plan.
+plan = ReconciliationPlan.model_validate(plan_payload)
+result = apply_reconciliation(root, plan)
 ```
 
-## Interface Layers
+kvault is provider-neutral: it captures immutable evidence and validates policy, revisions,
+provenance, summary coverage, transactions, and integrity. The caller reasons about semantic
+placement and supplies the full proposed Markdown bodies.
 
-- CLI commands (`kvault`) are the primary runtime interface.
-- Core operations layer (`kvault/core/operations.py`) provides shared node-first business logic.
-- Core search layer (`kvault/core/search.py`) provides structured lexical node search.
-- MCP compatibility server (`kvault/mcp/server.py`) exposes root-bound tools backed by operations,
-  including strict parent-summary prepare/write tools.
-- Core modules provide reusable library behavior.
+Primary public types and services are exported from `kvault`:
 
-## CLI Quick Start
+- events: `capture_event`, `get_event`, `list_events`, `derive_event_states`
+- reconciliation: `prepare_reconciliation`, `apply_reconciliation`,
+  `approve_reconciliation`, `reconciliation_status`, `recover_reconciliations`
+- policy and migration: `ReconciliationPolicy`, `load_policy`, `migrate`,
+  `import_moss_capture`
+- integrity: `audit_kb`
+- read/search and derivative artifact helpers retained from earlier releases
 
-```bash
-kvault init my_kb --name "Your Name"
-kvault search "project notes" --kb-root my_kb --json
-kvault read projects/example --kb-root my_kb --json
-kvault check --kb-root my_kb
-kvault artifact daily --kb-root my_kb --date 2026-02-17
-kvault log summary --db my_kb/.kvault/logs.db
-kvault-mcp --kb-root my_kb
-```
+## Interfaces
 
-MCP clients should update parent summaries with `kvault_prepare_summary_update` followed by
-`kvault_write_parent_summary` for each ancestor, closest-first. The prepare call returns all direct
-child summaries, a stateless digest, and an advisory hierarchy hint when a parent has more than 10
-direct children.
+- `kvault`: primary CLI, including capture, bounded navigation, reconciliation, migration, and
+  validation.
+- `kvault-mcp`: optional Python 3.10+ root-bound MCP parity without direct mutation tools.
+- `skills/kvault`: packaged agent workflow and read-only parallel-analysis reference.
+
+`SimpleStorage` and direct write helpers in `kvault.core.operations` remain deprecated Python
+compatibility code. They are not supported 0.12 mutation surfaces; new integrations must capture
+and reconcile.
 
 ## Development
 
 ```bash
 pip install -e ".[dev,mcp]"
-pytest -q
+pytest -q --cov=kvault --cov-fail-under=80
+ruff check .
+black --check kvault/ tests/
+mypy kvault/ --ignore-missing-imports
 ```

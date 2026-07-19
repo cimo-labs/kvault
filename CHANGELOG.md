@@ -2,6 +2,42 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.12.0 - 2026-07-19
+
+### Added
+
+- **Immutable event intake:** `kvault capture` records source-backed memory candidates before any
+  semantic write; `events list/show/import` exposes pending evidence and repeat-safe legacy import.
+- **Policy-gated reconciliation:** prepare, apply, approve, status, and recovery commands provide
+  revision-checked semantic updates with explicit per-event outcomes.
+- **Transactional writes:** per-KB serialization, staged atomic replacement, rollback/recovery, and
+  exact parent child-digests protect long-lived and multi-agent vaults.
+- **Schema migration:** pre-0.12 vaults remain readable and gain an explicit, dry-runnable,
+  transactional migration for schema, policy, and derived digests.
+- **Safe delegation guidance:** the packaged kvault skill uses bounded navigation, read-only workers,
+  and one coordinator writer; an OpenClaw example is included as an on-demand reference.
+- **Skill discovery:** `kvault skill path/install` exposes the complete skill shipped in wheel and
+  source distributions.
+
+### Changed
+
+- The canonical workflow is now `capture → orient → reconcile → verify`; the temporal journal is
+  evidence, semantic nodes are current state, and parent summaries are derived indexes.
+- CLI JSON failures use nonzero exit codes, and root-bound MCP mirrors the safe workflow rather than
+  exposing direct mutation tools.
+- Frontmatter, path containment, node ancestry, source references, and propagation validation are
+  strict and shared across adapters.
+- `SimpleStorage` is deprecated, frontmatter-backed, and constrained by canonical path safety;
+  supported agent mutation surfaces use reconciliation instead.
+
+### Breaking
+
+- Direct write, summary, journal, move, and delete commands are non-mutating compatibility stubs
+  that return `workflow_required`; capture and reconcile must be used instead.
+- Existing vaults must run `kvault migrate` before mutation.
+- Merge, move, delete, structural changes, conflicting replacement, and sensitive events require
+  review under the default policy.
+
 ## 0.11.3 - 2026-06-14
 
 ### Fixed

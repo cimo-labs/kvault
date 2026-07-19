@@ -1,0 +1,4 @@
+interface:
+  display_name: "kvault"
+  short_description: "Reconcile durable agent memory safely"
+  default_prompt: "Use $kvault to capture and reconcile durable knowledge safely."

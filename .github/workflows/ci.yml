@@ -6,12 +6,16 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ['3.9', '3.11', '3.12']
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,21 +23,63 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: pip install -e ".[dev,mcp]"
-      - name: Run tests
-        run: pytest tests/ -v --tb=short --cov=kvault --cov-report=term
+      - name: Run tests with coverage
+        run: pytest -q --cov=kvault --cov-report=term-missing --cov-fail-under=80
 
-  lint:
+  quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
       - name: Install dependencies
         run: pip install -e ".[dev,mcp]"
       - name: Check formatting
         run: black --check kvault/ tests/
       - name: Lint
-        run: ruff check kvault/
+        run: ruff check .
       - name: Type check
         run: mypy kvault/ --ignore-missing-imports
+
+  distribution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build tools
+        run: pip install build pyyaml
+      - name: Validate source skill
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          import yaml
+
+          root = Path("skills/kvault")
+          text = (root / "SKILL.md").read_text(encoding="utf-8")
+          match = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
+          assert match, "invalid SKILL.md frontmatter"
+          meta = yaml.safe_load(match.group(1))
+          assert set(meta) == {"name", "description"}
+          assert meta["name"] == "kvault"
+          assert (root / "agents/openai.yaml").is_file()
+          assert (root / "references/parallel-reconciliation.md").is_file()
+          interface = yaml.safe_load((root / "agents/openai.yaml").read_text(encoding="utf-8"))
+          assert "$kvault" in interface["interface"]["default_prompt"]
+          PY
+      - name: Build distributions
+        run: python -m build
+      - name: Install and smoke-test wheel
+        run: |
+          python -m venv /tmp/kvault-wheel
+          /tmp/kvault-wheel/bin/pip install dist/*.whl
+          /tmp/kvault-wheel/bin/kvault --help
+          SKILL_PATH=$(/tmp/kvault-wheel/bin/kvault skill path)
+          test -f "$SKILL_PATH/SKILL.md"
+          test -f "$SKILL_PATH/agents/openai.yaml"
+          test -f "$SKILL_PATH/references/parallel-reconciliation.md"
+          /tmp/kvault-wheel/bin/kvault init /tmp/kvault-wheel-kb --name "Wheel Smoke"
+          /tmp/kvault-wheel/bin/kvault --kb-root /tmp/kvault-wheel-kb --json status

@@ -1,155 +1,120 @@
-# kvault - Maintainer Notes
+# kvault Maintainer Notes
 
-## Overview
+## Architecture contract
 
-`kvault` is a CLI-first knowledge base library. The canonical runtime interface is:
+kvault 0.12 is a journal-first memory substrate:
 
-- CLI commands via `kvault` entry point (`kvault/cli/`)
-- stateless operations layer (`kvault/core/operations.py`)
-- structured lexical search (`kvault/core/search.py`)
-- filesystem storage with frontmatter summaries (`kvault/core/`)
-- thin root-bound MCP compatibility server (`kvault/mcp/server.py`)
+1. Immutable temporal events preserve evidence.
+2. Semantic nodes represent current durable state.
+3. Parent summaries are derived navigation indexes.
 
-## Repository Layout
+CLI and MCP adapters must delegate to the same typed core services. Model reasoning, scheduling,
+approval identity, and read-only worker orchestration remain host-runtime concerns.
 
-```
-kvault/
-├── kvault/
-│   ├── cli/         # CLI commands (primary interface)
-│   ├── core/        # Operations, search, storage, validation, frontmatter
-│   ├── mcp/         # MCP compatibility server
-│   ├── templates/   # KB init templates (AGENTS.md)
-│   └── py.typed     # PEP 561 marker
-└── tests/
-```
+## Critical invariants
 
-## Critical Invariants
+1. Every supported 0.12 semantic mutation references at least one previously captured event;
+   deprecated pre-0.12 Python compatibility helpers are not agent-facing APIs.
+2. Event and reconciliation records are immutable and append-only.
+3. One KB lock serializes every mutation transaction.
+4. Every write is revision-checked, staged, validated, and atomically replaced.
+5. A visible directory is a node only when it has `_summary.md`; every visible ancestor must also
+   be a node.
+6. Parent `children_digest` values exactly represent immediate child summaries.
+7. All path handling uses the canonical, symlink-aware root resolver.
+8. Root, hidden state, journals, and paths outside the resolved root are never destructive targets.
+9. Frontmatter must parse as a YAML mapping. Legacy compatibility parsing is explicit, never the
+   default mutation path.
+10. CLI JSON failures return nonzero exit status. CLI and MCP expose equivalent outcomes.
+11. Approval rechecks revisions and never bypasses integrity validation.
+12. The portable skill, generated `AGENTS.md`, public docs, and adapters describe one protocol.
 
-1. `operations.py` is the shared business logic layer — CLI and MCP use it.
-2. A node is any non-hidden directory with `_summary.md`, including root, branches, and leaves.
-3. Nodes are written as `_summary.md` with frontmatter (legacy `_meta.json` read fallback only).
-4. Path handling must never allow escape outside configured KB root.
-5. If `KVAULT_ALLOWED_ROOTS` is configured, CLI and MCP boundaries must reject non-allowed roots.
-6. CLI uses `default_source="auto:cli"`.
-7. MCP uses `default_source="auto:mcp"` and is bound to one KB root per process.
-8. Parent summaries should be comprehensive rollups of all descendants; `kvault check`
-   emits warn-only `SUMMARY:` findings for weak rollups.
-9. MCP parent-summary writes should use strict prepare/write tools so direct child summaries are
-   read before a parent rollup is rewritten.
+## Public services
 
-## Core APIs
+The typed core surface includes event, policy, reconciliation, schema, migration, and audit
+services. Important stable names include:
 
 ```python
-from kvault.core import operations as ops
-
-# Stateless — all functions take kg_root: Path as first arg
-ops.read_node(kg_root, path, parents="immediate")
-ops.write_node(kg_root, path, content, meta=..., create=...)
-ops.list_nodes(kg_root, path=".", recursive=False)
-ops.search_nodes(kg_root, query, limit=10)
-ops.prepare_summary_update(kg_root, path)
-ops.write_parent_summary(kg_root, path, content, children_digest, meta=...)
-ops.read_entity(kg_root, path)
-ops.write_entity(kg_root, path, content, meta=..., create=..., reasoning=...)
-ops.update_summaries(kg_root, updates)
-ops.list_entities(kg_root, category=...)
-ops.delete_entity(kg_root, path)
-ops.move_entity(kg_root, source, target)
-ops.get_ancestors(kg_root, path)
-ops.write_journal(kg_root, actions, source)
-ops.validate_kb(kg_root)
-ops.get_kb_info(kg_root)
+capture_event(...)
+get_event(...)
+list_events(...)
+write_reconciliation_plan(...)
+read_reconciliation_plan(...)
+write_reconciliation_result(...)
+derive_event_states(...)
+load_policy(...)
+current_schema(...)
+require_schema(...)
+migrate(...)
+import_moss_capture(...)
 ```
 
-```python
-from kvault.core import (
-    parse_frontmatter,
-    build_frontmatter,
-    merge_frontmatter,
-    EntityResearcher,
-    ResearchCandidate,
-    ObservabilityLogger,
-    SearchDocument,
-    SearchResult,
-    scan_search_documents,
-    search_nodes,
-    SummaryQualityIssue,
-    audit_summary_quality,
-    format_summary_quality_warnings,
-    DailyArtifactResult,
-    generate_daily_artifact,
-)
+Keep filesystem semantics in core. Click and MCP layers translate inputs and structured outputs;
+they must not reimplement policy, path, transaction, or integrity logic.
 
-from kvault.core.storage import (
-    SimpleStorage,
-    EntityRecord,
-    normalize_entity_id,
-    scan_entities,
-    count_entities,
-    list_entity_records,
-)
+## Public commands
+
+```text
+capture
+events list | show | import
+reconcile prepare | apply | approve | status | recover
+migrate
+skill path | install
+tree | search | read | list
+validate | check | status
 ```
 
-## CLI Commands
+Legacy direct mutation names are compatibility stubs that return `workflow_required`. Adding a new
+mutation escape hatch is a protocol change, not a convenience alias.
+
+## Compatibility and migration
+
+- Pre-0.12 vaults remain readable.
+- Mutation requires `.kvault/schema.json` at the current version.
+- `migrate --dry-run` must be side-effect-free.
+- Applying migration must be transactional and repeat-safe.
+- Never alter legacy monthly journal text or semantic body/history solely to migrate metadata.
+- Moss-format processed captures import as `legacy_archived_unknown`, not `applied`.
+- `SimpleStorage` is deprecated, path-contained compatibility code; it never creates `_meta.json`
+  and must not be exposed as a supported 0.12 mutation surface.
+
+## Skill and packaging
+
+The source of truth is `skills/kvault/`. Setuptools installs those same files under
+`share/knowledgevault/skills/kvault`; do not maintain a second package copy.
+
+After any workflow or command change:
+
+1. Update `SKILL.md` and, when relevant, its parallel-reconciliation reference.
+2. Regenerate and review `agents/openai.yaml` using the skill-creator generator.
+3. Update the generated KB `AGENTS.md` template.
+4. Build wheel and sdist, install the wheel, and check `kvault skill path` and `skill install`.
+5. Run the skill validator and forward-test at least a simple candidate and a read-only batch.
+
+## Verification
 
 ```bash
-# Node operations
-kvault search <query> [--json]
-kvault read <path> [--parents none|immediate|all] [--json]
-kvault write <path> [--create] [--reasoning TEXT] [--json] < content.md
-kvault list [path] [--recursive] [--json]
-
-# Compatibility operations
-kvault delete <path> [--force] [--json]
-kvault move <source> <target> [--json]
-kvault read-summary <path> [--json]
-kvault write-summary <path> [--json] < content.md
-kvault update-summaries [--json] < updates.json
-kvault ancestors <path> [--json]
-
-# Journal
-kvault journal --source TEXT [--date YYYY-MM-DD] [--json] < actions.json
-
-# Status & validation
-kvault status [--json]
-kvault tree [--depth N]
-kvault validate [--json]
-kvault check [--kb-root PATH] [--json] [--no-summary-quality] [--summary-max-warnings N]
-
-# Init & artifacts
-kvault init <path> [--name NAME]
-kvault artifact daily [--kb-root PATH] [--date YYYY-MM-DD] [--force] [--stdout] [--json]
-kvault log summary [--db PATH] [--session-id ID] [--json]
-
-# MCP compatibility
-kvault-mcp --kb-root PATH
-# Preferred MCP summary flow:
-# kvault_prepare_summary_update -> kvault_write_parent_summary
-
-# Version
-kvault status --json
+pytest -q --cov=kvault --cov-report=term-missing --cov-fail-under=80
+ruff check .
+black --check kvault/ tests/
+mypy kvault/ --ignore-missing-imports
+python -m build
 ```
 
-## Testing
+Required regression areas include path traversal and symlinks, forbidden deletion, malformed
+frontmatter, orphan nodes, event idempotency/conflict, policy gates, stale revisions, concurrent
+capture, competing writers, injected transaction failure/recovery, migration repeatability, CLI/MCP
+parity, and installed-wheel skill discovery.
 
-```bash
-pytest -q
-```
+## Release procedure
 
-Prefer adding tests in `tests/` whenever changing:
+1. Update package version, changelog, protocol docs, templates, skill, and migration notes together.
+2. Run all checks on Python 3.9–3.13; run MCP tests on supported Python versions.
+3. Build and inspect wheel/sdist, including all three skill files.
+4. Merge through a reviewed PR; CI builds artifacts but never publishes.
+5. Create and publish a GitHub release tagged exactly `v<pyproject version>`.
+6. The `release: published` workflow verifies tag/version equality, rebuilds, smoke-tests the wheel,
+   and publishes to PyPI through trusted publishing.
 
-- operations layer behavior
-- validation/path logic
-- CLI commands/output
-- MCP compatibility tools
-- research/matching heuristics
-- structured search ranking/output
-
-## Release Hygiene
-
-Before publishing:
-
-1. Update docs for any API/CLI changes.
-2. Run full tests.
-3. Ensure `CHANGELOG.md` and package version stay in sync.
-4. Update templates/AGENTS.md for agent-facing changes.
+Never publish from a raw tag push or manual workflow dispatch. Never create a GitHub release from
+the PyPI workflow.

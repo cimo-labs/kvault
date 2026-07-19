@@ -8,13 +8,21 @@ from typing import Dict, Optional
 
 import click
 
+from kvault import __version__
 from kvault.cli._helpers import apply_common_options, common_options, output_json, resolve_kb_root
 from kvault.cli.check import check_kb
-from kvault.cli.entity import read_entity, write_entity, list_entities, delete_entity, move_entity
-from kvault.cli.journal import write_journal
+from kvault.cli.entity import read_entity, list_entities
 from kvault.cli.search import search_nodes
-from kvault.cli.summary import read_summary, write_summary, update_summaries, ancestors
+from kvault.cli.summary import read_summary, ancestors
 from kvault.cli.validate import validate_kb
+from kvault.cli.workflow import (
+    capture_event_command,
+    events_group,
+    legacy_mutation_stub,
+    migrate_command,
+    reconcile_group,
+    skill_group,
+)
 from kvault.core.daily_artifacts import generate_daily_artifact, parse_iso_date
 from kvault.core.observability import ObservabilityLogger
 from kvault.core import operations as ops
@@ -35,6 +43,12 @@ def _render(template: str, replacements: Dict[str, str]) -> str:
     return result
 
 
+def _migration_success(result: object) -> bool:
+    if isinstance(result, dict):
+        return bool(result.get("success", False))
+    return bool(getattr(result, "success", False))
+
+
 # -------------------------
 # CLI
 # -------------------------
@@ -48,6 +62,7 @@ def _render(template: str, replacements: Dict[str, str]) -> str:
     help="Knowledge base root (auto-detected if not specified)",
 )
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.version_option(package_name="knowledgevault")
 @click.pass_context
 def cli(ctx: click.Context, kb_root: Optional[Path], as_json: bool) -> None:
     """kvault — personal knowledge base for AI agents."""
@@ -59,17 +74,18 @@ def cli(ctx: click.Context, kb_root: Optional[Path], as_json: bool) -> None:
 # Register commands
 cli.add_command(check_kb)
 cli.add_command(read_entity)
-cli.add_command(write_entity)
 cli.add_command(list_entities, "list")
 cli.add_command(search_nodes)
-cli.add_command(delete_entity, "delete")
-cli.add_command(move_entity, "move")
 cli.add_command(read_summary)
-cli.add_command(write_summary)
-cli.add_command(update_summaries)
 cli.add_command(ancestors)
-cli.add_command(write_journal)
 cli.add_command(validate_kb, "validate")
+cli.add_command(capture_event_command)
+cli.add_command(events_group)
+cli.add_command(reconcile_group)
+cli.add_command(migrate_command)
+cli.add_command(skill_group)
+for _legacy_name in ("write", "delete", "move", "write-summary", "update-summaries", "journal"):
+    cli.add_command(legacy_mutation_stub(_legacy_name))
 
 
 @cli.command("init")
@@ -82,6 +98,10 @@ def init_kb(ctx: click.Context, path: Path, name: str) -> None:
     allowed_error = ops.validate_allowed_root(path)
     if allowed_error:
         raise click.ClickException(allowed_error)
+    if path.exists() and any(path.iterdir()):
+        raise click.ClickException(
+            f"Refusing to initialize nonempty directory: {path}. Choose an empty path."
+        )
     path.mkdir(parents=True, exist_ok=True)
 
     if (path / ".kvault").exists():
@@ -99,7 +119,6 @@ def init_kb(ctx: click.Context, path: Path, name: str) -> None:
 
     root_tpl = _load_template("root_summary.md")
     cat_tpl = _load_template("category_summary.md")
-    journal_tpl = _load_template("journal_entry.md")
     agents_tpl = _load_template("AGENTS.md")
 
     (path / "_summary.md").write_text(_render(root_tpl, replacements))
@@ -124,6 +143,7 @@ def init_kb(ctx: click.Context, path: Path, name: str) -> None:
         "people/contacts": "Professional contacts, acquaintances, and others.",
         "projects": "Active work and research initiatives.",
         "accomplishments": "Professional wins and quantifiable impacts.",
+        "journal": "Immutable temporal evidence and reconciliation history.",
     }
 
     for cat_path, description in categories.items():
@@ -136,13 +156,14 @@ def init_kb(ctx: click.Context, path: Path, name: str) -> None:
         }
         (cat_dir / "_summary.md").write_text(_render(cat_tpl, cat_replacements))
 
-    journal_dir = path / "journal" / today.strftime("%Y-%m")
-    journal_dir.mkdir(parents=True, exist_ok=True)
-    (journal_dir / "log.md").write_text(_render(journal_tpl, replacements))
-
     kvault_dir = path / ".kvault"
     kvault_dir.mkdir(parents=True, exist_ok=True)
     ObservabilityLogger(kvault_dir / "logs.db")
+    from kvault.core.migration import migrate
+
+    migration = migrate(path, dry_run=False)
+    if not _migration_success(migration):
+        raise click.ClickException("Failed to initialize kvault 0.12 schema")
 
     click.echo(f"Initialized knowledge base at {path}")
     click.echo(f"Owner: {name}")
@@ -164,6 +185,13 @@ def status(ctx: click.Context, kb_root: Optional[Path], as_json: bool) -> None:
         "kvault_dir_exists": (kb_root / ".kvault").exists(),
     }
     info["health"] = health
+    info["version"] = __version__
+    try:
+        from kvault.core.migration import current_schema_version
+
+        info["schema_version"] = current_schema_version(kb_root)
+    except Exception:
+        info["schema_version"] = None
     if ctx.obj.get("as_json"):
         output_json(info)
     else:

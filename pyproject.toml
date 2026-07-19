@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledgevault"
-version = "0.11.3"
+version = "0.12.0"
 description = "CLI-first personal knowledge base for AI agents — structured, navigable, zero extra cost"
 readme = "README.md"
 license = "MIT"
@@ -22,6 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "pyyaml>=6.0",
@@ -60,6 +61,11 @@ include = ["kvault*"]
 [tool.setuptools.package-data]
 kvault = ["templates/**/*", "py.typed"]
 
+[tool.setuptools.data-files]
+"share/knowledgevault/skills/kvault" = ["skills/kvault/SKILL.md"]
+"share/knowledgevault/skills/kvault/agents" = ["skills/kvault/agents/openai.yaml"]
+"share/knowledgevault/skills/kvault/references" = ["skills/kvault/references/parallel-reconciliation.md"]
+
 [tool.setuptools.exclude-package-data]
 "*" = ["__pycache__/*", "*.py[cod]"]
 
@@ -83,7 +89,7 @@ filterwarnings = [
 
 [tool.coverage.run]
 source = ["kvault"]
-omit = ["*/tests/*", "*/__init__.py"]
+omit = ["*/tests/*", "*/__init__.py", "*/mcp/*"]
 
 [tool.coverage.report]
 exclude_lines = [

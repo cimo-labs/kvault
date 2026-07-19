@@ -190,81 +190,16 @@ class TestReadCommand:
 
 
 class TestWriteCommand:
-    def test_write_create(self, runner, cli_kb):
-        input_content = "---\nsource: test\naliases:\n  - Bob\n---\n\n# Bob\n\nA new friend.\n"
+    @pytest.mark.parametrize("name", ["write", "delete", "move"])
+    def test_direct_mutation_names_fail_closed(self, runner, cli_kb, name):
         result = runner.invoke(
             cli,
-            ["--kb-root", str(cli_kb), "write", "people/friends/bob", "--create"],
-            input=input_content,
+            ["--kb-root", str(cli_kb), "--json", name, "people/friends/alice_smith"],
         )
-        assert result.exit_code == 0
-        assert "Created" in result.output
-        assert (cli_kb / "people" / "friends" / "bob" / "_summary.md").exists()
-
-    def test_write_create_json(self, runner, cli_kb):
-        input_content = "---\nsource: test\naliases:\n  - Carol\n---\n\n# Carol\n"
-        result = runner.invoke(
-            cli,
-            ["--kb-root", str(cli_kb), "--json", "write", "people/friends/carol", "--create"],
-            input=input_content,
-        )
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         data = json.loads(result.output)
-        assert data["success"]
-        assert data["created"] is True
-        assert "ancestors" in data
-
-    def test_write_update(self, runner, cli_kb_with_entity):
-        input_content = (
-            "---\nsource: manual\naliases:\n  - Alice Smith\n---\n\n# Alice Smith\n\nUpdated!\n"
-        )
-        result = runner.invoke(
-            cli,
-            ["--kb-root", str(cli_kb_with_entity), "write", "people/friends/alice_smith"],
-            input=input_content,
-        )
-        assert result.exit_code == 0
-        assert "Updated" in result.output
-
-    def test_write_with_reasoning(self, runner, cli_kb):
-        input_content = "---\nsource: conf\naliases:\n  - Dave\n---\n\n# Dave\n"
-        result = runner.invoke(
-            cli,
-            [
-                "--kb-root",
-                str(cli_kb),
-                "--json",
-                "write",
-                "people/friends/dave",
-                "--create",
-                "--reasoning",
-                "Met at conference",
-            ],
-            input=input_content,
-        )
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data["success"]
-        assert data["journal_logged"] is True
-
-    def test_write_duplicate_fails(self, runner, cli_kb_with_entity):
-        input_content = "---\nsource: test\naliases: []\n---\n\n# Dupe\n"
-        result = runner.invoke(
-            cli,
-            [
-                "--kb-root",
-                str(cli_kb_with_entity),
-                "--json",
-                "write",
-                "people/friends/alice_smith",
-                "--create",
-            ],
-            input=input_content,
-        )
-        assert result.exit_code == 0  # JSON mode doesn't exit(1)
-        data = json.loads(result.output)
-        assert not data["success"]
-        assert data["error_code"] == "already_exists"
+        assert data["success"] is False
+        assert data["error_code"] == "workflow_required"
 
 
 # ============================================================================
@@ -314,41 +249,14 @@ class TestSearchCommand:
 
 
 class TestDeleteCommand:
-    def test_delete_with_force(self, runner, cli_kb_with_entity):
+    def test_delete_does_not_remove_target(self, runner, cli_kb_with_entity):
+        target = cli_kb_with_entity / "people" / "friends" / "alice_smith"
         result = runner.invoke(
             cli,
-            [
-                "--kb-root",
-                str(cli_kb_with_entity),
-                "delete",
-                "people/friends/alice_smith",
-                "--force",
-            ],
+            ["--kb-root", str(cli_kb_with_entity), "delete", "people/friends/alice_smith"],
         )
-        assert result.exit_code == 0
-        assert "Deleted" in result.output
-        assert not (cli_kb_with_entity / "people" / "friends" / "alice_smith").exists()
-
-    def test_delete_json(self, runner, cli_kb_with_entity):
-        result = runner.invoke(
-            cli,
-            [
-                "--kb-root",
-                str(cli_kb_with_entity),
-                "--json",
-                "delete",
-                "people/friends/alice_smith",
-            ],
-        )
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data["success"]
-
-    def test_delete_nonexistent(self, runner, cli_kb):
-        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "--json", "delete", "people/nobody"])
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert not data["success"]
+        assert result.exit_code == 1
+        assert target.is_dir()
 
 
 # ============================================================================
@@ -357,7 +265,7 @@ class TestDeleteCommand:
 
 
 class TestMoveCommand:
-    def test_move(self, runner, cli_kb_with_entity):
+    def test_move_does_not_change_tree(self, runner, cli_kb_with_entity):
         result = runner.invoke(
             cli,
             [
@@ -368,9 +276,9 @@ class TestMoveCommand:
                 "people/alice_smith",
             ],
         )
-        # people/alice_smith is only 2-level deep, should work
-        assert result.exit_code == 0
-        assert "Moved" in result.output
+        assert result.exit_code == 1
+        assert (cli_kb_with_entity / "people" / "friends" / "alice_smith").is_dir()
+        assert not (cli_kb_with_entity / "people" / "alice_smith").exists()
 
 
 # ============================================================================
@@ -391,17 +299,18 @@ class TestSummaryCommands:
         assert data["path"] == "people"
 
     def test_write_summary(self, runner, cli_kb):
+        before = (cli_kb / "people" / "_summary.md").read_bytes()
         input_content = "# People\n\nUpdated summary.\n"
         result = runner.invoke(
             cli, ["--kb-root", str(cli_kb), "write-summary", "people"], input=input_content
         )
-        assert result.exit_code == 0
-        assert "Updated summary" in result.output or "people" in result.output
+        assert result.exit_code == 1
+        assert (cli_kb / "people" / "_summary.md").read_bytes() == before
 
     def test_update_summaries(self, runner, cli_kb):
         updates = json.dumps([{"path": "people", "content": "# People\n\nBatch updated.\n"}])
         result = runner.invoke(cli, ["--kb-root", str(cli_kb), "update-summaries"], input=updates)
-        assert result.exit_code == 0
+        assert result.exit_code == 1
 
     def test_ancestors(self, runner, cli_kb_with_entity):
         result = runner.invoke(
@@ -437,8 +346,8 @@ class TestJournalCommand:
             ["--kb-root", str(cli_kb), "journal", "--source", "test"],
             input=actions,
         )
-        assert result.exit_code == 0
-        assert "Logged 1 actions" in result.output
+        assert result.exit_code == 1
+        assert not any((cli_kb / "journal").glob("*/log.md"))
 
 
 # ============================================================================

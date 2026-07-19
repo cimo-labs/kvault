@@ -13,10 +13,20 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import click
 
+from kvault import __version__
 from kvault.core import operations as ops
 from kvault.core.daily_artifacts import generate_daily_artifact, parse_iso_date
 from kvault.core.observability import ObservabilityLogger
-from kvault.core.validation import ErrorCode, error_response, success_response
+from kvault.core.reconciliation import (
+    ReconciliationError,
+    ReconciliationPlan,
+    apply_reconciliation,
+    approve_reconciliation,
+    prepare_reconciliation,
+    reconciliation_status,
+    recover_reconciliations,
+)
+from kvault.core.validation import ErrorCode, audit_kb, error_response, success_response
 
 try:  # Optional dependency installed by knowledgevault[mcp].
     FastMCP = import_module("mcp.server.fastmcp").FastMCP
@@ -69,7 +79,11 @@ def _tool_root(
 
 
 def _status_payload(root: Path) -> Dict[str, Any]:
+    from kvault.core.migration import current_schema_version
+
     info = ops.get_kb_info(root)
+    info["version"] = __version__
+    info["schema_version"] = current_schema_version(root)
     info["health"] = {
         "root_summary_exists": (root / "_summary.md").exists(),
         "kvault_dir_exists": (root / ".kvault").exists(),
@@ -100,7 +114,8 @@ def create_server(kb_root: Path | str) -> Any:
     server = FastMCP(
         "kvault",
         instructions=(
-            "Root-bound kvault compatibility tools. This server can only access " f"{bound_root}."
+            "Root-bound kvault journal-first tools. Capture immutable evidence before "
+            f"reconciling semantic state. This server can only access {bound_root}."
         ),
     )
 
@@ -155,57 +170,128 @@ def create_server(kb_root: Path | str) -> Any:
             return error_response(ErrorCode.NOT_FOUND, f"Node not found: {path}")
         return success_response(result)
 
-    @server.tool(name="kvault_write_entity")
-    def kvault_write_entity(
-        path: str,
+    @server.tool(name="kvault_capture")
+    def kvault_capture(
         content: str,
-        meta: Optional[Dict[str, Any]] = None,
-        create: bool = False,
-        reasoning: Optional[str] = None,
-        journal_source: Optional[str] = None,
+        source: str,
+        source_ref: Optional[str] = None,
+        occurred_at: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        sensitivity: str = "personal",
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Create or update an entity."""
+        """Capture immutable evidence before semantic routing."""
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        return ops.write_entity(
-            root,
-            path,
-            content,
-            meta=meta,
-            create=create,
-            reasoning=reasoning,
-            journal_source=journal_source,
-            default_source="auto:mcp",
-        )
+        try:
+            from kvault.core.events import capture_event
 
-    @server.tool(name="kvault_write_node")
-    def kvault_write_node(
-        path: str,
-        content: str,
-        meta: Optional[Dict[str, Any]] = None,
-        create: bool = False,
-        reasoning: Optional[str] = None,
-        journal_source: Optional[str] = None,
-        kg_root: Optional[str] = None,
+            result = capture_event(
+                root,
+                content=content,
+                source=source,
+                source_ref=source_ref,
+                occurred_at=occurred_at,
+                tags=tags or [],
+                sensitivity=sensitivity,
+            )
+            payload: Dict[str, Any] = result.model_dump(mode="json")
+            return success_response(payload)
+        except Exception as exc:
+            return error_response(ErrorCode.WORKFLOW_ERROR, str(exc))
+
+    @server.tool(name="kvault_events_list")
+    def kvault_events_list(
+        status: Optional[str] = None, kg_root: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Create or update any node summary."""
+        """List captured events, optionally filtered by lifecycle state."""
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        return ops.write_node(
-            root,
-            path,
-            content,
-            meta=meta,
-            create=create,
-            reasoning=reasoning,
-            journal_source=journal_source,
-            default_source="auto:mcp",
-        )
+        try:
+            from kvault.core.events import list_events
+
+            records = list_events(root, status=status)
+            serialized = [
+                item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+                for item in records
+            ]
+            return success_response({"events": serialized, "count": len(serialized)})
+        except Exception as exc:
+            return error_response(ErrorCode.WORKFLOW_ERROR, str(exc))
+
+    @server.tool(name="kvault_events_show")
+    def kvault_events_show(event_id: str, kg_root: Optional[str] = None) -> Dict[str, Any]:
+        """Read one captured event."""
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        try:
+            from kvault.core.events import derive_event_states, get_event
+
+            event = get_event(root, event_id)
+            if event is None:
+                return error_response(ErrorCode.NOT_FOUND, f"Event not found: {event_id}")
+            payload: Dict[str, Any] = event.model_dump(mode="json")
+            state = derive_event_states(root).get(event_id, "pending")
+            payload["state"] = (
+                state.model_dump(mode="json") if hasattr(state, "model_dump") else state
+            )
+            return success_response({"event": payload})
+        except Exception as exc:
+            return error_response(ErrorCode.WORKFLOW_ERROR, str(exc))
+
+    @server.tool(name="kvault_events_import")
+    def kvault_events_import(
+        input_path: str,
+        processed_path: Optional[str] = None,
+        input_format: str = "moss-capture",
+        dry_run: bool = True,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Import legacy memory-candidate JSONL without mutating source files."""
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        if input_format != "moss-capture":
+            return error_response(
+                ErrorCode.VALIDATION_ERROR,
+                "input_format must be moss-capture",
+            )
+        try:
+            from kvault.core.migration import import_moss_capture
+
+            result = import_moss_capture(
+                root,
+                input_path,
+                processed_path,
+                dry_run=dry_run,
+            )
+            return result.model_dump(mode="json")
+        except Exception as exc:
+            return error_response(ErrorCode.WORKFLOW_ERROR, str(exc))
+
+    @server.tool(name="kvault_migrate")
+    def kvault_migrate(
+        dry_run: bool = True,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Preview or apply the explicit kvault 0.12 schema migration."""
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        try:
+            from kvault.core.migration import migrate
+
+            return migrate(root, dry_run=dry_run).model_dump(mode="json")
+        except Exception as exc:
+            return error_response(ErrorCode.WORKFLOW_ERROR, str(exc))
 
     @server.tool(name="kvault_list_entities")
     def kvault_list_entities(
@@ -302,26 +388,6 @@ def create_server(kb_root: Path | str) -> Any:
                 item["node"] = ops.read_node(root, item["path"], parents=parents)
         return success_response(result)
 
-    @server.tool(name="kvault_delete_entity")
-    def kvault_delete_entity(path: str, kg_root: Optional[str] = None) -> Dict[str, Any]:
-        """Delete an entity directory."""
-        root, err = _tool_root(bound_root, kg_root)
-        if err:
-            return err
-        assert root is not None
-        return ops.delete_entity(root, path)
-
-    @server.tool(name="kvault_move_entity")
-    def kvault_move_entity(
-        source_path: str, target_path: str, kg_root: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Move an entity to a new path."""
-        root, err = _tool_root(bound_root, kg_root)
-        if err:
-            return err
-        assert root is not None
-        return ops.move_entity(root, source_path, target_path)
-
     @server.tool(name="kvault_read_summary")
     def kvault_read_summary(path: str = ".", kg_root: Optional[str] = None) -> Dict[str, Any]:
         """Read a summary file."""
@@ -333,58 +399,6 @@ def create_server(kb_root: Path | str) -> Any:
         if result is None:
             return error_response(ErrorCode.NOT_FOUND, f"Summary not found: {path}")
         return success_response(result)
-
-    @server.tool(name="kvault_write_summary")
-    def kvault_write_summary(
-        path: str,
-        content: str,
-        meta: Optional[Dict[str, Any]] = None,
-        kg_root: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Write a summary file."""
-        root, err = _tool_root(bound_root, kg_root)
-        if err:
-            return err
-        assert root is not None
-        return ops.write_summary(root, path, content, meta=meta)
-
-    @server.tool(name="kvault_prepare_summary_update")
-    def kvault_prepare_summary_update(
-        path: str,
-        kg_root: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Read a parent summary and all direct child summaries for a strict update."""
-        root, err = _tool_root(bound_root, kg_root)
-        if err:
-            return err
-        assert root is not None
-        return ops.prepare_summary_update(root, path)
-
-    @server.tool(name="kvault_write_parent_summary")
-    def kvault_write_parent_summary(
-        path: str,
-        content: str,
-        children_digest: str,
-        meta: Optional[Dict[str, Any]] = None,
-        kg_root: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Write one parent summary after verifying direct children were read."""
-        root, err = _tool_root(bound_root, kg_root)
-        if err:
-            return err
-        assert root is not None
-        return ops.write_parent_summary(root, path, content, children_digest, meta=meta)
-
-    @server.tool(name="kvault_update_summaries")
-    def kvault_update_summaries(
-        updates: List[Dict[str, Any]], kg_root: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Batch-update summaries."""
-        root, err = _tool_root(bound_root, kg_root)
-        if err:
-            return err
-        assert root is not None
-        return ops.update_summaries(root, updates)
 
     @server.tool(name="kvault_get_parent_summaries")
     def kvault_get_parent_summaries(path: str, kg_root: Optional[str] = None) -> Dict[str, Any]:
@@ -405,19 +419,88 @@ def create_server(kb_root: Path | str) -> Any:
         """Compatibility alias returning all summary propagation targets."""
         return kvault_get_parent_summaries(path=path, kg_root=kg_root)
 
-    @server.tool(name="kvault_write_journal")
-    def kvault_write_journal(
-        actions: List[Dict[str, Any]],
-        source: str,
-        date: Optional[str] = None,
+    @server.tool(name="kvault_reconcile_prepare")
+    def kvault_reconcile_prepare(
+        event_ids: List[str],
+        paths: Optional[List[str]] = None,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Write a journal entry."""
+        """Load evidence, policy, bounded orientation, and requested node revisions."""
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        return ops.write_journal(root, actions=actions, source=source, date=date)
+        try:
+            return prepare_reconciliation(root, event_ids, paths=paths)
+        except Exception as exc:
+            details = exc.details if isinstance(exc, ReconciliationError) else None
+            return error_response(ErrorCode.WORKFLOW_ERROR, str(exc), details=details)
+
+    @server.tool(name="kvault_reconcile_apply")
+    def kvault_reconcile_apply(
+        plan: Dict[str, Any], kg_root: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Policy-check and atomically apply a complete reconciliation plan."""
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        try:
+            result = apply_reconciliation(root, ReconciliationPlan.model_validate(plan))
+            return result.model_dump(mode="json")
+        except (ReconciliationError, ValueError) as exc:
+            details = exc.details if isinstance(exc, ReconciliationError) else None
+            return error_response(ErrorCode.WORKFLOW_ERROR, str(exc), details=details)
+
+    @server.tool(name="kvault_reconcile_approve")
+    def kvault_reconcile_approve(
+        reconciliation_id: str,
+        actor: str,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Apply an unchanged review-gated plan after explicit human approval."""
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        try:
+            return approve_reconciliation(root, reconciliation_id, actor).model_dump(mode="json")
+        except Exception as exc:
+            details = exc.details if isinstance(exc, ReconciliationError) else None
+            return error_response(ErrorCode.WORKFLOW_ERROR, str(exc), details=details)
+
+    @server.tool(name="kvault_reconcile_status")
+    def kvault_reconcile_status(
+        reconciliation_id: str, kg_root: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Inspect immutable and operational reconciliation state."""
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        try:
+            return reconciliation_status(root, reconciliation_id)
+        except Exception as exc:
+            details = exc.details if isinstance(exc, ReconciliationError) else None
+            code = (
+                ErrorCode.NOT_FOUND
+                if isinstance(exc, ReconciliationError) and exc.code == "reconciliation_not_found"
+                else ErrorCode.WORKFLOW_ERROR
+            )
+            return error_response(code, str(exc), details=details)
+
+    @server.tool(name="kvault_reconcile_recover")
+    def kvault_reconcile_recover(kg_root: Optional[str] = None) -> Dict[str, Any]:
+        """Recover interrupted transactions without clearing a live lock."""
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        try:
+            return recover_reconciliations(root)
+        except Exception as exc:
+            details = exc.details if isinstance(exc, ReconciliationError) else None
+            return error_response(ErrorCode.WORKFLOW_ERROR, str(exc), details=details)
 
     @server.tool(name="kvault_generate_daily_artifact")
     def kvault_generate_daily_artifact(
@@ -444,7 +527,8 @@ def create_server(kb_root: Path | str) -> Any:
         if err:
             return err
         assert root is not None
-        return success_response(ops.validate_kb(root))
+        result = audit_kb(root)
+        return {"success": result["valid"], **result}
 
     @server.tool(name="kvault_log_phase")
     def kvault_log_phase(

@@ -448,7 +448,7 @@ class TestPathSafety:
         )
         assert not result.get("success")
         assert result["error_code"] == "validation_error"
-        assert "Path escapes KB root" in result["error"]
+        assert "Invalid path component" in result["error"]
         assert not (initialized_kb.parent / "escaped_dir" / "_summary.md").exists()
 
     def test_move_entity_rejects_invalid_source_path(self, initialized_kb):

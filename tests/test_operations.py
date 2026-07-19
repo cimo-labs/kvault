@@ -222,7 +222,7 @@ class TestWriteEntity:
         entity = ops.read_entity(empty_ops_kb, "people/friends/frank")
         assert entity["meta"]["source"] == "auto:mcp"
 
-    def test_create_deep_entity_path(self, empty_ops_kb):
+    def test_create_deep_entity_path_requires_existing_parent_nodes(self, empty_ops_kb):
         deep_path = "people/contacts/professional/education/person"
         result = ops.write_entity(
             empty_ops_kb,
@@ -230,8 +230,9 @@ class TestWriteEntity:
             "# Person\n\nDeep contact path.\n",
             create=True,
         )
-        assert result["success"]
-        assert (empty_ops_kb / deep_path / "_summary.md").exists()
+        assert result["success"] is False
+        assert result["error_code"] == "validation_error"
+        assert not (empty_ops_kb / deep_path).exists()
 
 
 class TestWriteNode:
@@ -703,7 +704,7 @@ class TestIncompleteEntity:
     def test_regression_rich_entity_not_flagged_via_validate(self, empty_ops_kb):
         ops.write_entity(
             empty_ops_kb,
-            "people/contacts/cisco_drive",
+            "people/friends/cisco_drive",
             "# Cisco Drive\n\nActive RFQ for friction plates.\n\n"
             "## Pricing\nLead time: TBD\nVolume: 5000 units\n",
             meta={"source": "test", "aliases": ["Cisco Drive"]},
@@ -716,7 +717,7 @@ class TestIncompleteEntity:
     def test_actual_stub_flagged_via_validate(self, empty_ops_kb):
         ops.write_entity(
             empty_ops_kb,
-            "people/contacts/stub_co",
+            "people/friends/stub_co",
             "# Stub Co\n\nContext TBD\n",
             meta={"source": "test", "aliases": ["Stub Co"]},
             create=True,
@@ -724,7 +725,7 @@ class TestIncompleteEntity:
         result = ops.validate_kb(empty_ops_kb)
         incomplete = [i for i in result["issues"] if i["type"] == "incomplete_entity"]
         assert len(incomplete) == 1
-        assert incomplete[0]["path"] == "people/contacts/stub_co"
+        assert incomplete[0]["path"] == "people/friends/stub_co"
         assert incomplete[0]["severity"] == "info"
 
 

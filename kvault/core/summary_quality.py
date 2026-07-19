@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Set, Tuple
 
 from kvault.core.frontmatter import parse_frontmatter
+from kvault.core.paths import PathSafetyError, resolve_within_root
 
 _SUMMARY_NAME = "_summary.md"
 
@@ -49,10 +50,22 @@ def audit_summary_quality(kg_root: Path) -> List[SummaryQualityIssue]:
     summaries poor navigation surfaces: missing child mentions, very short
     rollups, and placeholder/redirect language.
     """
-    root = Path(kg_root)
+    root = Path(kg_root).resolve()
     issues: List[SummaryQualityIssue] = []
 
     for summary_path in sorted(root.rglob(_SUMMARY_NAME)):
+        try:
+            summary_path = resolve_within_root(
+                root,
+                summary_path.relative_to(root),
+                allow_root=False,
+                must_exist=True,
+                reject_symlinks=True,
+            )
+        except (PathSafetyError, ValueError):
+            continue
+        if not summary_path.is_file() or summary_path.is_symlink():
+            continue
         parent_dir = summary_path.parent
         if _is_hidden_path(root, parent_dir):
             continue
@@ -147,7 +160,13 @@ def _child_summary_dirs(parent_dir: Path) -> List[Path]:
     except OSError:
         return []
     for child in entries:
-        if child.is_dir() and not child.name.startswith(".") and (child / _SUMMARY_NAME).exists():
+        if (
+            child.is_dir()
+            and not child.is_symlink()
+            and not child.name.startswith(".")
+            and (child / _SUMMARY_NAME).is_file()
+            and not (child / _SUMMARY_NAME).is_symlink()
+        ):
             children.append(child)
     return sorted(children)
 
@@ -161,6 +180,16 @@ def _display_summary_path(kg_root: Path, summary_path: Path) -> str:
 def _descendant_summary_count(kg_root: Path, parent_dir: Path) -> int:
     count = 0
     for summary_path in parent_dir.rglob(_SUMMARY_NAME):
+        try:
+            summary_path = resolve_within_root(
+                kg_root,
+                summary_path.relative_to(kg_root),
+                allow_root=False,
+                must_exist=True,
+                reject_symlinks=True,
+            )
+        except (PathSafetyError, ValueError):
+            continue
         if summary_path.parent == parent_dir:
             continue
         if _is_hidden_path(kg_root, summary_path.parent):

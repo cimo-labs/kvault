@@ -4,10 +4,12 @@ import json
 from datetime import date
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from kvault.cli.main import cli
 from kvault.core.daily_artifacts import generate_daily_artifact
+from kvault.core.paths import PathSafetyError
 
 
 def test_generate_daily_artifact_creates_expected_sections(sample_kb):
@@ -87,3 +89,25 @@ def test_cli_artifact_daily_json(sample_kb):
     assert data["kg_root"] == str(sample_kb.resolve())
     assert data["relative_path"] == ".kvault/artifacts/daily/2026-02-14.md"
     assert "# Daily Artifact - 2026-02-14" in data["content"]
+
+
+def test_daily_artifact_does_not_read_symlinked_source_outside_root(sample_kb, tmp_path):
+    outside = tmp_path / "outside-root-summary.md"
+    outside.write_text("# Secret\n\nOUTSIDE SENTINEL\n", encoding="utf-8")
+    (sample_kb / "_summary.md").unlink()
+    (sample_kb / "_summary.md").symlink_to(outside)
+
+    result = generate_daily_artifact(sample_kb, artifact_date=date(2026, 2, 15), force=True)
+
+    assert "OUTSIDE SENTINEL" not in result.content
+
+
+def test_daily_artifact_refuses_symlinked_output_directory(sample_kb, tmp_path):
+    outside = tmp_path / "outside-artifacts"
+    outside.mkdir()
+    (sample_kb / ".kvault" / "artifacts").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(PathSafetyError, match="Symlink"):
+        generate_daily_artifact(sample_kb, artifact_date=date(2026, 2, 16), force=True)
+
+    assert not (outside / "daily" / "2026-02-16.md").exists()

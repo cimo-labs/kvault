@@ -48,8 +48,9 @@ class TestSimpleStorage:
         path = storage.create_entity("people/alice", meta, summary)
 
         assert path.exists()
-        assert (path / "_meta.json").exists()
+        assert not (path / "_meta.json").exists()
         assert (path / "_summary.md").exists()
+        assert (path / "_summary.md").read_text().startswith("---\n")
 
     def test_create_entity_sets_defaults(self, tmp_path):
         """Test that create_entity sets default values."""

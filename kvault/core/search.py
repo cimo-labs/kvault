@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from kvault.core.frontmatter import parse_frontmatter
+from kvault.core.paths import PathSafetyError, resolve_within_root
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _H_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", re.MULTILINE)
@@ -125,14 +126,21 @@ def search_nodes(
 
 def scan_search_documents(kg_root: Path) -> List[SearchDocument]:
     """Return searchable documents for every visible ``_summary.md`` node."""
-    kg_root = Path(kg_root)
+    kg_root = Path(kg_root).resolve()
     documents: List[SearchDocument] = []
     for summary_path in sorted(kg_root.rglob("_summary.md")):
         try:
             rel_summary = summary_path.relative_to(kg_root)
-        except ValueError:
+            summary_path = resolve_within_root(
+                kg_root,
+                rel_summary,
+                allow_root=False,
+                must_exist=True,
+                reject_symlinks=True,
+            )
+        except (PathSafetyError, ValueError):
             continue
-        if _is_hidden(rel_summary.parts):
+        if _is_hidden(rel_summary.parts) or not summary_path.is_file() or summary_path.is_symlink():
             continue
 
         node_path = (

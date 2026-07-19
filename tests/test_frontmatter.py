@@ -1,6 +1,14 @@
 """Tests for kvault.core.frontmatter module."""
 
-from kvault.core.frontmatter import build_frontmatter, merge_frontmatter, parse_frontmatter
+import pytest
+
+from kvault.core.frontmatter import (
+    FrontmatterError,
+    build_frontmatter,
+    merge_frontmatter,
+    parse_frontmatter,
+    parse_frontmatter_compat,
+)
 
 
 class TestParseFrontmatter:
@@ -25,9 +33,8 @@ class TestParseFrontmatter:
 
     def test_unclosed_frontmatter(self):
         content = "---\nname: Alice\nThis never closes"
-        meta, body = parse_frontmatter(content)
-        assert meta == {}
-        assert body == content
+        with pytest.raises(FrontmatterError, match="Unclosed"):
+            parse_frontmatter(content)
 
     def test_frontmatter_only_dashes(self):
         content = "---\n---\n\nBody here."
@@ -54,9 +61,18 @@ class TestParseFrontmatter:
 
     def test_invalid_yaml(self):
         content = "---\n: invalid: yaml: [unclosed\n---\n\nBody."
-        meta, body = parse_frontmatter(content)
+        with pytest.raises(FrontmatterError, match="Invalid YAML"):
+            parse_frontmatter(content)
+
+        meta, body = parse_frontmatter_compat(content)
         assert meta == {}
         assert body == content
+
+    @pytest.mark.parametrize("value", ["- item", "plain scalar", "42"])
+    def test_frontmatter_must_be_mapping(self, value):
+        content = f"---\n{value}\n---\n\nBody."
+        with pytest.raises(FrontmatterError, match="must be a mapping"):
+            parse_frontmatter(content)
 
     def test_preserves_body_content(self):
         content = "---\nkey: value\n---\n\nLine 1\nLine 2\n\nLine 3\n"

@@ -13,6 +13,7 @@ import re
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from kvault.core.frontmatter import parse_frontmatter
+from kvault.core.paths import PathSafetyError, resolve_within_root
 
 
 @dataclass(frozen=True)
@@ -35,11 +36,21 @@ def parse_iso_date(value: Optional[str]) -> date:
         raise ValueError(f"Invalid date '{value}'. Expected format: YYYY-MM-DD") from exc
 
 
-def _read_markdown_body(path: Path) -> str:
+def _read_markdown_body(root: Path, path: Path) -> str:
     """Read markdown file and strip optional YAML frontmatter."""
-    if not path.exists():
+    try:
+        safe_path = resolve_within_root(
+            root,
+            path.relative_to(root),
+            allow_root=False,
+            must_exist=True,
+            reject_symlinks=True,
+        )
+    except (PathSafetyError, ValueError):
         return ""
-    raw = path.read_text()
+    if not safe_path.is_file() or safe_path.is_symlink():
+        return ""
+    raw = safe_path.read_text()
     _, body = parse_frontmatter(raw)
     return body.strip()
 
@@ -127,7 +138,7 @@ def _recent_journal_excerpt(
     for path in _journal_candidates(kg_root, artifact_date):
         if not path.exists():
             continue
-        content = _read_markdown_body(path)
+        content = _read_markdown_body(kg_root, path)
         sections = _extract_journal_sections(content, up_to=artifact_date)
         if not sections:
             continue
@@ -219,8 +230,11 @@ def generate_daily_artifact(
         raise ValueError(f"Knowledge base root does not exist: {resolved_root}")
 
     target_date = artifact_date or date.today()
-    artifact_path = (
-        resolved_root / ".kvault" / "artifacts" / "daily" / f"{target_date.isoformat()}.md"
+    artifact_path = resolve_within_root(
+        resolved_root,
+        Path(".kvault") / "artifacts" / "daily" / f"{target_date.isoformat()}.md",
+        allow_root=False,
+        reject_symlinks=True,
     )
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -237,9 +251,9 @@ def generate_daily_artifact(
     people_summary_path = resolved_root / "people" / "_summary.md"
     projects_summary_path = resolved_root / "projects" / "_summary.md"
 
-    root_summary = _read_markdown_body(root_summary_path)
-    people_summary = _read_markdown_body(people_summary_path)
-    projects_summary = _read_markdown_body(projects_summary_path)
+    root_summary = _read_markdown_body(resolved_root, root_summary_path)
+    people_summary = _read_markdown_body(resolved_root, people_summary_path)
+    projects_summary = _read_markdown_body(resolved_root, projects_summary_path)
     journal_source_path, recent_journal = _recent_journal_excerpt(resolved_root, target_date)
 
     content = _build_daily_content(

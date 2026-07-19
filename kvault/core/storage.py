@@ -1,23 +1,22 @@
-"""
-SimpleStorage - Filesystem storage with minimal schema.
-
-Stores entities as directories with:
-- _meta.json: 4-field metadata (created, last_updated, sources, aliases)
-- _summary.md: Freeform markdown content
-
-Also provides scan_entities() for walking the KB and parsing entity metadata.
-"""
+"""Deprecated storage adapter plus canonical frontmatter entity scanning."""
 
 import json
 import os
 import re
 import shutil
+import warnings
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from kvault.core.frontmatter import parse_frontmatter
+from kvault.core.frontmatter import build_frontmatter, parse_frontmatter
+from kvault.core.paths import (
+    PathSafetyError,
+    resolve_node_path,
+    resolve_within_root,
+    validate_node_target,
+)
 
 
 def normalize_entity_id(name: str) -> str:
@@ -43,15 +42,12 @@ def normalize_entity_id(name: str) -> str:
 
 
 class SimpleStorage:
-    """Filesystem storage with minimal schema.
+    """Deprecated compatibility adapter over canonical frontmatter nodes.
 
-    Schema for _meta.json (4 required fields):
-    - created: ISO date when entity was created
-    - last_updated: ISO date of last update
-    - sources: List of source identifiers
-    - aliases: List of alternative names/emails
-
-    Additional fields are allowed but not required.
+    New mutations should use :mod:`kvault.core.events` and
+    :mod:`kvault.core.reconciliation`. The legacy metadata names
+    ``last_updated`` and ``sources`` remain accepted at this API boundary, but
+    new files contain only canonical YAML frontmatter in ``_summary.md``.
     """
 
     REQUIRED_FIELDS = ["created", "last_updated", "sources", "aliases"]
@@ -62,22 +58,67 @@ class SimpleStorage:
         Args:
             kg_root: Root directory of the knowledge graph
         """
-        self.kg_root = Path(kg_root)
+        warnings.warn(
+            "SimpleStorage is deprecated; use capture_event and reconciliation instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.kg_root = Path(kg_root).expanduser().resolve()
+
+    @staticmethod
+    def _canonical_meta(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Translate legacy field names to the canonical frontmatter schema."""
+        meta = dict(data)
+        updated = meta.pop("last_updated", None)
+        sources = meta.pop("sources", None)
+        if "updated" not in meta and updated is not None:
+            meta["updated"] = updated
+        if not meta.get("source") and sources:
+            if isinstance(sources, list):
+                meta["source"] = str(sources[0]) if sources else "legacy:simple-storage"
+            else:
+                meta["source"] = str(sources)
+        meta.setdefault("source", "legacy:simple-storage")
+        meta.setdefault("aliases", [])
+        if not isinstance(meta["aliases"], list):
+            raise ValueError("frontmatter field 'aliases' must be a list")
+        return meta
+
+    @staticmethod
+    def _legacy_view(meta: Dict[str, Any]) -> Dict[str, Any]:
+        """Return compatibility aliases without persisting legacy fields."""
+        result = dict(meta)
+        result.setdefault("last_updated", result.get("updated"))
+        source = result.get("source")
+        result.setdefault("sources", [source] if source else [])
+        return result
 
     def _get_entity_path(self, entity_path: str) -> Path:
         """Get full filesystem path for an entity."""
-        return self.kg_root / entity_path
+        return resolve_node_path(self.kg_root, entity_path)
 
     def _get_meta_path(self, entity_path: str) -> Path:
         """Get path to _meta.json for an entity."""
-        return self._get_entity_path(entity_path) / "_meta.json"
+        self._get_entity_path(entity_path)
+        return resolve_within_root(
+            self.kg_root,
+            Path(entity_path) / "_meta.json",
+            allow_root=False,
+            reject_symlinks=True,
+        )
 
     def _get_summary_path(self, entity_path: str) -> Path:
         """Get path to _summary.md for an entity."""
-        return self._get_entity_path(entity_path) / "_summary.md"
+        self._get_entity_path(entity_path)
+        return resolve_within_root(
+            self.kg_root,
+            Path(entity_path) / "_summary.md",
+            allow_root=False,
+            reject_symlinks=True,
+        )
 
     def read_meta(self, entity_path: str) -> Optional[Dict[str, Any]]:
-        """Read _meta.json for an entity.
+        """Read entity metadata from frontmatter, with legacy JSON fallback.
 
         Args:
             entity_path: Relative path to entity (e.g., "people/collaborators/alice_smith")
@@ -85,15 +126,21 @@ class SimpleStorage:
         Returns:
             Metadata dictionary if found, None otherwise
         """
-        meta_path = self._get_meta_path(entity_path)
-        if not meta_path.exists():
-            return None
+        summary_path = self._get_summary_path(entity_path)
+        if summary_path.exists():
+            meta, _ = parse_frontmatter(summary_path.read_text(encoding="utf-8"))
+            if meta:
+                return self._legacy_view(meta)
 
-        with open(meta_path) as f:
-            return json.load(f)
+        # Read-only fallback for pre-frontmatter vaults.
+        meta_path = self._get_meta_path(entity_path)
+        if meta_path.exists():
+            with meta_path.open(encoding="utf-8") as handle:
+                return json.load(handle)
+        return None
 
     def write_meta(self, entity_path: str, data: Dict[str, Any]) -> None:
-        """Write _meta.json for an entity.
+        """Rewrite canonical frontmatter while preserving the Markdown body.
 
         Args:
             entity_path: Relative path to entity
@@ -102,16 +149,28 @@ class SimpleStorage:
         Raises:
             ValueError: If required fields are missing
         """
-        missing = [f for f in self.REQUIRED_FIELDS if f not in data]
+        missing = []
+        if "created" not in data:
+            missing.append("created")
+        if "updated" not in data and "last_updated" not in data:
+            missing.append("updated")
+        if "source" not in data and "sources" not in data:
+            missing.append("source")
+        if "aliases" not in data:
+            missing.append("aliases")
         if missing:
             raise ValueError(f"Missing required fields: {missing}")
 
+        summary_path = self._get_summary_path(entity_path)
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        body = self.read_summary(entity_path) or ""
+        summary_path.write_text(
+            build_frontmatter(self._canonical_meta(data)) + body,
+            encoding="utf-8",
+        )
         meta_path = self._get_meta_path(entity_path)
-        meta_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(meta_path, "w") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
+        if meta_path.exists():
+            meta_path.unlink()
 
     def read_summary(self, entity_path: str) -> Optional[str]:
         """Read _summary.md for an entity.
@@ -126,8 +185,9 @@ class SimpleStorage:
         if not summary_path.exists():
             return None
 
-        with open(summary_path) as f:
-            return f.read()
+        raw = summary_path.read_text(encoding="utf-8")
+        meta, body = parse_frontmatter(raw)
+        return body if meta else raw
 
     def write_summary(self, entity_path: str, content: str) -> None:
         """Write _summary.md for an entity.
@@ -138,12 +198,22 @@ class SimpleStorage:
         """
         summary_path = self._get_summary_path(entity_path)
         summary_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(summary_path, "w") as f:
-            f.write(content)
+        existing = self.read_meta(entity_path)
+        if existing is None:
+            now = datetime.now().strftime("%Y-%m-%d")
+            existing = {
+                "created": now,
+                "updated": now,
+                "source": "legacy:simple-storage",
+                "aliases": [],
+            }
+        summary_path.write_text(
+            build_frontmatter(self._canonical_meta(existing)) + content,
+            encoding="utf-8",
+        )
 
     def entity_exists(self, entity_path: str) -> bool:
-        """Check if entity directory exists with _meta.json.
+        """Check if an entity directory contains ``_summary.md``.
 
         Args:
             entity_path: Relative path to entity
@@ -151,7 +221,7 @@ class SimpleStorage:
         Returns:
             True if entity exists
         """
-        return self._get_meta_path(entity_path).exists()
+        return self._get_summary_path(entity_path).is_file()
 
     def create_entity(
         self,
@@ -159,7 +229,7 @@ class SimpleStorage:
         meta: Dict[str, Any],
         summary: str,
     ) -> Path:
-        """Create new entity with _meta.json and _summary.md.
+        """Create a new entity as one frontmatter-backed ``_summary.md``.
 
         Args:
             entity_path: Relative path for new entity
@@ -178,15 +248,25 @@ class SimpleStorage:
         # Ensure required fields with defaults
         now = datetime.now().strftime("%Y-%m-%d")
         meta.setdefault("created", now)
-        meta.setdefault("last_updated", now)
-        meta.setdefault("sources", [])
+        meta.setdefault("updated", meta.get("last_updated", now))
+        if not meta.get("source"):
+            sources = meta.get("sources")
+            if isinstance(sources, list) and sources:
+                meta["source"] = str(sources[0])
+            elif sources:
+                meta["source"] = str(sources)
+            else:
+                meta["source"] = "legacy:simple-storage"
         meta.setdefault("aliases", [])
 
         entity_dir = self._get_entity_path(entity_path)
         entity_dir.mkdir(parents=True, exist_ok=True)
 
-        self.write_meta(entity_path, meta)
-        self.write_summary(entity_path, summary)
+        canonical = self._canonical_meta(meta)
+        entity_dir.joinpath("_summary.md").write_text(
+            build_frontmatter(canonical) + summary,
+            encoding="utf-8",
+        )
 
         return entity_dir
 
@@ -212,7 +292,13 @@ class SimpleStorage:
         if meta:
             existing_meta = self.read_meta(entity_path) or {}
             existing_meta.update(meta)
-            existing_meta["last_updated"] = datetime.now().strftime("%Y-%m-%d")
+            if "sources" in meta and "source" not in meta:
+                sources = meta["sources"]
+                if isinstance(sources, list) and sources:
+                    existing_meta["source"] = str(sources[0])
+                elif sources:
+                    existing_meta["source"] = str(sources)
+            existing_meta["updated"] = datetime.now().strftime("%Y-%m-%d")
             self.write_meta(entity_path, existing_meta)
 
         if summary is not None:
@@ -225,8 +311,10 @@ class SimpleStorage:
             entity_path: Relative path to entity
         """
         entity_dir = self._get_entity_path(entity_path)
-        if entity_dir.exists():
-            shutil.rmtree(entity_dir)
+        if not entity_dir.exists():
+            return
+        entity_dir = validate_node_target(self.kg_root, entity_path)
+        shutil.rmtree(entity_dir)
 
     def list_entities(self, category_path: str) -> List[str]:
         """List entity paths under a category.
@@ -243,9 +331,9 @@ class SimpleStorage:
 
         entities = []
         for item in category_dir.iterdir():
-            if item.is_dir() and not item.name.startswith("_"):
-                meta_path = item / "_meta.json"
-                if meta_path.exists():
+            if item.is_dir() and not item.is_symlink() and not item.name.startswith("_"):
+                summary_path = item / "_summary.md"
+                if summary_path.is_file() and not summary_path.is_symlink():
                     entities.append(str(item.relative_to(self.kg_root)))
 
         return sorted(entities)
@@ -258,14 +346,24 @@ class SimpleStorage:
         """
         entities = []
 
-        for meta_path in self.kg_root.rglob("_meta.json"):
+        for summary_path in self.kg_root.rglob("_summary.md"):
             # Skip hidden directories and .kvault
-            if any(part.startswith(".") for part in meta_path.parts):
+            rel = summary_path.parent.relative_to(self.kg_root)
+            if not rel.parts or any(part.startswith((".", "_")) for part in rel.parts):
                 continue
-
-            entity_dir = meta_path.parent
-            rel_path = str(entity_dir.relative_to(self.kg_root))
-            entities.append(rel_path)
+            if rel.parts[0] == "journal":
+                continue
+            try:
+                resolve_within_root(
+                    self.kg_root,
+                    summary_path.relative_to(self.kg_root),
+                    allow_root=False,
+                    must_exist=True,
+                    reject_symlinks=True,
+                )
+            except PathSafetyError:
+                continue
+            entities.append(str(rel))
 
         return sorted(entities)
 
@@ -279,6 +377,7 @@ class SimpleStorage:
             List of ancestor paths (closest first, excluding the entity itself)
             Example: ["people/collaborators", "people"] for "people/collaborators/alice"
         """
+        self._get_entity_path(entity_path)  # Validate containment and reserved namespaces.
         parts = Path(entity_path).parts
         ancestors = []
 
@@ -303,7 +402,7 @@ class SimpleStorage:
 
         children = []
         for item in category_dir.iterdir():
-            if item.is_dir() and not item.name.startswith("_"):
+            if item.is_dir() and not item.is_symlink() and not item.name.startswith("_"):
                 rel_path = str(item.relative_to(self.kg_root))
                 children.append(rel_path)
 
@@ -350,10 +449,23 @@ def scan_entities(kg_root: Path) -> List[EntityRecord]:
 
     Returns list of EntityRecord. Cheap at < 1000 entities.
     """
-    kg_root = Path(kg_root)
+    kg_root = Path(kg_root).resolve()
     entities: List[EntityRecord] = []
 
     for summary_path in kg_root.rglob("_summary.md"):
+        try:
+            rel_summary = summary_path.relative_to(kg_root)
+            summary_path = resolve_within_root(
+                kg_root,
+                rel_summary,
+                allow_root=False,
+                must_exist=True,
+                reject_symlinks=True,
+            )
+        except (PathSafetyError, ValueError):
+            continue
+        if not summary_path.is_file() or summary_path.is_symlink():
+            continue
         entity_dir = summary_path.parent
         rel_path = entity_dir.relative_to(kg_root)
 
@@ -374,7 +486,7 @@ def scan_entities(kg_root: Path) -> List[EntityRecord]:
         if not meta:
             # Check for legacy _meta.json
             meta_path = entity_dir / "_meta.json"
-            if meta_path.exists():
+            if meta_path.exists() and not meta_path.is_symlink():
                 try:
                     meta = json.loads(meta_path.read_text())
                 except (json.JSONDecodeError, OSError):

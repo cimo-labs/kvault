@@ -146,3 +146,15 @@ def test_fresh_init_has_no_summary_quality_warnings(tmp_path):
     assert init_result.exit_code == 0
 
     assert audit_summary_quality(kb) == []
+
+
+def test_summary_quality_skips_symlinked_summaries(tmp_path):
+    kb = _basic_kb(tmp_path)
+    _write_summary(kb, ".", "# Root\n\nA stable root summary with no visible children.")
+    outside = tmp_path / "outside.md"
+    outside.write_text("---\n- invalid\n---\n", encoding="utf-8")
+    child = kb / "unsafe"
+    child.mkdir()
+    (child / "_summary.md").symlink_to(outside)
+
+    assert audit_summary_quality(kb) == []

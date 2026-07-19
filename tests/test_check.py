@@ -100,20 +100,14 @@ def test_propagation_falls_back_to_mtime(tmp_path):
     assert "newer" in prop_warnings[0]
 
 
-# ── write_entity ancestors tests ─────────────────────────────────────
+# ── ancestor navigation tests ────────────────────────────────────────
 
 
-def test_write_entity_returns_ancestors(empty_kb):
-    """write_entity result should include ancestors list with current content."""
+def test_get_ancestors_returns_current_content(empty_kb):
+    """Read-only ancestor navigation returns the current parent summaries."""
     from kvault.core import operations as ops
 
-    result = ops.write_entity(
-        empty_kb,
-        path="people/friends/test_person",
-        content="# Test Person\n\nA test entity.\n",
-        meta={"source": "manual", "aliases": ["Test Person"]},
-        create=True,
-    )
+    result = ops.get_ancestors(empty_kb, "people/friends/test_person")
 
     assert result["success"] is True
     assert "ancestors" in result
@@ -125,13 +119,7 @@ def test_ancestors_includes_root(empty_kb):
     """ancestors list should include '.' for root."""
     from kvault.core import operations as ops
 
-    result = ops.write_entity(
-        empty_kb,
-        path="people/friends/test_person",
-        content="# Test Person\n",
-        meta={"source": "manual", "aliases": ["Test Person"]},
-        create=True,
-    )
+    result = ops.get_ancestors(empty_kb, "people/friends/test_person")
 
     ancestor_paths = [a["path"] for a in result["ancestors"]]
     assert "." in ancestor_paths

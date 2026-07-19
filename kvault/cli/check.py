@@ -12,16 +12,20 @@ Exit codes:
 """
 
 import json
-import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional
 
 import click
 
 from kvault.core import operations as ops
-from kvault.core.frontmatter import parse_frontmatter
+from kvault.core.frontmatter import FrontmatterError, parse_frontmatter
 from kvault.core.summary_quality import audit_summary_quality, format_summary_quality_warnings
+from kvault.core.validation import (
+    audit_kb,
+    get_updated_date as _core_get_updated_date,
+    propagation_warnings,
+)
 
 DEFAULT_THRESHOLD_MINUTES = 5
 
@@ -36,28 +40,7 @@ def _get_updated_date(path: Path) -> Optional[date]:
 
     Returns a date if found, None otherwise (caller should fall back to mtime).
     """
-    try:
-        content = path.read_text()
-    except Exception:
-        return None
-
-    meta, _ = parse_frontmatter(content)
-    if not meta:
-        return None
-
-    for field in ("updated", "created"):
-        val = meta.get(field)
-        if val is None:
-            continue
-        if isinstance(val, date):
-            return val
-        # Handle string dates like '2026-01-15'
-        try:
-            return datetime.strptime(str(val).strip("'\""), "%Y-%m-%d").date()
-        except (ValueError, TypeError):
-            continue
-
-    return None
+    return _core_get_updated_date(path)
 
 
 def _find_kb_root() -> Optional[Path]:
@@ -104,52 +87,7 @@ def check_propagation(kb_root: Path, threshold_minutes: int) -> List[str]:
     2. Fallback: If either side has no frontmatter date, use file mtime
        with the threshold_minutes parameter.
     """
-    warnings = []
-    threshold = timedelta(minutes=threshold_minutes)
-
-    for summary in kb_root.rglob("_summary.md"):
-        parent_dir = summary.parent
-
-        children = []
-        for child_dir in parent_dir.iterdir():
-            if child_dir.is_dir() and not child_dir.name.startswith("."):
-                child_summary = child_dir / "_summary.md"
-                if child_summary.exists():
-                    children.append(child_summary)
-
-        if not children:
-            continue
-
-        parent_date = _get_updated_date(summary)
-
-        for child in children:
-            child_date = _get_updated_date(child)
-
-            stale = False
-            detail = ""
-
-            if child_date is not None and parent_date is not None:
-                # Primary: frontmatter date comparison (day-level)
-                if child_date > parent_date:
-                    stale = True
-                    detail = f"child updated {child_date}, parent updated {parent_date}"
-            else:
-                # Fallback: mtime comparison with threshold
-                parent_mtime = _get_mtime(summary)
-                child_mtime = _get_mtime(child)
-                delta = child_mtime - parent_mtime
-                if delta > threshold:
-                    stale = True
-                    detail = f"{int(delta.total_seconds()) // 60}m newer"
-
-            if stale:
-                rel_parent = summary.relative_to(kb_root)
-                rel_child = child.relative_to(kb_root)
-                parent_path = str(rel_parent)
-                child_name = rel_child.parent.name
-                warnings.append(f"PROPAGATE: edit {parent_path} ({child_name}/ is {detail})")
-
-    return warnings
+    return propagation_warnings(kb_root, threshold_minutes)
 
 
 def check_journal(kb_root: Path) -> List[str]:
@@ -187,7 +125,11 @@ def check_frontmatter(kb_root: Path) -> List[str]:
             entities_with_issues.append(rel_path.parent.name)
             continue
 
-        meta, _ = parse_frontmatter(content)
+        try:
+            meta, _ = parse_frontmatter(content)
+        except FrontmatterError:
+            entities_with_issues.append(rel_path.parent.name)
+            continue
 
         if not meta:
             entities_with_issues.append(rel_path.parent.name)
@@ -266,33 +208,62 @@ def check_kb(
     if explicit_root is None:
         kb_root = _find_kb_root()
         if kb_root is None:
-            # Silent exit if no KB found
-            sys.exit(0)
+            if ctx.obj.get("as_json"):
+                click.echo(
+                    json.dumps(
+                        {
+                            "success": False,
+                            "error_code": "not_initialized",
+                            "error": "No knowledge base root found",
+                        },
+                        indent=2,
+                    )
+                )
+                ctx.exit(1)
+            raise click.ClickException("No knowledge base root found")
     else:
         kb_root = Path(explicit_root).resolve()
 
     if not kb_root.exists():
-        sys.exit(0)
+        if ctx.obj.get("as_json"):
+            click.echo(
+                json.dumps(
+                    {
+                        "success": False,
+                        "error_code": "not_found",
+                        "error": f"Knowledge base root does not exist: {kb_root}",
+                    },
+                    indent=2,
+                )
+            )
+            ctx.exit(1)
+        raise click.ClickException(f"Knowledge base root does not exist: {kb_root}")
 
     allowed_error = ops.validate_allowed_root(kb_root)
     if allowed_error:
         raise click.ClickException(allowed_error)
 
-    hard_warnings: List[str] = []
-    hard_warnings.extend(check_propagation(kb_root, threshold))
-    hard_warnings.extend(check_journal(kb_root))
-    hard_warnings.extend(check_frontmatter(kb_root))
-    hard_warnings.extend(check_directory_size(kb_root))
-
-    summary_issues = [] if no_summary_quality else audit_summary_quality(kb_root)
+    integrity = audit_kb(kb_root, threshold_minutes=threshold)
+    hard_issues = [
+        issue for issue in integrity["issues"] if issue["severity"] in ("error", "warning")
+    ]
+    hard_warnings = [issue["message"] for issue in hard_issues]
+    try:
+        summary_issues = [] if no_summary_quality else audit_summary_quality(kb_root)
+    except FrontmatterError:
+        # The core audit already reports the malformed file as a hard failure.
+        summary_issues = []
 
     if ctx.obj.get("as_json"):
         click.echo(
             json.dumps(
                 {
-                    "success": len(hard_warnings) == 0,
+                    "success": integrity["valid"],
                     "warnings": hard_warnings,
                     "warning_count": len(hard_warnings),
+                    "issues": integrity["issues"],
+                    "issue_count": integrity["issue_count"],
+                    "summary": integrity["summary"],
                     "summary_warnings": [
                         {
                             "path": issue.path,
@@ -309,7 +280,7 @@ def check_kb(
                 default=str,
             )
         )
-        sys.exit(1 if hard_warnings else 0)
+        ctx.exit(1 if hard_warnings else 0)
 
     if hard_warnings:
         prop_warnings = [w for w in hard_warnings if w.startswith("PROPAGATE")]
@@ -330,5 +301,5 @@ def check_kb(
         click.echo(warning)
 
     if hard_warnings:
-        sys.exit(1)
-    sys.exit(0)
+        ctx.exit(1)
+    ctx.exit(0)

@@ -1,15 +1,10 @@
-"""Stateless operations layer for kvault.
+"""Stateless read/navigation operations and pre-0.12 compatibility helpers.
 
-All functions take ``kg_root: Path`` as first argument — no globals, no
-sessions.  Used by both the MCP server and CLI commands.
-
-CLI workflow (2-call write):
-  1. write_entity(kg_root, path, ...) → ancestors + optional auto-journal
-  2. update_summaries(kg_root, updates) → batch propagation
-
-MCP strict parent workflow:
-  1. prepare_summary_update(kg_root, path) → parent + direct children + digest
-  2. write_parent_summary(kg_root, path, content, digest) → stale-child guard
+All functions take ``kg_root: Path`` as their first argument. The 0.12 CLI and
+MCP server use this module for bounded reads, search context, and status. Direct
+write helpers remain import-compatible for older Python callers, but they are
+not supported agent-facing mutation APIs. New mutations must use immutable
+events plus :mod:`kvault.core.reconciliation`.
 """
 
 import hashlib
@@ -22,6 +17,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from kvault.core.frontmatter import build_frontmatter, parse_frontmatter
+from kvault.core.paths import (
+    PathSafetyError,
+    resolve_node_path,
+    resolve_within_root,
+    validate_node_target,
+)
 from kvault.core.storage import (
     SimpleStorage,
     count_entities,
@@ -36,6 +37,7 @@ from kvault.core.validation import (
     normalize_path,
     validate_entity_path,
 )
+from kvault.core.transactions import file_revision
 
 _ALLOWED_ROOTS_ENV = "KVAULT_ALLOWED_ROOTS"
 _NODE_COMPONENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -89,12 +91,10 @@ def validate_allowed_root(candidate_root: Path) -> Optional[str]:
 
 def validate_within_root(kg_root: Path, path: str) -> bool:
     """Return True if *path* resolves inside *kg_root*."""
-    resolved = (kg_root / path).resolve()
-    root_resolved = kg_root.resolve()
     try:
-        resolved.relative_to(root_resolved)
+        resolve_within_root(kg_root, path)
         return True
-    except ValueError:
+    except PathSafetyError:
         return False
 
 
@@ -348,9 +348,22 @@ def _node_kind(kg_root: Path, path: str) -> str:
     if path == ".":
         return "root"
     parts = Path(path).parts
-    node_dir = kg_root / path
+    try:
+        node_dir = resolve_within_root(
+            kg_root,
+            path,
+            allow_root=False,
+            must_exist=True,
+            reject_symlinks=True,
+        )
+    except PathSafetyError:
+        return "invalid"
     has_child_nodes = any(
-        child.is_dir() and not child.name.startswith(".") and (child / "_summary.md").exists()
+        child.is_dir()
+        and not child.is_symlink()
+        and not child.name.startswith(".")
+        and (child / "_summary.md").is_file()
+        and not (child / "_summary.md").is_symlink()
         for child in _safe_iterdir(node_dir)
     )
     if len(parts) < 2 or has_child_nodes:
@@ -375,16 +388,43 @@ def _read_node_raw(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
     if not is_valid or not validate_within_root(kg_root, path):
         return None
 
-    summary_path = _summary_path_for_node(kg_root, path)
-    if not summary_path.exists():
+    try:
+        if path != ".":
+            resolve_within_root(
+                kg_root,
+                path,
+                allow_root=False,
+                must_exist=True,
+                reject_symlinks=True,
+            )
+        summary_path = resolve_within_root(
+            kg_root,
+            _summary_rel_path(path),
+            allow_root=False,
+            must_exist=True,
+            reject_symlinks=True,
+        )
+    except PathSafetyError:
+        return None
+    if not summary_path.is_file() or summary_path.is_symlink():
         return None
     raw = summary_path.read_text()
     meta, body = parse_frontmatter(raw)
     if not meta:
-        meta_path = (kg_root if path == "." else kg_root / path) / "_meta.json"
-        if meta_path.exists():
-            with open(meta_path) as f:
-                meta = json.load(f)
+        meta_relative = Path("_meta.json") if path == "." else Path(path) / "_meta.json"
+        try:
+            meta_path = resolve_within_root(
+                kg_root,
+                meta_relative,
+                allow_root=False,
+                must_exist=True,
+                reject_symlinks=True,
+            )
+        except PathSafetyError:
+            meta_path = None
+        if meta_path is not None and meta_path.is_file():
+            with meta_path.open() as handle:
+                meta = json.load(handle)
     content = body if meta else raw
     return {
         "path": path,
@@ -395,6 +435,7 @@ def _read_node_raw(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
         "raw_content": raw,
         "has_frontmatter": bool(meta),
         "title": _extract_title(path, meta, content),
+        "revision": file_revision(summary_path),
     }
 
 
@@ -406,16 +447,30 @@ def _node_handle(kg_root: Path, path: str) -> Dict[str, Any]:
         "title": raw.get("title")
         or _extract_title(path, raw.get("meta", {}), raw.get("content", "")),
         "summary_path": _summary_rel_path(path),
+        "revision": raw.get("revision"),
     }
 
 
 def _child_node_paths(kg_root: Path, path: str) -> List[str]:
-    node_dir = kg_root if path == "." else kg_root / path
+    try:
+        node_dir = (
+            Path(kg_root).resolve()
+            if path == "."
+            else resolve_within_root(
+                kg_root,
+                path,
+                allow_root=False,
+                must_exist=True,
+                reject_symlinks=True,
+            )
+        )
+    except PathSafetyError:
+        return []
     children: List[str] = []
     for child in _safe_iterdir(node_dir):
-        if not child.is_dir() or child.name.startswith("."):
+        if not child.is_dir() or child.is_symlink() or child.name.startswith("."):
             continue
-        if not (child / "_summary.md").exists():
+        if not (child / "_summary.md").is_file() or (child / "_summary.md").is_symlink():
             continue
         rel_path = str(child.relative_to(kg_root))
         children.append(rel_path)
@@ -434,6 +489,7 @@ def _read_node_shallow(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
         "content": raw["content"],
         "has_frontmatter": raw["has_frontmatter"],
         "title": raw["title"],
+        "revision": raw["revision"],
         "children": [
             _node_handle(kg_root, child) for child in _child_node_paths(kg_root, raw["path"])
         ],
@@ -517,8 +573,17 @@ def _hierarchy_hint(child_count: int) -> Optional[Dict[str, Any]]:
 
 def get_kb_info(kg_root: Path) -> Dict[str, Any]:
     """Return hierarchy, entity count, and root summary for *kg_root*."""
-    root_summary_path = kg_root / "_summary.md"
-    root_summary = root_summary_path.read_text() if root_summary_path.exists() else ""
+    try:
+        root_summary_path = resolve_within_root(
+            kg_root,
+            "_summary.md",
+            allow_root=False,
+            must_exist=True,
+            reject_symlinks=True,
+        )
+        root_summary = root_summary_path.read_text() if root_summary_path.is_file() else ""
+    except PathSafetyError:
+        root_summary = ""
     outline = build_outline(kg_root, depth=2)
     return {
         "kg_root": str(kg_root),
@@ -538,24 +603,47 @@ def _read_entity_raw(kg_root: Path, entity_path: str) -> Optional[Dict[str, Any]
 
     Falls back to legacy ``_meta.json`` for metadata if no frontmatter.
     """
-    if not validate_within_root(kg_root, entity_path):
+    try:
+        full_path = resolve_within_root(
+            kg_root,
+            entity_path,
+            allow_root=False,
+            must_exist=True,
+            reject_symlinks=True,
+        )
+        summary_path = resolve_within_root(
+            kg_root,
+            Path(entity_path) / "_summary.md",
+            allow_root=False,
+            must_exist=True,
+            reject_symlinks=True,
+        )
+    except PathSafetyError:
         return None
-    full_path = kg_root / entity_path
-    summary_path = full_path / "_summary.md"
-    if not summary_path.exists():
+    if not full_path.is_dir() or not summary_path.is_file() or summary_path.is_symlink():
         return None
     content = summary_path.read_text()
     meta, body = parse_frontmatter(content)
     if not meta:
-        meta_path = full_path / "_meta.json"
-        if meta_path.exists():
-            with open(meta_path) as f:
-                meta = json.load(f)
+        try:
+            meta_path = resolve_within_root(
+                kg_root,
+                Path(entity_path) / "_meta.json",
+                allow_root=False,
+                must_exist=True,
+                reject_symlinks=True,
+            )
+        except PathSafetyError:
+            meta_path = None
+        if meta_path is not None and meta_path.is_file():
+            with meta_path.open() as handle:
+                meta = json.load(handle)
     return {
         "path": entity_path,
         "meta": meta,
         "content": body if meta else content,
         "has_frontmatter": bool(meta) and summary_path.exists(),
+        "revision": file_revision(summary_path),
     }
 
 
@@ -569,6 +657,7 @@ def read_entity(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
         "meta": node.get("meta", {}),
         "content": node.get("content", ""),
         "has_frontmatter": node.get("has_frontmatter", False),
+        "revision": node.get("revision"),
     }
     parent = node.get("parent")
     if parent:
@@ -606,19 +695,38 @@ def read_node(kg_root: Path, path: str, parents: str = "immediate") -> Optional[
 def read_summary(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
     """Read ``_summary.md`` at *path*."""
     path = normalize_path(path)
-    if not validate_within_root(kg_root, path):
+    try:
+        if path == ".":
+            relative = Path("_summary.md")
+        elif path.endswith(".md"):
+            relative = Path(path)
+        else:
+            resolve_within_root(
+                kg_root,
+                path,
+                allow_root=False,
+                must_exist=True,
+                reject_symlinks=True,
+            )
+            relative = Path(path) / "_summary.md"
+        summary_path = resolve_within_root(
+            kg_root,
+            relative,
+            allow_root=False,
+            must_exist=True,
+            reject_symlinks=True,
+        )
+    except PathSafetyError:
         return None
-    summary_path = kg_root / path / "_summary.md"
-    if not summary_path.exists():
-        summary_path = kg_root / path
-        if not summary_path.exists() or not path.endswith(".md"):
-            return None
+    if not summary_path.is_file() or summary_path.is_symlink():
+        return None
     content = summary_path.read_text()
     meta, body = parse_frontmatter(content)
     return {
         "path": path,
         "meta": meta,
         "content": body if meta else content,
+        "revision": file_revision(summary_path),
     }
 
 
@@ -728,10 +836,14 @@ def write_node(
     is_valid, err_msg = _validate_node_path(path)
     if not is_valid:
         return error_response(ErrorCode.VALIDATION_ERROR, err_msg or "Invalid path")
-    if not validate_within_root(kg_root, path):
-        return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
-
-    full_path = kg_root if path == "." else kg_root / path
+    try:
+        full_path = (
+            Path(kg_root).resolve()
+            if path == "."
+            else resolve_node_path(kg_root, path, reject_symlinks=True)
+        )
+    except PathSafetyError as exc:
+        return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
     summary_path = _summary_path_for_node(kg_root, path)
 
     # Check existence
@@ -747,6 +859,15 @@ def write_node(
             f"Node doesn't exist: {path}",
             hint="Use create=true to create new entity",
         )
+    if create and full_path.parent != Path(kg_root).resolve():
+        parent_summary = full_path.parent / "_summary.md"
+        if not parent_summary.is_file() or parent_summary.is_symlink():
+            return error_response(
+                ErrorCode.VALIDATION_ERROR,
+                "Immediate parent must already be a semantic node",
+            )
+    if summary_path.is_symlink():
+        return error_response(ErrorCode.VALIDATION_ERROR, "Node summary cannot be a symlink")
 
     if meta is not None and not isinstance(meta, dict):
         return error_response(
@@ -871,14 +992,20 @@ def write_summary(
 ) -> Dict[str, Any]:
     """Write a single ``_summary.md``."""
     path = _normalize_node_path(path)
-    if not validate_within_root(kg_root, path):
-        return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
     is_valid, err_msg = _validate_node_path(path)
     if not is_valid:
         return error_response(ErrorCode.VALIDATION_ERROR, err_msg or "Invalid path")
-    dir_path = kg_root if path == "." else kg_root / path
+    try:
+        dir_path = (
+            Path(kg_root).resolve()
+            if path == "."
+            else resolve_node_path(kg_root, path, must_exist=True, reject_symlinks=True)
+        )
+    except PathSafetyError as exc:
+        return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
     summary_path = _summary_path_for_node(kg_root, path)
-    dir_path.mkdir(parents=True, exist_ok=True)
+    if not dir_path.is_dir() or summary_path.is_symlink():
+        return error_response(ErrorCode.VALIDATION_ERROR, "Summary target is not a real node")
     existing = _read_node_raw(kg_root, path)
     preserved_meta = existing.get("meta", {}) if existing and meta is None else {}
     final_meta = meta if meta is not None else preserved_meta
@@ -1059,13 +1186,15 @@ def search_nodes(
 
 
 def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:
-    """Delete an entity directory."""
+    """Delete a validated semantic node directory (legacy internal API)."""
     path = normalize_path(path)
-    if not validate_within_root(kg_root, path):
-        return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
-    full_path = kg_root / path
-    if not full_path.exists():
-        return error_response(ErrorCode.NOT_FOUND, f"Entity doesn't exist: {path}")
+    try:
+        candidate = resolve_node_path(kg_root, path)
+        if not candidate.exists():
+            return error_response(ErrorCode.NOT_FOUND, f"Entity doesn't exist: {path}")
+        full_path = validate_node_target(kg_root, path, require_exists=True)
+    except PathSafetyError as exc:
+        return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
     shutil.rmtree(full_path)
     return {"success": True, "path": path, "deleted": True}
 
@@ -1081,19 +1210,21 @@ def move_entity(kg_root: Path, source_path: str, target_path: str) -> Dict[str, 
     is_valid, err_msg = validate_entity_path(target_path)
     if not is_valid:
         return error_response(ErrorCode.VALIDATION_ERROR, f"Invalid target path: {err_msg}")
-    if not validate_within_root(kg_root, source_path):
-        return error_response(ErrorCode.VALIDATION_ERROR, "Source path escapes KB root")
-    if not validate_within_root(kg_root, target_path):
-        return error_response(ErrorCode.VALIDATION_ERROR, "Target path escapes KB root")
-
-    source_full = kg_root / source_path
-    target_full = kg_root / target_path
-    if not source_full.exists():
-        return error_response(ErrorCode.NOT_FOUND, f"Source doesn't exist: {source_path}")
+    try:
+        source_candidate = resolve_node_path(kg_root, source_path)
+        if not source_candidate.exists():
+            return error_response(ErrorCode.NOT_FOUND, f"Source doesn't exist: {source_path}")
+        source_full = validate_node_target(kg_root, source_path, require_exists=True)
+        target_full = resolve_node_path(kg_root, target_path)
+    except PathSafetyError as exc:
+        return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
     if target_full.exists():
         return error_response(ErrorCode.ALREADY_EXISTS, f"Target already exists: {target_path}")
-
-    target_full.parent.mkdir(parents=True, exist_ok=True)
+    if target_full.parent != kg_root and not (target_full.parent / "_summary.md").is_file():
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            "Move target parent must already be a semantic node",
+        )
     shutil.move(str(source_full), str(target_full))
     return {"success": True, "source": source_path, "target": target_path}
 
@@ -1158,7 +1289,15 @@ def write_journal(
             pass
 
     journal_rel_path = get_journal_path(dt)
-    journal_full_path = kg_root / journal_rel_path
+    try:
+        journal_full_path = resolve_within_root(
+            kg_root,
+            journal_rel_path,
+            allow_root=False,
+            reject_symlinks=True,
+        )
+    except PathSafetyError as exc:
+        return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
     journal_full_path.parent.mkdir(parents=True, exist_ok=True)
 
     entry = format_journal_entry(actions, source, dt)

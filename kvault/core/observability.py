@@ -7,10 +7,11 @@ Logs agent decisions with structured data for analysis.
 import json
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 
 @dataclass
@@ -72,8 +73,9 @@ class ObservabilityLogger:
 
     def _init_db(self) -> None:
         """Create tables if they don't exist."""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.executescript("""
+        with self._connection() as conn:
+            conn.executescript(
+                """
                 -- Main logs table
                 CREATE TABLE IF NOT EXISTS logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,7 +105,18 @@ class ObservabilityLogger:
                        json_extract(data, '$.confidence') as confidence,
                        json_extract(data, '$.reasoning') as reasoning
                 FROM logs WHERE phase = 'decide';
-            """)
+            """
+            )
+
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """Yield a transactional SQLite connection and always close it."""
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _new_session(self) -> str:
         """Generate a new session ID."""
@@ -131,7 +144,7 @@ class ObservabilityLogger:
                 f"Invalid phase: {phase}. Must be one of {self.PHASES} or start with 'step_'"
             )
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 INSERT INTO logs (session, phase, data)
@@ -294,7 +307,7 @@ class ObservabilityLogger:
         """
         session_id = session_id or self.session_id
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM logs WHERE session = ? ORDER BY id",
@@ -322,7 +335,7 @@ class ObservabilityLogger:
         Returns:
             List of error LogEntry objects
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
 
             if since:
@@ -365,7 +378,7 @@ class ObservabilityLogger:
         Returns:
             List of decision LogEntry objects
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
 
             if action:
@@ -407,7 +420,7 @@ class ObservabilityLogger:
         Returns:
             List of low-confidence LogEntry objects
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -433,7 +446,7 @@ class ObservabilityLogger:
 
     def list_sessions(self, limit: int = 20) -> List[str]:
         """List recent session IDs by most recent activity."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT session
@@ -455,7 +468,7 @@ class ObservabilityLogger:
         Returns:
             Dictionary with summary statistics
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             resolved_session_id = session_id
             if resolved_session_id is None:
                 row = conn.execute("SELECT session FROM logs ORDER BY id DESC LIMIT 1").fetchone()

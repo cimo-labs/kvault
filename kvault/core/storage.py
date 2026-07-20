@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from kvault.core.frontmatter import parse_frontmatter
+from kvault.core.paths import PathSafetyError, resolve_within_root
 
 
 def normalize_entity_id(name: str) -> str:
@@ -64,17 +65,22 @@ class SimpleStorage:
         """
         self.kg_root = Path(kg_root)
 
-    def _get_entity_path(self, entity_path: str) -> Path:
-        """Get full filesystem path for an entity."""
-        return self.kg_root / entity_path
+    def _get_entity_path(self, entity_path: str, for_write: bool = False) -> Path:
+        """Get full filesystem path for an entity, proven inside the KB root."""
+        return resolve_within_root(
+            self.kg_root,
+            entity_path,
+            allow_root=False,
+            reject_symlinks=for_write,
+        )
 
-    def _get_meta_path(self, entity_path: str) -> Path:
+    def _get_meta_path(self, entity_path: str, for_write: bool = False) -> Path:
         """Get path to _meta.json for an entity."""
-        return self._get_entity_path(entity_path) / "_meta.json"
+        return self._get_entity_path(entity_path, for_write=for_write) / "_meta.json"
 
-    def _get_summary_path(self, entity_path: str) -> Path:
+    def _get_summary_path(self, entity_path: str, for_write: bool = False) -> Path:
         """Get path to _summary.md for an entity."""
-        return self._get_entity_path(entity_path) / "_summary.md"
+        return self._get_entity_path(entity_path, for_write=for_write) / "_summary.md"
 
     def read_meta(self, entity_path: str) -> Optional[Dict[str, Any]]:
         """Read _meta.json for an entity.
@@ -106,7 +112,9 @@ class SimpleStorage:
         if missing:
             raise ValueError(f"Missing required fields: {missing}")
 
-        meta_path = self._get_meta_path(entity_path)
+        meta_path = self._get_meta_path(entity_path, for_write=True)
+        if meta_path.is_symlink():
+            raise PathSafetyError(f"Symlink targets are not writable: {entity_path}/_meta.json")
         meta_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(meta_path, "w") as f:
@@ -136,7 +144,9 @@ class SimpleStorage:
             entity_path: Relative path to entity
             content: Markdown content to write
         """
-        summary_path = self._get_summary_path(entity_path)
+        summary_path = self._get_summary_path(entity_path, for_write=True)
+        if summary_path.is_symlink():
+            raise PathSafetyError(f"Symlink targets are not writable: {entity_path}/_summary.md")
         summary_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(summary_path, "w") as f:
@@ -224,7 +234,7 @@ class SimpleStorage:
         Args:
             entity_path: Relative path to entity
         """
-        entity_dir = self._get_entity_path(entity_path)
+        entity_dir = self._get_entity_path(entity_path, for_write=True)
         if entity_dir.exists():
             shutil.rmtree(entity_dir)
 

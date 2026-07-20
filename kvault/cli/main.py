@@ -11,6 +11,7 @@ import click
 from kvault.cli._helpers import apply_common_options, common_options, output_json, resolve_kb_root
 from kvault.cli.check import check_kb
 from kvault.cli.entity import read_entity, write_entity, list_entities, delete_entity, move_entity
+from kvault.cli.events import capture, events_group
 from kvault.cli.journal import write_journal
 from kvault.cli.search import search_nodes
 from kvault.cli.summary import read_summary, write_summary, update_summaries, ancestors
@@ -70,6 +71,8 @@ cli.add_command(update_summaries)
 cli.add_command(ancestors)
 cli.add_command(write_journal)
 cli.add_command(validate_kb, "validate")
+cli.add_command(capture)
+cli.add_command(events_group)
 
 
 @cli.command("init")

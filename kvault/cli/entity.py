@@ -73,6 +73,13 @@ def read_entity(
 @click.option("--create", is_flag=True, help="Create new entity (fail if exists)")
 @click.option("--reasoning", default=None, help="Reasoning for auto-journal logging")
 @click.option("--journal-source", default=None, help="Override source for journal entry")
+@click.option(
+    "--event",
+    "event_ids",
+    multiple=True,
+    help="Captured event ID this write promotes (repeatable); "
+    "stamps provenance and resolves the event",
+)
 @common_options
 @click.pass_context
 def write_entity(
@@ -81,6 +88,7 @@ def write_entity(
     create: bool,
     reasoning: Optional[str],
     journal_source: Optional[str],
+    event_ids: tuple,
     kb_root: Optional[Path],
     as_json: bool,
 ) -> None:
@@ -106,6 +114,7 @@ def write_entity(
         create=create,
         reasoning=reasoning,
         journal_source=journal_source,
+        event_ids=list(event_ids) or None,
     )
     if ctx.obj.get("as_json"):
         output_json(result)

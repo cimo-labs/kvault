@@ -330,7 +330,8 @@ class TestDeleteCommand:
         assert not (cli_kb_with_entity / "people" / "friends" / "alice_smith").exists()
 
     def test_delete_json(self, runner, cli_kb_with_entity):
-        result = runner.invoke(
+        # JSON mode refuses without --confirm
+        refused = runner.invoke(
             cli,
             [
                 "--kb-root",
@@ -340,12 +341,29 @@ class TestDeleteCommand:
                 "people/friends/alice_smith",
             ],
         )
+        assert refused.exit_code == 1
+        assert json.loads(refused.output)["error_code"] == "confirmation_required"
+
+        result = runner.invoke(
+            cli,
+            [
+                "--kb-root",
+                str(cli_kb_with_entity),
+                "--json",
+                "delete",
+                "people/friends/alice_smith",
+                "--confirm",
+            ],
+        )
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["success"]
 
     def test_delete_nonexistent(self, runner, cli_kb):
-        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "--json", "delete", "people/nobody"])
+        result = runner.invoke(
+            cli,
+            ["--kb-root", str(cli_kb), "--json", "delete", "people/nobody", "--confirm"],
+        )
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert not data["success"]
@@ -366,6 +384,7 @@ class TestMoveCommand:
                 "move",
                 "people/friends/alice_smith",
                 "people/alice_smith",
+                "--confirm",
             ],
         )
         # people/alice_smith is only 2-level deep, should work

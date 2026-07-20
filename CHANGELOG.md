@@ -2,6 +2,46 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.12.0 - 2026-07-19
+
+**0.12 is additive — no migration, no breaking changes.** The existing
+`write` → `update-summaries` workflow is unchanged; capture is optional.
+
+### Added
+
+- **Capture journal**: `kvault capture` records a memory candidate verbatim as a
+  pending event under `.kvault/events/` (idempotent by source + source_ref +
+  content). `kvault write --event <id>` promotes it — stamps `journal:<id>` into
+  the node's `source_refs` and resolves the event in one step; retrying a
+  promoted event appends the target, so retries are idempotent. `kvault events
+  list/show/resolve` cover triage and non-promotion outcomes; `kvault events
+  import --format moss-capture` imports legacy OpenClaw inbox queues
+  repeat-safely. `kvault check` flags events pending > 7 days (warn-only
+  `PENDING:` findings).
+- **Per-KB write lock** (`.kvault/lock/`): mutating operations from concurrent
+  kvault processes now serialize, with acquire-time staleness detection and an
+  atomic lock break. All file writes are atomic (temp file + rename).
+- **Path safety layer** (`kvault/core/paths.py`): traversal, absolute-path, NUL,
+  and symlink-component rejection shared by CLI, MCP, and legacy storage.
+- `kvault validate` reports `malformed_frontmatter` (such nodes were previously
+  invisible to entity scans); `parse_frontmatter_strict` rejects unclosed
+  blocks, invalid YAML, duplicate keys, and non-mapping payloads.
+
+### Changed
+
+- `kvault delete` and `kvault move` in `--json` mode require `--confirm`
+  (structured `confirmation_required` error otherwise); interactive use keeps
+  the y/N prompt. `move` previously had no confirmation in any mode.
+- `build_frontmatter` uses `yaml.safe_dump` and requires a mapping.
+- Tolerant frontmatter reads now degrade non-mapping payloads to
+  no-frontmatter instead of returning a non-dict to callers.
+
+### Fixed
+
+- **`kvault delete` with an empty path could delete the entire KB root**, and
+  `.kvault` itself was deletable. Deletion now requires a real semantic node.
+- `move` no longer allows moving a node into its own subtree.
+
 ## 0.11.3 - 2026-06-14
 
 ### Fixed

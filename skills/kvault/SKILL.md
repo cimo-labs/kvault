@@ -40,6 +40,14 @@ maintenance work: a captured candidate was admitted but never incorporated. "Arc
 "processed" in some other queue is NOT incorporation; only a promotion or explicit
 resolution is.
 
+Capture discipline: one coherent source record = one event (preserve the source wording —
+capture is evidence, not synthesis). Omit metadata you don't know: never invent
+`--source-ref` or `--occurred-at`; without a ref, dedupe falls back to content. A conflict
+error ("already captured with different content") means a wrong or reused ref — fix the
+ref, don't force it. And if identity or placement is genuinely ambiguous, leaving the
+event pending while you ask the owner is correct; a wrong promotion is worse than a
+pending event.
+
 ## Workflow: orient → research → write → propagate
 
 **1. Orient** (start of any KB session):

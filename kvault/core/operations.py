@@ -21,7 +21,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from kvault.core.frontmatter import build_frontmatter, parse_frontmatter
+from kvault.core.frontmatter import (
+    FrontmatterError,
+    build_frontmatter,
+    parse_frontmatter,
+    parse_frontmatter_strict,
+)
+from kvault.core.locks import KBWriteLock, atomic_write_text
+from kvault.core.paths import (
+    PathSafetyError,
+    resolve_node_path,
+    validate_node_target,
+)
 from kvault.core.storage import (
     SimpleStorage,
     count_entities,
@@ -731,6 +742,11 @@ def write_node(
     if not validate_within_root(kg_root, path):
         return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
 
+    try:
+        resolve_node_path(kg_root, path, allow_root=(path == "."), reject_symlinks=True)
+    except PathSafetyError as exc:
+        return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
+
     full_path = kg_root if path == "." else kg_root / path
     summary_path = _summary_path_for_node(kg_root, path)
 
@@ -816,13 +832,14 @@ def write_node(
     # Write
     frontmatter = build_frontmatter(meta)
     full_content = frontmatter + content
-    full_path.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(full_content)
+    with KBWriteLock(kg_root):
+        full_path.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(summary_path, full_content)
 
-    # Remove legacy _meta.json
-    meta_json_path = full_path / "_meta.json"
-    if meta_json_path.exists():
-        meta_json_path.unlink()
+        # Remove legacy _meta.json
+        meta_json_path = full_path / "_meta.json"
+        if meta_json_path.exists():
+            meta_json_path.unlink()
 
     result: Dict[str, Any] = {
         "success": True,
@@ -876,9 +893,12 @@ def write_summary(
     is_valid, err_msg = _validate_node_path(path)
     if not is_valid:
         return error_response(ErrorCode.VALIDATION_ERROR, err_msg or "Invalid path")
+    try:
+        resolve_node_path(kg_root, path, allow_root=(path == "."), reject_symlinks=True)
+    except PathSafetyError as exc:
+        return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
     dir_path = kg_root if path == "." else kg_root / path
     summary_path = _summary_path_for_node(kg_root, path)
-    dir_path.mkdir(parents=True, exist_ok=True)
     existing = _read_node_raw(kg_root, path)
     preserved_meta = existing.get("meta", {}) if existing and meta is None else {}
     final_meta = meta if meta is not None else preserved_meta
@@ -886,7 +906,9 @@ def write_summary(
         full_content = build_frontmatter(final_meta) + content
     else:
         full_content = content
-    summary_path.write_text(full_content)
+    with KBWriteLock(kg_root):
+        dir_path.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(summary_path, full_content)
     return {"success": True, "path": path}
 
 
@@ -934,6 +956,17 @@ def write_parent_summary(
             hint="Call prepare_summary_update first and pass its children_digest.",
         )
 
+    with KBWriteLock(kg_root):
+        return _write_parent_summary_locked(kg_root, path, content, children_digest, meta)
+
+
+def _write_parent_summary_locked(
+    kg_root: Path,
+    path: str,
+    content: str,
+    children_digest: str,
+    meta: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
     prepared = prepare_summary_update(kg_root, path)
     if not prepared.get("success"):
         return prepared
@@ -975,6 +1008,16 @@ def update_summaries(
     """Batch-update multiple summary files."""
     updated: List[str] = []
     errors: List[Dict[str, Any]] = []
+    with KBWriteLock(kg_root):
+        return _update_summaries_locked(kg_root, updates, updated, errors)
+
+
+def _update_summaries_locked(
+    kg_root: Path,
+    updates: List[Dict[str, Any]],
+    updated: List[str],
+    errors: List[Dict[str, Any]],
+) -> Dict[str, Any]:
     for item in updates:
         p = item.get("path")
         c = item.get("content")
@@ -1061,12 +1104,18 @@ def search_nodes(
 def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:
     """Delete an entity directory."""
     path = normalize_path(path)
-    if not validate_within_root(kg_root, path):
-        return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
-    full_path = kg_root / path
+    try:
+        full_path = validate_node_target(kg_root, path, require_exists=False)
+    except PathSafetyError as exc:
+        return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
     if not full_path.exists():
         return error_response(ErrorCode.NOT_FOUND, f"Entity doesn't exist: {path}")
-    shutil.rmtree(full_path)
+    try:
+        validate_node_target(kg_root, path, require_exists=True)
+    except PathSafetyError as exc:
+        return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
+    with KBWriteLock(kg_root):
+        shutil.rmtree(full_path)
     return {"success": True, "path": path, "deleted": True}
 
 
@@ -1081,20 +1130,22 @@ def move_entity(kg_root: Path, source_path: str, target_path: str) -> Dict[str, 
     is_valid, err_msg = validate_entity_path(target_path)
     if not is_valid:
         return error_response(ErrorCode.VALIDATION_ERROR, f"Invalid target path: {err_msg}")
-    if not validate_within_root(kg_root, source_path):
-        return error_response(ErrorCode.VALIDATION_ERROR, "Source path escapes KB root")
-    if not validate_within_root(kg_root, target_path):
-        return error_response(ErrorCode.VALIDATION_ERROR, "Target path escapes KB root")
+    if target_path == source_path or target_path.startswith(source_path + "/"):
+        return error_response(ErrorCode.VALIDATION_ERROR, "Cannot move a node into its own subtree")
+    try:
+        source_full = resolve_node_path(kg_root, source_path, reject_symlinks=True)
+        target_full = resolve_node_path(kg_root, target_path, reject_symlinks=True)
+    except PathSafetyError as exc:
+        return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
 
-    source_full = kg_root / source_path
-    target_full = kg_root / target_path
     if not source_full.exists():
         return error_response(ErrorCode.NOT_FOUND, f"Source doesn't exist: {source_path}")
     if target_full.exists():
         return error_response(ErrorCode.ALREADY_EXISTS, f"Target already exists: {target_path}")
 
-    target_full.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(source_full), str(target_full))
+    with KBWriteLock(kg_root):
+        target_full.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source_full), str(target_full))
     return {"success": True, "source": source_path, "target": target_path}
 
 
@@ -1159,17 +1210,19 @@ def write_journal(
 
     journal_rel_path = get_journal_path(dt)
     journal_full_path = kg_root / journal_rel_path
-    journal_full_path.parent.mkdir(parents=True, exist_ok=True)
 
-    entry = format_journal_entry(actions, source, dt)
-    if journal_full_path.exists():
-        existing = journal_full_path.read_text()
-        entry = existing.rstrip() + "\n\n" + entry
-    else:
-        header = f"# Journal - {dt.strftime('%B %Y')}\n\n"
-        entry = header + entry
+    with KBWriteLock(kg_root):
+        journal_full_path.parent.mkdir(parents=True, exist_ok=True)
 
-    journal_full_path.write_text(entry)
+        entry = format_journal_entry(actions, source, dt)
+        if journal_full_path.exists():
+            existing = journal_full_path.read_text()
+            entry = existing.rstrip() + "\n\n" + entry
+        else:
+            header = f"# Journal - {dt.strftime('%B %Y')}\n\n"
+            entry = header + entry
+
+        atomic_write_text(journal_full_path, entry)
     return {
         "success": True,
         "journal_path": journal_rel_path,
@@ -1201,6 +1254,27 @@ def validate_kb(kg_root: Path) -> Dict[str, Any]:
     """Check KB integrity and report issues."""
     issues: List[Dict[str, Any]] = []
     entities = scan_entities(kg_root)
+
+    # Malformed frontmatter makes a node invisible to entity scans, so this
+    # check walks summary files directly instead of relying on scan_entities.
+    for summary_file in sorted(kg_root.rglob("_summary.md")):
+        rel_parts = summary_file.parent.relative_to(kg_root).parts
+        if any(part.startswith(".") for part in rel_parts):
+            continue
+        try:
+            parse_frontmatter_strict(summary_file.read_text(encoding="utf-8"))
+        except FrontmatterError as exc:
+            issues.append(
+                {
+                    "type": "malformed_frontmatter",
+                    "severity": "warning",
+                    "path": str(Path(*rel_parts)) if rel_parts else ".",
+                    "message": f"Frontmatter is malformed and read as empty: {exc}",
+                    "fix": "Rewrite the node with kvault write to repair its frontmatter",
+                }
+            )
+        except OSError:
+            continue
 
     for entity in entities:
         entity_data = _read_entity_raw(kg_root, entity.path)

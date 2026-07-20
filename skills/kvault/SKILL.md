@@ -68,7 +68,7 @@ Act on what the orientation pass shows:
 
 | Signal | Action |
 |--------|--------|
-| Branch with >10 children (`[N children, ...]`) | Split into subgroups — by type first, else alphabetical (`a_m`/`n_z`), else temporal. Create new parent dirs with `_summary.md` → `kvault move` each entity → update ancestor summaries → `kvault validate` |
+| Branch with >10 children (`[N children, ...]`) | Split into subgroups — by type first, else alphabetical (`a_m`/`n_z`), else temporal. Create new parent dirs with `_summary.md` → `kvault move --confirm` each entity → update ancestor summaries → `kvault validate` |
 | Branch `~updated_max` older than ~6 months | Review for stale or dead content; update, merge, or prune |
 | `SUMMARY:` warnings from `kvault check` | Rewrite flagged parents as comprehensive rollups (real work despite exit code 0) |
 | Near-duplicate titles/aliases | Verify identifiers exactly (email/phone) → merge into the canonical entity → delete the duplicate |
@@ -87,7 +87,7 @@ Act on what the orientation pass shows:
 | Category | Commands |
 |----------|----------|
 | Orient & discover | `kvault tree [path] [--depth N] [--max-children N] [--gist]`, `kvault search "<query>"` |
-| Nodes | `kvault read`, `kvault write` (stdin), `kvault list`, `kvault delete`, `kvault move` |
+| Nodes | `kvault read`, `kvault write` (stdin), `kvault list`, `kvault delete --confirm`, `kvault move --confirm` (destructive — both require `--confirm`) |
 | Summaries | `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors` |
 | Quality | `kvault validate`, `kvault check` |
 | Journal & artifacts | `kvault journal`, `kvault artifact daily`, `kvault log summary` |

@@ -131,7 +131,7 @@ counts, descendant totals, and most-recent activity (`~date`) per branch. Act on
 
 | Signal | Action |
 |--------|--------|
-| Branch with >10 children (`[N children, ...]`) | Split into subgroups — by type first, else alphabetical (`a_m`/`n_z`), else temporal (by year). Create new parent dirs with `_summary.md` → `kvault move` each entity → update ancestor summaries → `kvault validate` |
+| Branch with >10 children (`[N children, ...]`) | Split into subgroups — by type first, else alphabetical (`a_m`/`n_z`), else temporal (by year). Create new parent dirs with `_summary.md` → `kvault move --confirm` each entity → update ancestor summaries → `kvault validate` |
 | Branch `~updated_max` older than ~6 months | Review for stale or dead content; update, merge, or prune |
 | `SUMMARY:` warnings from `kvault check` | Rewrite the flagged parent summaries as comprehensive rollups — this is real maintenance work even though the command exits 0 |
 | Near-duplicate titles or aliases | Verify identifiers exactly (email/phone) → merge into the canonical entity → delete the duplicate |
@@ -164,7 +164,7 @@ Context and notes here.
 ## CLI Commands Reference
 
 **Node:** `kvault search`, `kvault read`, `kvault write` (stdin), `kvault list`
-**Compatibility:** `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors`, `kvault delete`, `kvault move`
+**Compatibility:** `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors`, `kvault delete --confirm`, `kvault move --confirm` (destructive — both require `--confirm`)
 **Journal:** `kvault journal --source TEXT` (stdin JSON)
 **Validation:** `kvault validate`, `kvault check`
 **Status:** `kvault status`, `kvault tree [path] [--depth N] [--max-children N] [--gist]`

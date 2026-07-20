@@ -157,18 +157,37 @@ def list_entities(
             click.echo(f"  {e['path']}  ({e['title']}, {e['kind']})")
 
 
+def _confirmation_error(operation: str, detail: str) -> dict:
+    return {
+        "success": False,
+        "error_code": "confirmation_required",
+        "error": f"{operation} is destructive and requires explicit confirmation",
+        "hint": f"Re-run with --confirm to {detail}",
+    }
+
+
 @click.command("delete")
 @click.argument("path")
-@click.option("--force", is_flag=True, help="Skip confirmation prompt")
+@click.option("--confirm", is_flag=True, help="Confirm this destructive operation")
+@click.option("--force", is_flag=True, help="Deprecated alias for --confirm")
 @common_options
 @click.pass_context
 def delete_entity(
-    ctx: click.Context, path: str, force: bool, kb_root: Optional[Path], as_json: bool
+    ctx: click.Context,
+    path: str,
+    confirm: bool,
+    force: bool,
+    kb_root: Optional[Path],
+    as_json: bool,
 ) -> None:
-    """Delete an entity."""
+    """Delete an entity (requires --confirm, or answering an interactive prompt)."""
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
-    if not force and not ctx.obj.get("as_json"):
+    confirmed = confirm or force
+    if not confirmed:
+        if ctx.obj.get("as_json"):
+            output_json(_confirmation_error("delete", f"delete '{path}' and its subtree"))
+            ctx.exit(1)
         click.confirm(f"Delete entity '{path}'?", abort=True)
     result = ops.delete_entity(kb_root, path)
     if ctx.obj.get("as_json"):
@@ -183,14 +202,27 @@ def delete_entity(
 @click.command("move")
 @click.argument("source")
 @click.argument("target")
+@click.option("--confirm", is_flag=True, help="Confirm this destructive operation")
 @common_options
 @click.pass_context
 def move_entity(
-    ctx: click.Context, source: str, target: str, kb_root: Optional[Path], as_json: bool
+    ctx: click.Context,
+    source: str,
+    target: str,
+    confirm: bool,
+    kb_root: Optional[Path],
+    as_json: bool,
 ) -> None:
-    """Move an entity to a new path."""
+    """Move an entity (requires --confirm, or answering an interactive prompt)."""
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
+    if not confirm:
+        if ctx.obj.get("as_json"):
+            output_json(
+                _confirmation_error("move", f"move '{source}' (and its subtree) to '{target}'")
+            )
+            ctx.exit(1)
+        click.confirm(f"Move '{source}' to '{target}'?", abort=True)
     result = ops.move_entity(kb_root, source, target)
     if ctx.obj.get("as_json"):
         output_json(result)

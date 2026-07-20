@@ -684,6 +684,7 @@ def write_entity(
     reasoning: Optional[str] = None,
     journal_source: Optional[str] = None,
     default_source: str = "auto:cli",
+    event_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Write entity with YAML frontmatter.
 
@@ -703,6 +704,7 @@ def write_entity(
         reasoning=reasoning,
         journal_source=journal_source,
         default_source=default_source,
+        event_ids=event_ids,
     )
 
 
@@ -733,8 +735,15 @@ def write_node(
     reasoning: Optional[str] = None,
     journal_source: Optional[str] = None,
     default_source: str = "auto:cli",
+    event_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Write any node summary with YAML frontmatter."""
+    """Write any node summary with YAML frontmatter.
+
+    When *event_ids* is given, each captured event must be pending (or
+    already promoted — idempotent retries).  The write stamps
+    ``journal:<event-id>`` provenance into the node's ``source_refs`` and
+    resolves the events as promoted to this path.
+    """
     path = _normalize_node_path(path)
     is_valid, err_msg = _validate_node_path(path)
     if not is_valid:
@@ -746,6 +755,13 @@ def write_node(
         resolve_node_path(kg_root, path, allow_root=(path == "."), reject_symlinks=True)
     except PathSafetyError as exc:
         return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
+
+    if event_ids:
+        from kvault.core.events import check_events_promotable
+
+        promotable = check_events_promotable(kg_root, event_ids)
+        if not promotable.get("success"):
+            return promotable
 
     full_path = kg_root if path == "." else kg_root / path
     summary_path = _summary_path_for_node(kg_root, path)
@@ -812,6 +828,14 @@ def write_node(
             if isinstance(first, str):
                 meta["name"] = first
 
+    if event_ids:
+        refs = list(meta.get("source_refs") or [])
+        for event_id in event_ids:
+            ref = f"journal:{event_id}"
+            if ref not in refs:
+                refs.append(ref)
+        meta["source_refs"] = refs
+
     # Date fields — a no-op rewrite (same body, same meta) keeps existing
     # created/updated so bulk re-writes don't flatten the recency signal.
     today = datetime.now().strftime("%Y-%m-%d")
@@ -846,6 +870,18 @@ def write_node(
         "path": path,
         "created": create,
     }
+    if event_ids:
+        from kvault.core.events import promote_events
+
+        promotion = promote_events(kg_root, event_ids, path)
+        result["events"] = promotion
+        if not promotion.get("success"):
+            # The node write already happened; surface the promotion failure
+            # loudly instead of pretending the event was resolved.
+            result["events_warning"] = (
+                "Node was written but event promotion failed; resolve the "
+                "events explicitly or retry with --event"
+            )
     if autofilled_source or autofilled_aliases:
         result["meta_autofilled"] = {
             "source": autofilled_source,

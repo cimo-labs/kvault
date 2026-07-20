@@ -20,6 +20,7 @@ from typing import List, Optional
 import click
 
 from kvault.core import operations as ops
+from kvault.core.events import pending_event_findings
 from kvault.core.frontmatter import parse_frontmatter
 from kvault.core.summary_quality import audit_summary_quality, format_summary_quality_warnings
 
@@ -248,6 +249,13 @@ def check_directory_size(kb_root: Path, max_children: int = 10) -> List[str]:
     show_default=True,
     help="Maximum summary-quality warnings to print.",
 )
+@click.option(
+    "--pending-max-age",
+    type=int,
+    default=7,
+    show_default=True,
+    help="Days a captured event may stay pending before it is flagged.",
+)
 @click.pass_context
 def check_kb(
     ctx: click.Context,
@@ -256,6 +264,7 @@ def check_kb(
     threshold: int,
     no_summary_quality: bool,
     summary_max_warnings: int,
+    pending_max_age: int,
 ) -> None:
     """Check KB integrity (propagation, journal, index, frontmatter, branching)."""
     ctx.ensure_object(dict)
@@ -285,6 +294,7 @@ def check_kb(
     hard_warnings.extend(check_directory_size(kb_root))
 
     summary_issues = [] if no_summary_quality else audit_summary_quality(kb_root)
+    pending_events = pending_event_findings(kb_root, max_age_days=pending_max_age)
 
     if ctx.obj.get("as_json"):
         click.echo(
@@ -304,6 +314,8 @@ def check_kb(
                     ],
                     "summary_warning_count": len(summary_issues),
                     "summary_quality_enabled": not no_summary_quality,
+                    "pending_events": pending_events,
+                    "pending_event_count": len(pending_events),
                 },
                 indent=2,
                 default=str,
@@ -328,6 +340,17 @@ def check_kb(
         summary_issues, max_warnings=summary_max_warnings
     ):
         click.echo(warning)
+
+    # Warn-only, like SUMMARY: — a captured candidate that was never
+    # promoted or explicitly resolved is unfinished maintenance work.
+    for finding in pending_events[:summary_max_warnings]:
+        click.echo(
+            f"PENDING: {finding['event_id']} captured {str(finding['captured_at'])[:10]} "
+            f"({finding['age_days']}d) — resolve with kvault write --event or "
+            f"kvault events resolve"
+        )
+    if len(pending_events) > summary_max_warnings:
+        click.echo(f"PENDING: (+{len(pending_events) - summary_max_warnings} more)")
 
     if hard_warnings:
         sys.exit(1)

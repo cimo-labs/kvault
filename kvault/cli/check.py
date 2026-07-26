@@ -275,13 +275,20 @@ def check_kb(
     if explicit_root is None:
         kb_root = _find_kb_root()
         if kb_root is None:
-            # Silent exit if no KB found
+            # Silent exit BY DESIGN: this command runs as a UserPromptSubmit hook in
+            # every directory, so "there is no KB here" must stay quiet. Only an
+            # EXPLICIT --kb-root is a hard error (2026-07-26 audit).
             sys.exit(0)
     else:
+        # An explicit path that is missing or is not a KB used to exit 0 with no
+        # output, making a misconfigured hook indistinguishable from a clean KB.
         kb_root = Path(explicit_root).resolve()
-
-    if not kb_root.exists():
-        sys.exit(0)
+        if not kb_root.is_dir():
+            raise click.ClickException(f"--kb-root does not exist or is not a directory: {kb_root}")
+        if not (kb_root / "_summary.md").is_file():
+            raise click.ClickException(
+                f"--kb-root is not a kvault KB (no _summary.md at its root): {kb_root}"
+            )
 
     allowed_error = ops.validate_allowed_root(kb_root)
     if allowed_error:

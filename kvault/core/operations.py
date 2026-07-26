@@ -40,6 +40,8 @@ from kvault.core.storage import (
     scan_entities,
 )
 from kvault.core.validation import (
+    INVALID_COMPONENT_HINT,
+    NODE_COMPONENT_RE,
     ErrorCode,
     error_response,
     format_journal_entry,
@@ -49,7 +51,9 @@ from kvault.core.validation import (
 )
 
 _ALLOWED_ROOTS_ENV = "KVAULT_ALLOWED_ROOTS"
-_NODE_COMPONENT_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+# Single source of truth lives in validation.py — this pattern used to be duplicated
+# here and the two copies drifted (2026-07-26 audit). Alias kept for existing callers.
+_NODE_COMPONENT_RE = NODE_COMPONENT_RE
 _HEADING_RE = re.compile(r"^\s{0,3}#\s+(.+?)\s*$", re.MULTILINE)
 # A body line that is *only* a placeholder marker — optionally prefixed by a list
 # marker and a scaffolding label ("Context: TBD", "- TODO"). Deliberately anchored
@@ -307,6 +311,18 @@ def _normalize_node_path(path: str) -> str:
     return "." if path in ("", ".") else path
 
 
+def _is_reserved_component(name: str) -> bool:
+    """Return True for directory names kvault reserves for its own use.
+
+    Hidden (".kvault") and internal ("_schema") namespaces are never semantic
+    nodes.  resolve_node_path() refuses to write them and scan_entities() skips
+    them, but child *enumeration* used to skip only "."-prefixed names — so an
+    internal directory showed up as a child the node API then refused to read.
+    Keeping one predicate here stops those phantom children (2026-07-26 audit).
+    """
+    return name.startswith(".") or name.startswith("_")
+
+
 def _validate_node_path(path: str) -> Tuple[bool, Optional[str]]:
     if path == ".":
         return True, None
@@ -315,7 +331,7 @@ def _validate_node_path(path: str) -> Tuple[bool, Optional[str]]:
         if not _NODE_COMPONENT_RE.match(part):
             return (
                 False,
-                f"Invalid path component: '{part}' (must be lowercase alphanumeric with underscores)",
+                f"Invalid path component: '{part}' ({INVALID_COMPONENT_HINT})",
             )
     return True, None
 
@@ -361,7 +377,9 @@ def _node_kind(kg_root: Path, path: str) -> str:
     parts = Path(path).parts
     node_dir = kg_root / path
     has_child_nodes = any(
-        child.is_dir() and not child.name.startswith(".") and (child / "_summary.md").exists()
+        child.is_dir()
+        and not _is_reserved_component(child.name)
+        and (child / "_summary.md").exists()
         for child in _safe_iterdir(node_dir)
     )
     if len(parts) < 2 or has_child_nodes:
@@ -424,7 +442,7 @@ def _child_node_paths(kg_root: Path, path: str) -> List[str]:
     node_dir = kg_root if path == "." else kg_root / path
     children: List[str] = []
     for child in _safe_iterdir(node_dir):
-        if not child.is_dir() or child.name.startswith("."):
+        if not child.is_dir() or _is_reserved_component(child.name):
             continue
         if not (child / "_summary.md").exists():
             continue
@@ -480,16 +498,72 @@ def _summary_update_node(raw: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _direct_child_raw_nodes(kg_root: Path, path: str) -> List[Dict[str, Any]]:
+class ChildDigestError(RuntimeError):
+    """A parent's direct children could not be fully resolved for a digest.
+
+    Deliberately loud.  The stale-write guard exists to reject a parent summary
+    composed from incomplete child state; a digest taken over a *filtered* child
+    list inverts that guarantee, because the guard then happily APPROVES a
+    rewrite that erases the children it never saw.  Refusing is the only safe
+    answer (2026-07-26 audit — verified data-loss path).
+    """
+
+    def __init__(self, parent_path: str, unreadable: List[str]) -> None:
+        self.parent_path = parent_path
+        self.unreadable = list(unreadable)
+        super().__init__(
+            f"Cannot compute a children digest for '{parent_path}': "
+            f"{len(self.unreadable)} on-disk child node(s) exist but cannot be read "
+            f"through the node API: {', '.join(self.unreadable)}. "
+            "Refusing rather than dropping them — a digest over a partial child list "
+            "would approve a parent summary that erases these children."
+        )
+
+
+def _direct_child_raw_nodes(
+    kg_root: Path,
+    path: str,
+    child_paths: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Read the direct child nodes of *path*.
+
+    Children that cannot be read are *not* dropped here — they are reported to
+    _children_digest() via the ``child_paths`` enumeration so it can refuse.
+    """
     children: List[Dict[str, Any]] = []
-    for child_path in _child_node_paths(kg_root, path):
+    for child_path in _child_node_paths(kg_root, path) if child_paths is None else child_paths:
         raw = _read_node_raw(kg_root, child_path)
         if raw is not None:
             children.append(raw)
     return children
 
 
-def _children_digest(parent_path: str, children: List[Dict[str, Any]]) -> str:
+def _children_digest(
+    parent_path: str,
+    children: List[Dict[str, Any]],
+    expected_paths: Optional[Iterable[str]] = None,
+) -> str:
+    """Hash a parent's direct children for the stale-write guard.
+
+    *expected_paths* is the raw on-disk child enumeration.  Any enumerated child
+    missing from *children* raises ChildDigestError instead of being silently
+    excluded from the hash — see that class for why silence is a data-loss bug.
+    """
+    if expected_paths is not None:
+        # Compare NORMALIZED paths, but report the raw on-disk path.
+        # children[]["path"] has been through _normalize_node_path (via
+        # _read_node_raw) while expected_paths has not, so a raw comparison
+        # false-positives on any child whose on-disk name normalizes to
+        # something different -- e.g. mixed case on macOS's case-insensitive
+        # filesystem. That would hard-block a legitimate summary update, which
+        # is the opposite of the bug this guard exists to catch.
+        present = {_normalize_node_path(child["path"]) for child in children}
+        expected_by_norm = {_normalize_node_path(p): p for p in expected_paths}
+        missing = sorted(
+            expected_by_norm[key] for key in set(expected_by_norm) - present
+        )
+        if missing:
+            raise ChildDigestError(parent_path, missing)
     sorted_children = sorted(children, key=lambda child: child["path"])
     payload = {
         "algorithm": SUMMARY_UPDATE_DIGEST_ALGORITHM,
@@ -961,9 +1035,23 @@ def prepare_summary_update(kg_root: Path, path: str) -> Dict[str, Any]:
     if parent_raw is None:
         return error_response(ErrorCode.NOT_FOUND, f"Parent node not found: {path}")
 
-    children_raw = _direct_child_raw_nodes(kg_root, path)
+    # Enumerate once, then require the digest to cover every enumerated child.
+    child_paths = _child_node_paths(kg_root, path)
+    children_raw = _direct_child_raw_nodes(kg_root, path, child_paths=child_paths)
     child_count = len(children_raw)
-    digest = _children_digest(path, children_raw)
+    try:
+        digest = _children_digest(path, children_raw, expected_paths=child_paths)
+    except ChildDigestError as exc:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            str(exc),
+            details={"path": path, "unreadable_children": exc.unreadable},
+            hint=(
+                "Rename each listed directory to a valid node component "
+                "(lowercase letters/digits, then letters/digits/'_'/'-'), or move it "
+                "out of the KB. Do not update this parent summary until it resolves."
+            ),
+        )
     return {
         "success": True,
         "path": path,

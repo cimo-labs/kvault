@@ -8,6 +8,23 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
+# Canonical pattern for ONE path component of an entity/node path. Applied per
+# component after splitting on "/", so "/" and ".." can never match, and a leading
+# "." or "_" is rejected — those stay reserved for hidden (".kvault") and internal
+# ("_schema") namespaces.
+#
+# 2026-07-26 audit: the old `^[a-z][a-z0-9_]*$` rejected digit-leading and hyphenated
+# names, making 7 real nodes in the live ProTec KB unreachable — including every
+# journal month kvault itself writes to (get_journal_path() emits "journal/YYYY-MM").
+# The pattern lived in two places and had already drifted; operations.py now imports
+# this one so a future widening cannot half-apply.
+NODE_COMPONENT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+INVALID_COMPONENT_HINT = (
+    "must be lowercase alphanumeric with underscores or hyphens, "
+    "and may not start with '.' or '_'"
+)
+
 
 class ErrorCode(Enum):
     """Structured error codes for MCP responses."""
@@ -122,10 +139,10 @@ def validate_entity_path(path: str) -> Tuple[bool, Optional[str]]:
 
     # Check each part is valid identifier
     for part in parts:
-        if not re.match(r"^[a-z][a-z0-9_]*$", part):
+        if not NODE_COMPONENT_RE.match(part):
             return (
                 False,
-                f"Invalid path component: '{part}' (must be lowercase alphanumeric with underscores)",
+                f"Invalid path component: '{part}' ({INVALID_COMPONENT_HINT})",
             )
 
     return True, None

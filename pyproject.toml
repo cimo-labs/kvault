@@ -105,7 +105,17 @@ exclude_lines = [
 ]
 
 [tool.mypy]
-python_version = "3.9"
+# 3.10, not 3.9, deliberately. click is an unpinned RUNTIME dependency
+# (click>=8.0) and 8.3+ uses `match` statements; with python_version 3.9 mypy
+# fails parsing 3.10 syntax inside click itself and aborts before checking any
+# of our code (CI red 2026-07-27). Pinning click would be the wrong fix -- it
+# constrains what downstream users may install to work around a type-checking
+# artefact.
+#
+# 3.9 compatibility is still enforced, twice over and more meaningfully:
+# ruff's target-version = "py39" rejects 3.10+ syntax in our source, and the
+# test matrix actually RUNS on 3.9.
+python_version = "3.10"
 warn_return_any = false
 warn_unused_configs = true
 ignore_missing_imports = true
@@ -115,6 +125,7 @@ warn_redundant_casts = true
 warn_unused_ignores = false
 show_error_codes = true
 exclude = ["tests/"]
+
 
 # Allow more permissive typing for initial release
 # TODO: Gradually enable stricter type checking

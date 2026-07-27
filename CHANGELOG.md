@@ -45,6 +45,11 @@ knowledge base on 2026-07-26. No migration required.
   538 errors against unchanged source. Now `black>=26.1,<27` (marked
   `python_version>='3.10'`, since black 26.x dropped 3.9 while the test matrix
   still covers it), `ruff>=0.14,<0.15`, `mypy>=1.0,<2`.
+- mypy now analyses against Python 3.10 rather than 3.9. `click` is an unpinned
+  runtime dependency and 8.3+ uses `match` statements, so mypy targeting 3.9
+  aborted while parsing click's own source before checking any of ours. 3.9
+  support is unchanged and still enforced by ruff's `target-version = "py39"`
+  and by the test matrix, which runs on 3.9.
 
 ## 0.12.0 - 2026-07-19
 

@@ -313,14 +313,32 @@ class TestCheckExplicitKbRoot:
 # ============================================================================
 
 
+def _fs_is_case_insensitive(probe_dir):
+    """True on macOS/APFS-style filesystems, False on ext4/Linux."""
+    marker = probe_dir / "CaseProbe"
+    marker.mkdir(parents=True, exist_ok=True)
+    return (probe_dir / "caseprobe").exists()
+
+
 class TestChildDigestCaseNormalization:
-    """A mixed-case child directory must not trip the missing-child guard.
+    """A mixed-case child directory: the guard must be right on BOTH filesystems.
 
     `_read_node_raw` runs paths through `_normalize_node_path`, which lowercases,
-    while the on-disk enumeration does not. Comparing the two sets raw makes any
-    mixed-case child look "missing" -- and on macOS's case-insensitive filesystem
-    the child is in fact perfectly readable. That would hard-block a legitimate
-    summary update, i.e. the exact inverse of the bug the guard exists to catch.
+    while the on-disk enumeration does not. What that means depends on the
+    filesystem, and the correct behaviour differs:
+
+    - Case-INSENSITIVE (macOS): looking up "marketing" resolves to "Marketing/",
+      so the child IS readable. Comparing the two sets raw would call it missing
+      and hard-block a legitimate summary update -- the exact inverse of the bug
+      the guard exists to catch. Normalizing both sides fixes that.
+
+    - Case-SENSITIVE (Linux, and CI): "marketing" does not resolve, so the child
+      genuinely CANNOT be reached through the node API. Refusing is then correct:
+      writing that parent summary really would erase it.
+
+    An earlier version of these tests asserted the macOS outcome unconditionally
+    and passed locally while failing on CI. The behaviour is not a bug on either
+    platform; the test was.
     """
 
     @pytest.fixture
@@ -334,14 +352,27 @@ class TestChildDigestCaseNormalization:
         )
         return kb
 
-    def test_prepare_summary_update_succeeds(self, mixed_case_kb):
+    def test_behaviour_matches_filesystem_semantics(self, mixed_case_kb, tmp_path):
         result = ops.prepare_summary_update(mixed_case_kb, ".")
-        assert "error" not in result, result
+        if _fs_is_case_insensitive(tmp_path):
+            # Child is reachable -> must NOT be reported missing.
+            assert "error" not in result, result
+            paths = {child["path"] for child in result["children"]}
+            assert "marketing" in paths, paths
+        else:
+            # Child is genuinely unreachable -> refusing is the correct outcome.
+            assert result.get("error_code") == "validation_error", result
+            assert "Marketing" in result["details"]["unreadable_children"], result
 
-    def test_mixed_case_child_is_present_not_missing(self, mixed_case_kb):
-        result = ops.prepare_summary_update(mixed_case_kb, ".")
-        paths = {child["path"] for child in result["children"]}
-        assert "marketing" in paths, paths
+    def test_lowercase_child_is_never_flagged(self, tmp_path):
+        """Platform-independent control: a normal child must always be readable."""
+        kb = tmp_path / "kb"
+        (kb / ".kvault").mkdir(parents=True)
+        _write_node(kb, ".", "# Root\n")
+        _write_node(kb, "marketing", "# Marketing\n")
+        result = ops.prepare_summary_update(kb, ".")
+        assert "error" not in result, result
+        assert "marketing" in {c["path"] for c in result["children"]}, result
 
     def test_genuinely_missing_child_still_raises(self, tmp_path):
         """The true positive must survive the normalization fix."""

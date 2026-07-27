@@ -2,6 +2,44 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.12.1 - 2026-07-27
+
+Bug-fix release. Three defects found by an external audit of a live 441-entity
+knowledge base on 2026-07-26. No migration required.
+
+### Fixed
+
+- **Parent-summary propagation could silently erase children (data loss).**
+  `_children_digest()` hashed the *filtered* child list, so any child the node
+  API could not read was quietly omitted. The stale-write guard exists precisely
+  to reject a parent summary composed from incomplete child state, so it would
+  **approve** a rewrite that deleted them. Reproduced against real data: with two
+  date-named children on disk, `prepare_summary_update` reported `child_count: 0`
+  and `write_parent_summary` accepted a summary reading "No months yet".
+  It now raises `ChildDigestError` naming every unreadable path, surfaced through
+  MCP as a structured error with a remediation hint. Comparison is normalized on
+  both sides, so a mixed-case directory on a case-insensitive filesystem is not
+  mistaken for a missing child.
+
+- **Node component pattern rejected valid on-disk nodes.** `^[a-z][a-z0-9_]*$`
+  made date-named directories (`journal/2026-03` — which kvault itself writes)
+  and digit-leading names (`customers/3d_engineering`) unreachable through the
+  node API. Widened to `^[a-z0-9][a-z0-9_-]*$`. The pattern had drifted into two
+  copies; it is now defined once in `validation.py`. Applied per component after
+  splitting on `/`, so `..` and absolute paths still cannot match.
+
+- **`kvault check` exited 0 on a bad `--kb-root`.** A path that was missing, not
+  a directory, or not a KB reported success with no output — indistinguishable
+  from a clean knowledge base. Explicit bad paths are now a hard error. The
+  silent exit when *no* `--kb-root` is given and auto-detection fails is
+  deliberately preserved (it is a `UserPromptSubmit` hook firing in every
+  directory) and is pinned by a test.
+
+### Changed
+
+- `black` is now pinned to `>=26.1,<27`. It was unbounded at `>=23.0`, so a new
+  black release changed formatting and CI went red on 2026-07-20 and stayed red.
+
 ## 0.12.0 - 2026-07-19
 
 **0.12 is additive — no migration, no breaking changes.** The existing

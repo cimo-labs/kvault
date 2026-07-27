@@ -559,9 +559,7 @@ def _children_digest(
         # is the opposite of the bug this guard exists to catch.
         present = {_normalize_node_path(child["path"]) for child in children}
         expected_by_norm = {_normalize_node_path(p): p for p in expected_paths}
-        missing = sorted(
-            expected_by_norm[key] for key in set(expected_by_norm) - present
-        )
+        missing = sorted(expected_by_norm[key] for key in set(expected_by_norm) - present)
         if missing:
             raise ChildDigestError(parent_path, missing)
     sorted_children = sorted(children, key=lambda child: child["path"])

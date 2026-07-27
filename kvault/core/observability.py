@@ -73,8 +73,7 @@ class ObservabilityLogger:
     def _init_db(self) -> None:
         """Create tables if they don't exist."""
         with sqlite3.connect(self.db_path) as conn:
-            conn.executescript(
-                """
+            conn.executescript("""
                 -- Main logs table
                 CREATE TABLE IF NOT EXISTS logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,8 +103,7 @@ class ObservabilityLogger:
                        json_extract(data, '$.confidence') as confidence,
                        json_extract(data, '$.reasoning') as reasoning
                 FROM logs WHERE phase = 'decide';
-            """
-            )
+            """)
 
     def _new_session(self) -> str:
         """Generate a new session ID."""

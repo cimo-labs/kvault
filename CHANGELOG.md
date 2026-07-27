@@ -37,8 +37,14 @@ knowledge base on 2026-07-26. No migration required.
 
 ### Changed
 
-- `black` is now pinned to `>=26.1,<27`. It was unbounded at `>=23.0`, so a new
-  black release changed formatting and CI went red on 2026-07-20 and stayed red.
+- **Dev tooling is now version-bounded.** `black`, `ruff` and `mypy` were all
+  unbounded (`>=23.0`, `>=0.1.0`, `>=1.0`), so CI installed whatever released
+  most recently and drifted out from under the code. This caused two separate
+  outages: black changed formatting and CI went red on 2026-07-20, unnoticed for
+  a week; then ruff 0.16 promoted new rules to stable and `ruff check .` reported
+  538 errors against unchanged source. Now `black>=26.1,<27` (marked
+  `python_version>='3.10'`, since black 26.x dropped 3.9 while the test matrix
+  still covers it), `ruff>=0.14,<0.15`, `mypy>=1.0,<2`.
 
 ## 0.12.0 - 2026-07-19
 

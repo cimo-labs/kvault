@@ -34,14 +34,21 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "pytest-asyncio>=0.21.0",
-    # Pinned to a major line on purpose. black>=23.0 was unbounded, so a new black
-    # release silently changed formatting and CI went red on 2026-07-20 --
-    # `black --check` failed on observability.py for a week with nobody watching.
-    # An unpinned formatter guarantees this recurs.
-    "black>=26.1,<27",
-    "mypy>=1.0",
+    # Dev tooling is version-BOUNDED on purpose (2026-07-27).
+    #
+    # All three of these were unbounded (black>=23.0, ruff>=0.1.0, mypy>=1.0), so
+    # CI installed whatever released most recently and drifted out from under the
+    # code. Two separate outages resulted: black changed formatting and CI went red
+    # on 2026-07-20 (unnoticed for a week), then ruff 0.16 promoted new rules to
+    # stable and `ruff check .` reported 538 errors on unchanged code.
+    #
+    # The black marker is load-bearing: black 26.x requires Python >=3.10, but the
+    # CI matrix still tests 3.9, so an unmarked pin breaks `pip install` outright
+    # on that job. Only the lint job (3.11) runs black, so restricting it is safe.
+    "black>=26.1,<27; python_version>='3.10'",
+    "mypy>=1.0,<2",
     "types-PyYAML>=6.0",
-    "ruff>=0.1.0",
+    "ruff>=0.14,<0.15",
     "pre-commit>=3.0",
 ]
 mcp = [

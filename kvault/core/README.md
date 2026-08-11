@@ -1,6 +1,6 @@
 # Core Module
 
-Foundation layer for node operations, structured search, storage, and observability.
+Foundation layer for node operations, structured search, storage, and work reporting.
 
 ## Components
 
@@ -92,20 +92,70 @@ frontmatter = build_frontmatter({"created": "2026-01-23", "aliases": ["Alice"]})
 merged = merge_frontmatter(existing_meta, new_meta)
 ```
 
-### ObservabilityLogger (`observability.py`)
+### Decision Notes (`notes.py`)
 
-Phase-based logging for debugging:
+The work-reporting vocabulary. A note is emitted only when kvault invented a value,
+deliberately changed nothing, half-failed, hid something, or fell back — operations that
+went exactly as asked stay silent. The code set is closed: 10 codes (`autofilled`,
+`unchanged`, `partial`, `created`, `removed`, `truncated`, `skipped`, `waited`, `guessed`,
+`propagate`), each with a one-sentence contract next to `NOTE_CODES`. An unknown code
+raises `UnknownNoteCode` at build time; new reportable behaviour maps onto an existing
+code or amends the vocabulary explicitly.
 
 ```python
-from kvault.core import ObservabilityLogger
+from kvault.core.notes import note, collapse
 
-logger = ObservabilityLogger(Path(".kvault/logs.db"))
+n = note(
+    "skipped",
+    "could not read people/alice/_summary.md",
+    detail={"path": "people/alice"},
+    why="file is not valid UTF-8",
+    next_step="fix the encoding, then re-run",
+)
+# {"code": "skipped", "text": "...", "level": 1,
+#  "detail": {"path": "people/alice"}, "why": "...", "next": "..."}
 
-logger.log_research("Alice", "alice", matches, "create")
-logger.log_decide("Alice", "create", "No match found", confidence=0.95)
-logger.log_write("people/alice", "create", "Created entity")
-logger.log_propagate("people/alice", ["people"])
+# Batch commands collapse per-item notes by code, so a 40-ancestor
+# maintenance run emits one line, not forty:
+collapse([n, n, n])
+# [{"code": "skipped", "level": 1, "count": 3, "examples": ["people/alice: ...", ...]}]
 ```
+
+Notes live *inside* the result dict and are never printed from `core` or `mcp` — stdout
+there is the MCP JSON-RPC transport. Rendering happens only in `kvault/cli/render.py`.
+`partial` is the one code that survives every verbosity tier including `--quiet`:
+silencing a half-failure on request is a footgun.
+
+### Durable Ops Log (`oplog.py`)
+
+One row per completed KB operation in the `ops` table of `.kvault/logs.db`: op, path, the
+`did` line, notes, changed/partial flags, duration, UTC timestamp, and session. Every
+successful mutating command appends automatically (CLI surface `"cli"`, MCP surface
+`"mcp"`); read it with `kvault log tail` / `kvault log summary` or the `kvault_log_tail`
+MCP tool.
+
+```python
+from kvault.core.oplog import OpLog
+
+log = OpLog(kg_root=Path("knowledge_graph"))  # or db_path=...
+log.append("write_node", result, ms=12.3, surface="cli")  # False on failure, never raises
+recent = log.tail(limit=20)   # newest first; [] on any failure
+stats = log.summary()         # {"total_ops": ..., "sessions": ..., "op_counts": ..., "partial_count": ...}
+```
+
+The never-fail contract: `append` swallows every exception and returns `False` — a corrupt
+or unwritable log can never fail a KB write (the CLI surfaces the miss as a `skipped`
+note). It runs after the mutation has committed, never inside its critical section. No
+WAL, ever (`-wal`/`-shm` sidecars break gitignore-based sync automation). Bounded: note
+payloads capped at 4 KB, table pruned at 5,000 rows. `KVAULT_SESSION` correlates the
+several commands of one logical task into one session; `KVAULT_OPS_LOG=0` disables the
+append.
+
+### ObservabilityLogger (`observability.py`) — legacy
+
+The phase-based `logs` table in the same `.kvault/logs.db`, frozen for backward
+compatibility: existing databases and the MCP `kvault_log_phase` tool keep working, but
+new work lands in the `ops` table via `OpLog`.
 
 ### EntityResearcher (`research.py`)
 
@@ -134,13 +184,21 @@ normalize_entity_id("R&L Carriers")      # "rl_carriers"
 
 ```
 core/
-├── __init__.py       # Exports
-├── operations.py     # Node-first business logic
-├── search.py         # Structured lexical node search
-├── storage.py        # SimpleStorage + scan_entities + count/list
-├── frontmatter.py    # YAML frontmatter parsing
-├── research.py       # Entity matching + reconciliation suggestions
-├── observability.py  # Phase-based logging
+├── __init__.py          # Exports
+├── operations.py        # Node-first business logic
+├── search.py            # Structured lexical node search
+├── storage.py           # SimpleStorage + scan_entities + count/list
+├── frontmatter.py       # YAML frontmatter parsing
+├── notes.py             # Decision-note vocabulary + collapse policy
+├── oplog.py             # Durable ops table (append/tail/summary)
+├── events.py            # Capture journal: pending events under .kvault/events/
+├── locks.py             # Atomic file writes + per-KB write lock
+├── paths.py             # Symlink-aware path containment helpers
+├── validation.py        # Shared validation rules for CLI and MCP
+├── research.py          # Entity matching + reconciliation suggestions
+├── summary_quality.py   # Parent-summary quality auditing
+├── daily_artifacts.py   # Deterministic daily artifact generation
+├── observability.py     # Legacy phase-based logging (frozen)
 └── README.md
 ```
 

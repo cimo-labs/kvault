@@ -1,7 +1,7 @@
 # kvault Architecture
 
 Canonical architecture for the `knowledgevault` package.
-Last updated: 2026-06-09
+Last updated: 2026-08-10
 
 ## Overview
 
@@ -24,7 +24,7 @@ AI Tool Runtime
   -> shell exec
   -> kvault CLI (Click commands) or kvault-mcp tools
   -> kvault.core.operations (stateless business logic)
-  -> core modules (search/storage/frontmatter/research/observability/artifacts)
+  -> core modules (search/storage/frontmatter/research/notes/oplog/observability/artifacts)
   -> filesystem knowledge base
 ```
 
@@ -37,9 +37,12 @@ and `--json`; command groups and server-launching commands may have command-spec
 - `search.py`: structured lexical node search
 - `summary.py`: read-summary, write-summary, update-summaries, ancestors
 - `journal.py`: journal
+- `events.py`: capture, events list/show/resolve/import (capture journal)
 - `validate.py`: validate
 - `check.py`: check (propagation staleness and summary-quality warnings)
-- `main.py`: init, status, tree, artifact daily, log summary
+- `main.py`: init, status, tree, artifact daily, log tail / log summary
+- `render.py`: human rendering of result notes; verbosity-tier resolution
+- `_helpers.py`: shared option decorators, KB-root resolution, ops-log append
 
 ### MCP Layer (`kvault/mcp/`)
 
@@ -62,7 +65,11 @@ parent-summary helpers backed by direct-child digests.
 - `frontmatter.py`: parse/build/merge YAML frontmatter.
 - `validation.py`: path validation, error codes, input normalization.
 - `research.py`: reusable entity matching and reconciliation suggestions.
-- `observability.py`: structured logs to `.kvault/logs.db`.
+- `notes.py`: work-reporting vocabulary — the closed set of 10 note codes, verbosity
+  tiers, and the `note`/`visible`/`collapse` helpers. Builds data, never prints.
+- `oplog.py`: durable per-operation log — the `ops` table in `.kvault/logs.db`
+  behind `kvault log tail`. Failure-proof appends; no WAL, ever.
+- `observability.py`: legacy phase logs (`logs` table) in `.kvault/logs.db`.
 - `daily_artifacts.py`: deterministic daily artifact generation.
 - `summary_quality.py`: warn-only parent-summary quality audit used by `kvault check`.
 
@@ -99,6 +106,21 @@ The canonical CLI write flow:
 4. Optional: `kvault journal` for additional logging (auto-journal happens on write with `--reasoning`)
 5. Optional: `kvault validate` to check integrity
 
+Since 0.13.0 a write result also reports what kvault decided: a one-line `did`
+receipt, a `changed` flag, a `notes` array (see Work Reporting below), and
+`ancestor_paths` alongside the full `ancestors` payload.
+
+A write whose body and metadata match the node on disk takes a **no-op fast
+path**: the file is not rewritten, mtime and the `updated` frontmatter date are
+untouched, human output says `Unchanged:` (with the ancestors line suppressed),
+and the result carries `changed: false` plus an `unchanged` note. The
+byte-identical rewrite used to manufacture spurious `PROPAGATE` warnings in
+`kvault check` and fake recency in search. Two deliberate exceptions: legacy
+`_meta.json` cleanup still runs on the no-op path, and a legacy node without
+frontmatter never takes it (the migrating write must run). `ancestors` /
+`propagation_required` keep their meaning — "do ancestor summaries exist to
+roll up" — so a stale chain from an earlier write stays visible on retry.
+
 The canonical MCP parent-summary flow is stricter:
 
 1. `kvault_write_node(...)`
@@ -114,6 +136,39 @@ and changes when a direct child summary body, frontmatter, path, or existence ch
 Parent summaries are expected to be comprehensive rollups of descendants. `kvault check`
 emits warn-only `SUMMARY:` findings when a parent omits immediate child coverage, is too
 short for its subtree, or contains placeholder/redirect language.
+
+## Work Reporting
+
+kvault reports what it *decided* — invented values, deliberate no-ops,
+half-failures, hidden results, fallbacks — not what it did step by step. The
+pipeline has three stages with a hard boundary between them:
+
+1. **Vocabulary** (`kvault/core/notes.py`): a closed set of 10 note codes
+   (`autofilled`, `unchanged`, `partial`, `created`, `removed`, `truncated`,
+   `skipped`, `waited`, `guessed`, `propagate`), each with a one-sentence
+   contract. An unknown code raises at build time.
+2. **Result dicts** (`kvault/core/operations.py` and friends): notes ride
+   inside the result as `{code, text, level, detail?, why?, next?}`. Batch
+   commands collapse per-item notes by code into `{code, count, examples,
+   level}` via `notes.collapse`.
+3. **Rendering** (`kvault/cli/render.py`): the ONLY place notes become printed
+   text. Verbosity tiers (`-q`/normal/`--explain`/`--trace`, or
+   `KVAULT_VERBOSITY`) filter by note level; `why`/`next` print at `--explain`.
+   `partial` survives even `--quiet`. `--strict` exits 3 on any warning-class
+   note. In `--json` mode notes ride in the document itself, `why`/`next`
+   always included, and consumers filter by `level` themselves.
+
+MCP never renders: results are returned as data, stdout is the JSON-RPC
+transport, and nothing under `kvault/core/` or `kvault/mcp/` may write to a
+stream (pinned by `tests/test_output_channels.py`).
+
+Completed mutating operations are also appended to the durable `ops` table in
+`.kvault/logs.db` (`kvault/core/oplog.py`; surfaces `cli` and `mcp`), read via
+`kvault log tail` / `kvault_log_tail`. Appends run after the mutation commits
+and can never fail it — a failed append surfaces as a `skipped` note on both
+surfaces.
+`KVAULT_SESSION` correlates commands into one session; `KVAULT_OPS_LOG=0`
+disables the log.
 
 ## Daily Artifact Flow
 
@@ -160,6 +215,13 @@ pytest -q
 
 ## Version Notes
 
+- 0.13.0: work reporting — note vocabulary + verbosity tiers, `did`/`changed`/`notes`
+  in results, durable ops log (`kvault log tail`), no-op writes skip the file rewrite;
+  `check` human output/exit codes frozen.
+- 0.12.1: child-digest fix (unreadable children could be silently erased from parent
+  rollups), widened node-name pattern, `check` hard-errors on a bad `--kb-root`.
+- 0.12.0: capture journal (`capture`/`events`, promotion via `write --event`), per-KB
+  write lock with atomic writes, shared path-safety layer, delete/move confirmation.
 - 0.11.0: annotated tree outline (`build_outline`/`render_outline_text`) with counts, recency,
   and explicit truncation markers; MCP `kvault_tree`; no-op writes preserve `updated`.
 - 0.10.0: strict MCP parent-summary updates with stateless child digests and hierarchy hints.

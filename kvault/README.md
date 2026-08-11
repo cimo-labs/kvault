@@ -8,7 +8,7 @@ Main Python package for `knowledgevault`.
 kvault/
 ├── __init__.py
 ├── cli/                 # CLI commands (primary interface)
-├── core/                # operations, search, storage, frontmatter, research, observability, artifacts
+├── core/                # operations, search, storage, frontmatter, research, notes, ops log, artifacts
 ├── mcp/                 # thin MCP compatibility server
 └── templates/           # default KB templates
 ```
@@ -28,7 +28,11 @@ from kvault import (
     merge_frontmatter,
     EntityResearcher,
     ResearchCandidate,
+    NOTE_CODES,
+    note,
+    collapse,
     ObservabilityLogger,
+    OpLog,
     SearchDocument,
     SearchResult,
     scan_search_documents,
@@ -59,7 +63,8 @@ kvault search "project notes" --kb-root my_kb --json
 kvault read projects/example --kb-root my_kb --json
 kvault check --kb-root my_kb
 kvault artifact daily --kb-root my_kb --date 2026-02-17
-kvault log summary --db my_kb/.kvault/logs.db
+kvault log tail --kb-root my_kb
+kvault log summary --kb-root my_kb
 kvault-mcp --kb-root my_kb
 ```
 

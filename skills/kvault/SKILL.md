@@ -83,7 +83,10 @@ aliases: [Jane Doe, jane@example.com]
 
 Context...
 EOF
-# → {"success": true, "ancestors": [{path, current_content}, ...], "journal_logged": true}
+# → {"success": true, "changed": true, "did": "created people/contacts/jane_doe",
+#    "notes": [{"code": "autofilled", "text": "name=Jane Doe", ...}],
+#    "ancestor_paths": ["people/contacts", "people", "."],
+#    "ancestors": [{path, current_content}, ...], "journal_logged": true}
 ```
 
 **4. Propagate (Call 2)** — rewrite every returned ancestor as a comprehensive rollup
@@ -99,6 +102,31 @@ kvault update-summaries --json <<'EOF'
 EOF
 ```
 
+## Reading kvault's notes
+
+Results carry `notes` — kvault's decisions, not a step log. Silence means the operation
+went exactly as asked. The 10 codes:
+
+- `autofilled` — kvault invented a value you did not supply (verify it)
+- `unchanged` — deliberate no-op; file not rewritten, timestamps preserved
+- `partial` — part succeeded, part did not — **repair now**; survives even `--quiet`
+- `created` — something came into existence as a side effect (a typo'd `write-summary`
+  path forks a new subtree — verify the path)
+- `removed` — something was destroyed, with a count — **check the dropped keys**
+- `truncated` — you are not seeing everything that matched or exists
+- `skipped` — kvault could not read something and continued — **the output you just saw
+  is missing data**
+- `waited` — blocked on, or broke, another process's lock (waits ≥1s and broken locks
+  show at normal verbosity; sub-second waits only at `--trace`)
+- `guessed` — an input was unusable and a fallback was chosen (e.g. unparseable `--date`)
+- `propagate` — ancestor summaries are stale because of this operation
+
+Each note is `{code, text, level}`; `why`/`next` ride along in `--json`, and render in
+human mode only at `--explain`. Batch commands collapse notes by code into
+`{code, count, examples}`. In maintenance scripts add `--strict`: exit 3 on any
+warning-class note (`partial`, `skipped`, broken lock). For a multi-command task set
+`KVAULT_SESSION=<id>` — `kvault log tail --session <id>` then replays what that task did.
+
 ## Periodic maintenance
 
 Act on what the orientation pass shows:
@@ -110,6 +138,9 @@ Act on what the orientation pass shows:
 | `SUMMARY:` warnings from `kvault check` | Rewrite flagged parents as comprehensive rollups (real work despite exit code 0) |
 | `PENDING:` warnings from `kvault check` | Promote each stale event (`kvault write --event <id>`) or resolve it with an explicit outcome |
 | Near-duplicate titles/aliases | Verify identifiers exactly (email/phone) → merge into the canonical entity → delete the duplicate |
+
+`kvault log tail` shows what recent sessions did (op, path, notes) — check it before a
+maintenance pass to see what has already been touched.
 
 ## Hard rules
 
@@ -124,10 +155,11 @@ Act on what the orientation pass shows:
 
 | Category | Commands |
 |----------|----------|
-| Capture & events | `kvault capture` (stdin), `kvault events list|show|resolve`, `kvault events import` |
+| Capture & events | `kvault capture` (stdin), `kvault events list\|show\|resolve`, `kvault events import` |
 | Orient & discover | `kvault tree [path] [--depth N] [--max-children N] [--gist]`, `kvault search "<query>"` |
 | Nodes | `kvault read`, `kvault write` (stdin), `kvault list`, `kvault delete --confirm`, `kvault move --confirm` (destructive — both require `--confirm`) |
 | Summaries | `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors` |
 | Quality | `kvault validate`, `kvault check` |
-| Journal & artifacts | `kvault journal`, `kvault artifact daily`, `kvault log summary` |
+| Journal & artifacts | `kvault journal`, `kvault artifact daily`, `kvault log tail`, `kvault log summary` |
 | Lifecycle | `kvault init`, `kvault status` |
+| Output tiers | `-q/--quiet`, `--explain`, `--trace`, `--strict` — on the group (`kvault --strict write …`), or after the note-reporting subcommands (write, delete, move, write-summary, update-summaries, journal, search); rejected on `check`. `KVAULT_VERBOSITY=quiet\|normal\|explain\|trace` for hooks and cron |

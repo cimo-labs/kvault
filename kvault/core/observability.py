@@ -59,16 +59,22 @@ class ObservabilityLogger:
         "step_refactor",
     ]
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, session_id: Optional[str] = None):
         """Initialize logger with database path.
 
         Args:
             db_path: Path to SQLite database file
+            session_id: Reuse an existing session id instead of minting a new
+                one. Long-lived callers (the MCP server) MUST pass this on all
+                but the first construction — every ``__init__`` without it
+                starts a new session, which is how MCP ended up with one
+                session per tool call (146 rows across 61 sessions in one
+                production DB).
         """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
-        self.session_id = self._new_session()
+        self.session_id = session_id or self._new_session()
 
     def _init_db(self) -> None:
         """Create tables if they don't exist."""
@@ -459,7 +465,18 @@ class ObservabilityLogger:
             resolved_session_id = session_id
             if resolved_session_id is None:
                 row = conn.execute("SELECT session FROM logs ORDER BY id DESC LIMIT 1").fetchone()
-                resolved_session_id = str(row[0]) if row else self.session_id
+                if row is None:
+                    # Empty database: there is no session to report. The old
+                    # fallback returned self.session_id — an id minted by THIS
+                    # reader's constructor and never written to any row.
+                    return {
+                        "session_id": None,
+                        "phase_counts": {},
+                        "action_counts": {},
+                        "error_count": 0,
+                        "total_logs": 0,
+                    }
+                resolved_session_id = str(row[0])
 
             # Phase counts
             phase_counts = {}

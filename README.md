@@ -98,7 +98,10 @@ aliases: [Sarah Chen, sarah@example.com]
 # Sarah Chen
 Research scientist at Acme AI...
 EOF
-# → {"success": true, "ancestors": [{path, current_content}, ...], "journal_logged": true}
+# → {"success": true, "changed": true, "did": "created people/contacts/sarah_chen",
+#    "notes": [{"code": "autofilled", "text": "name=Sarah Chen", ...}],
+#    "ancestor_paths": ["people/contacts", "people", "."],
+#    "ancestors": [{path, current_content}, ...], "journal_logged": true}
 
 # Call 2: the agent rewrites the returned ancestors, including root
 kvault update-summaries --json --kb-root ./my_kb <<'EOF'
@@ -110,8 +113,68 @@ kvault update-summaries --json --kb-root ./my_kb <<'EOF'
 EOF
 ```
 
-Required frontmatter: `source`, `aliases` — kvault stamps `created`/`updated` automatically
-(and preserves them on no-op rewrites, so the recency signal in the tree stays honest).
+In human mode the same write narrates its decisions under the receipt:
+
+```text
+Created: people/contacts/sarah_chen
+  autofilled  name=Sarah Chen
+Journal: journal/2026-08/log.md
+Ancestors to update: 3  (people/contacts, people, .)
+```
+
+Re-sending identical content is a detected no-op — the file is not rewritten, mtime and
+`created`/`updated` stay put, so the recency signal in the tree stays honest:
+
+```text
+Unchanged: people/contacts/sarah_chen
+  unchanged   body and metadata identical — file not rewritten, created 2026-08-10, updated 2026-08-10 preserved
+Journal: journal/2026-08/log.md
+```
+
+Required frontmatter: `source`, `aliases` — kvault stamps `created`/`updated` automatically.
+
+## What kvault tells you
+
+kvault reports what it *decided*, not what you asked for. A note is emitted only when kvault
+invented a value, deliberately changed nothing, half-failed, hid something, or fell back —
+silence means the operation went exactly as asked. Notes render as indented lines under the
+receipt (human mode) and as a `notes` array in `--json` and over MCP, each
+`{code, text, level}` — a note's `why`/`next` ride in the JSON at every tier, and print in
+human mode at `--explain`. Batch commands collapse
+repeated notes by code (`{code, count, examples}`), so a 40-ancestor maintenance run emits
+one line, not forty. The vocabulary is closed — 10 codes:
+
+| Code | Contract |
+|------|----------|
+| `autofilled` | kvault invented a value you did not supply |
+| `unchanged` | the operation ran and deliberately changed nothing |
+| `partial` | part succeeded, part did not; manual repair needed |
+| `created` | something came into existence as a side effect |
+| `removed` | something was destroyed, with a count |
+| `truncated` | you are not seeing everything that matched or exists |
+| `skipped` | kvault could not read something and continued without it |
+| `waited` | kvault blocked on, or broke, another process's lock |
+| `guessed` | an input was unusable and a fallback was chosen |
+| `propagate` | ancestor summaries are stale because of this operation |
+
+**Tiers.** `-q/--quiet` (receipt and warnings only) → normal → `--explain` (adds each note's
+`why` and the exact next command) → `--trace` (adds lock waits and mechanics). Flags work
+before or after the subcommand; `KVAULT_VERBOSITY=quiet|normal|explain|trace` sets the tier
+for hooks and cron jobs (flags win; a typo silently means normal). `partial` notes survive
+even `--quiet` — silencing a half-failure on request is a footgun.
+
+**`--strict`** exits 3 when any warning-class note (`partial`, `skipped`, a broken lock) was
+emitted — for CI and unattended runs. `check` rejects it: its exit codes are already a
+contract, and its human output is frozen.
+
+**Durable ops log.** Every successful mutating command (CLI and MCP) appends one row to
+`.kvault/logs.db`: op, path, `did`, notes, changed/partial flags, duration, session.
+`kvault log tail` shows what this KB's other agents and sessions did recently;
+`KVAULT_SESSION` groups the commands of one logical task, `KVAULT_OPS_LOG=0` disables. A
+failed append can never fail a write — the CLI surfaces the miss as a `skipped` note.
+
+Full 0.13.0 detail — every new JSON field, per-command changes, frozen surfaces — is in the
+[CHANGELOG](https://github.com/cimo-labs/kvault/blob/main/CHANGELOG.md).
 
 ## The maintenance loop
 
@@ -145,11 +208,13 @@ aspirational — agents read them off the orientation pass:
 | **Nodes** | `kvault read`, `kvault write` (stdin), `kvault list`, `kvault delete`, `kvault move` |
 | **Summaries** | `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors` |
 | **Quality** | `kvault validate`, `kvault check` |
-| **Journal & artifacts** | `kvault journal`, `kvault artifact daily`, `kvault log summary` |
+| **Journal & artifacts** | `kvault journal`, `kvault artifact daily`, `kvault log tail`, `kvault log summary` |
 | **Lifecycle** | `kvault init`, `kvault status` |
 
 Agent-facing commands accept `--json` for machine-readable output and `--kb-root`
-(auto-detected from cwd by default), before or after the subcommand.
+(auto-detected from cwd by default), before or after the subcommand — as do the output
+flags `-q/--quiet`, `--explain`, `--trace`, and `--strict` (see
+[What kvault tells you](#what-kvault-tells-you)).
 
 ## MCP server (optional)
 
@@ -173,9 +238,14 @@ kvault-mcp --kb-root /absolute/path/to/my_kb
 ```
 
 It exposes the same operations as the CLI (`kvault_tree`, `kvault_search`,
-`kvault_read_node`, `kvault_write_node`, summary/journal/validation tools), plus a strict
-parent-summary workflow with stale-write detection. Set `KVAULT_ALLOWED_ROOTS` to pin
-allowed roots on shared runtimes. Protocol details:
+`kvault_read_node`, `kvault_write_node`, summary/journal/validation tools, `kvault_log_tail`
+for the ops log), plus a strict parent-summary workflow with stale-write detection. Results
+carry the same `did`/`notes` decision reporting as `--json`, placed before the bulk payload.
+The write tools (`kvault_write_node`, `kvault_write_entity`) accept
+`ancestors="content"|"paths"`: `"paths"` keeps `ancestor_paths` but omits the full
+`ancestors[].current_content` payload, which can exceed 45,000 characters on a mature KB.
+The default stays `"content"` in 0.13.x and flips to `"paths"` in 0.14.0. Set
+`KVAULT_ALLOWED_ROOTS` to pin allowed roots on shared runtimes. Protocol details:
 [ARCHITECTURE.md](https://github.com/cimo-labs/kvault/blob/main/ARCHITECTURE.md).
 
 ## It's just files

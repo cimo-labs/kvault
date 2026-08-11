@@ -2,12 +2,15 @@
 
 import json
 import sys
+import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import click
 
+from kvault.core import notes as nt
 from kvault.core import operations as ops
+from kvault.core.oplog import OpLog, oplog_disabled
 
 
 def find_kb_root() -> Optional[Path]:
@@ -65,6 +68,99 @@ def common_options(func: Any) -> Any:
         help="Knowledge base root (auto-detected if not specified)",
     )(func)
     return func
+
+
+def verbosity_options(func: Any) -> Any:
+    """Add the output-tier options accepted after subcommands.
+
+    Mirrors the dual registration of ``--json``/``--kb-root``: the same flags
+    exist on the group, so both ``kvault --explain write …`` and
+    ``kvault write … --explain`` work.
+    """
+    func = click.option(
+        "--strict", is_flag=True, help="Exit 3 if any warning-class note was emitted"
+    )(func)
+    func = click.option(
+        "--trace", is_flag=True, help="Add cost/mechanics detail (implies --explain)"
+    )(func)
+    func = click.option("--explain", is_flag=True, help="Add reasoning and next steps")(func)
+    func = click.option("-q", "--quiet", is_flag=True, help="Receipt and warnings only")(func)
+    return func
+
+
+def apply_verbosity_options(
+    ctx: click.Context,
+    quiet: bool = False,
+    explain: bool = False,
+    trace: bool = False,
+    strict: bool = False,
+) -> None:
+    """Merge command-level verbosity flags into the group context.
+
+    The conflicting-flags check runs HERE, at merge time, not at render time:
+    rendering happens after the mutation, and a flag error must fail the
+    command before it touches the KB. This also catches cross-level combos
+    like ``kvault -q write --explain``.
+    """
+    ctx.ensure_object(dict)
+    if quiet:
+        ctx.obj["quiet"] = True
+    if explain:
+        ctx.obj["explain"] = True
+    if trace:
+        ctx.obj["trace"] = True
+    if strict:
+        ctx.obj["strict"] = True
+    if ctx.obj.get("quiet") and (ctx.obj.get("explain") or ctx.obj.get("trace")):
+        raise click.UsageError("--quiet cannot be combined with --explain or --trace")
+
+
+def get_tier(ctx: click.Context) -> int:
+    """Resolve the output tier for this invocation."""
+    from kvault.cli.render import resolve_tier
+
+    return resolve_tier(
+        quiet=bool(ctx.obj.get("quiet")),
+        explain=bool(ctx.obj.get("explain")),
+        trace=bool(ctx.obj.get("trace")),
+    )
+
+
+def record_op(
+    kb_root: Path,
+    op: str,
+    result: Dict[str, Any],
+    started: Optional[float] = None,
+) -> None:
+    """Append a successful operation to the durable ops log.
+
+    Runs BEFORE rendering/serialization so that a failed append can surface
+    as a ``skipped`` note in the same output. A logging failure never fails
+    the command — the KB mutation has already committed.
+    """
+    if not isinstance(result, dict) or not result.get("success"):
+        return
+    ms = None if started is None else (time.monotonic() - started) * 1000.0
+    ok = OpLog(kb_root).append(op=op, result=result, ms=ms, surface="cli")
+    if not ok and not oplog_disabled():
+        nt.attach_note(
+            result,
+            nt.note(
+                "skipped",
+                "operation log unavailable (.kvault/logs.db unwritable or corrupt) — "
+                "the KB operation itself succeeded",
+                next_step="inspect .kvault/logs.db; deleting it lets kvault recreate it",
+            ),
+        )
+
+
+def finish_op(ctx: click.Context, result: Dict[str, Any]) -> None:
+    """Apply --strict at the end of a command (both output modes)."""
+    from kvault.cli.render import strict_exit_code
+
+    code = strict_exit_code(result, bool(ctx.obj.get("strict")))
+    if code is not None:
+        ctx.exit(code)
 
 
 def read_stdin() -> str:

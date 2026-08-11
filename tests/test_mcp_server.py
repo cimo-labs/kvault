@@ -357,3 +357,147 @@ def test_mcp_tree_outline(tmp_path):
     missing = _run_tool(server, "kvault_tree", {"path": "nope"})
     assert missing["success"] is False
     assert missing["error_code"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# Work reporting over MCP (0.13.0)
+# ---------------------------------------------------------------------------
+
+
+def _tool_text(result):
+    """The raw text block — what the model actually reads, order included."""
+    blocks = result[0] if isinstance(result, tuple) else result
+    return blocks[0].text
+
+
+def test_mcp_log_phase_shares_one_session_per_server(tmp_path):
+    """N calls used to mint N sessions (146 rows / 61 sessions in one
+    production DB); one server process is now one session."""
+    kb = _make_kb(tmp_path)
+    server = create_server(kb)
+
+    first = _run_tool(server, "kvault_log_phase", {"phase": "decide", "data": {"n": 1}})
+    second = _run_tool(server, "kvault_log_phase", {"phase": "decide", "data": {"n": 2}})
+
+    assert first["success"] is True
+    assert first["session_id"] == second["session_id"]
+
+
+def test_mcp_write_node_reading_order_puts_notes_before_ancestors(tmp_path):
+    """Key order is reading order: the ~45KB ancestors payload must come after
+    did/notes/propagation_required in the JSON the model receives."""
+    kb = _make_kb(tmp_path)
+    server = create_server(kb)
+
+    raw = asyncio.run(
+        server.call_tool(
+            "kvault_write_node",
+            {"path": "people/contacts/jane", "content": "# Jane\n\nx.\n", "create": True},
+        )
+    )
+    text = _tool_text(raw)
+    payload = json.loads(text)
+    keys = list(payload.keys())
+    assert keys.index("did") < keys.index("ancestors")
+    assert keys.index("notes") < keys.index("ancestors")
+    assert keys.index("propagation_required") < keys.index("ancestors")
+    # And the serialized text itself preserves that order.
+    assert text.index('"notes"') < text.index('"ancestors"')
+
+
+def test_mcp_write_node_ancestors_paths_drops_bulk_payload(tmp_path):
+    kb = _make_kb(tmp_path)
+    server = create_server(kb)
+
+    result = _run_tool(
+        server,
+        "kvault_write_node",
+        {
+            "path": "people/contacts/jane",
+            "content": "# Jane\n\nx.\n",
+            "create": True,
+            "ancestors": "paths",
+        },
+    )
+    assert result["success"] is True
+    assert "ancestors" not in result
+    assert result["ancestor_paths"] == ["people/contacts", "people", "."]
+    assert result["propagation_required"] is True
+
+    bad = _run_tool(
+        server,
+        "kvault_write_node",
+        {
+            "path": "people/contacts/j2",
+            "content": "# J2\n\nx.\n",
+            "create": True,
+            "ancestors": "bogus",
+        },
+    )
+    assert bad["success"] is False
+    assert "ancestors must be one of" in bad["error"]
+
+
+def test_mcp_mutations_land_in_the_ops_log(tmp_path):
+    kb = _make_kb(tmp_path)
+    server = create_server(kb)
+    _run_tool(
+        server,
+        "kvault_write_node",
+        {"path": "people/contacts/jane", "content": "# Jane\n\nx.\n", "create": True},
+    )
+
+    tail = _run_tool(server, "kvault_log_tail", {})
+    assert tail["success"] is True
+    assert tail["count"] >= 1
+    row = tail["ops"][0]
+    assert row["surface"] == "mcp"
+    assert row["op"] == "write"
+    assert row["path"] == "people/contacts/jane"
+
+
+def test_mcp_log_phase_degrades_instead_of_raising_on_bad_db(tmp_path):
+    """sqlite errors used to escape as unhandled ToolErrors."""
+    import os as _os
+
+    kb = _make_kb(tmp_path)
+    (kb / ".kvault" / "logs.db").write_bytes(_os.urandom(2048))
+    server = create_server(kb)
+
+    result = _run_tool(server, "kvault_log_phase", {"phase": "decide", "data": {}})
+
+    assert result["success"] is False
+    assert result["error_code"] == "system_error"
+    assert "observability log unavailable" in result["error"]
+
+
+def test_mcp_write_summary_narrates_created_and_dropped_meta(tmp_path):
+    kb = _make_kb(tmp_path)
+    server = create_server(kb)
+
+    created = _run_tool(
+        server,
+        "kvault_write_summary",
+        {"path": "projects", "content": "# Projects\n\nNew branch.\n"},
+    )
+    assert created["created"] is True
+    assert any(n["code"] == "created" for n in created["notes"])
+
+
+def test_mcp_write_surfaces_failed_oplog_append_as_skipped_note(tmp_path):
+    """Same contract as the CLI: a corrupt ops log never fails the write and
+    is reported, not hidden."""
+    import os as _os
+
+    kb = _make_kb(tmp_path)
+    (kb / ".kvault" / "logs.db").write_bytes(_os.urandom(2048))
+    server = create_server(kb)
+
+    result = _run_tool(
+        server,
+        "kvault_write_node",
+        {"path": "people/contacts/jane", "content": "# Jane\n\nx.\n", "create": True},
+    )
+
+    assert result["success"] is True
+    assert any(n["code"] == "skipped" for n in result["notes"])

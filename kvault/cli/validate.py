@@ -27,5 +27,3 @@ def validate_kb(ctx: click.Context, kb_root: Optional[Path], as_json: bool) -> N
         for issue in result.get("issues", []):
             severity = issue["severity"].upper()
             click.echo(f"  [{severity}] {issue['path']}: {issue['message']}")
-        if result["issue_count"] == 0:
-            click.echo("No issues found.")

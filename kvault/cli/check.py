@@ -268,6 +268,13 @@ def check_kb(
 ) -> None:
     """Check KB integrity (propagation, journal, index, frontmatter, branching)."""
     ctx.ensure_object(dict)
+    if ctx.obj.get("strict"):
+        # check's exit codes are already a contract (0 = hard checks pass,
+        # 1 = hard warnings) consumed by hooks and scripts; --strict's exit 3
+        # would silently change what those consumers see.
+        raise click.ClickException(
+            "--strict is not supported for check; its exit codes are already a contract"
+        )
     explicit_root = kb_root or ctx.obj.get("kb_root")
     if as_json:
         ctx.obj["as_json"] = True

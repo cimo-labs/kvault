@@ -2,6 +2,111 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.13.0 - 2026-08-11
+
+Work reporting. kvault now tells you what it decided, not just what you asked
+for — on both the CLI and MCP surfaces. Before this release the interesting
+decisions (invented frontmatter, no-op writes, half-failed event promotions,
+truncated search results) were computed and then thrown away; the observability
+database shipped in 0.5 had **no automatic writers at all**.
+
+### Added
+
+- **Decision notes on every operation.** A closed vocabulary of 10 note codes
+  (`autofilled`, `unchanged`, `partial`, `created`, `removed`, `truncated`,
+  `skipped`, `waited`, `guessed`, `propagate`), each with a one-sentence
+  durable contract in `kvault/core/notes.py`. Notes ride *inside* the result:
+  human mode renders them as indented lines under the receipt; `--json` and
+  MCP carry them as a `notes` array (with `why`/`next` always included).
+  Batch commands collapse per-item notes by code (`{code, count, examples}`)
+  so a 40-ancestor maintenance run emits one line, not forty.
+- **Output tiers**: `-q/--quiet`, `--explain` (adds the reasoning and the
+  exact next command), `--trace` (adds lock waits and mechanics), plus a
+  `KVAULT_VERBOSITY` env var for hooks and cron jobs. `partial` notes survive
+  even `--quiet` — silencing a half-failure on request is a footgun.
+- **`--strict`**: exit 3 when any warning-class note (`partial`, `skipped`,
+  broken lock) was emitted. Rejected on `check`, whose exit codes are already
+  a contract.
+- **The durable ops log finally has writers.** Every successful mutating
+  command (CLI and MCP) appends one row to a new `ops` table in
+  `.kvault/logs.db`: op, path, `did`, notes, changed/partial flags, duration,
+  UTC timestamp, session. Read it with the new **`kvault log tail`** (CLI) or
+  **`kvault_log_tail`** (MCP). Appends are failure-proof and off the write
+  path — a corrupt or unwritable log can never fail a KB write; the miss
+  surfaces as a `skipped` note on both surfaces. Bounded: notes capped at 4 KB, table pruned
+  at 5,000 rows. `KVAULT_OPS_LOG=0` disables it; `KVAULT_SESSION` correlates
+  the several commands of one logical task into one session.
+- New JSON fields (all additive): `changed`, `did`, `notes`, `ancestor_paths`,
+  `partial`, `next`, `attempted`/`failed` (update-summaries), `nodes_deleted`/
+  `files_deleted` + ancestors (delete), `nodes_moved`/`ancestors_source`/
+  `ancestors_target` (move), `created` (write-summary), `total_matched`/
+  `limit`/`budget` (search), and per-search-result `content_omitted_reason`
+  (`content_max_chars` | `total_budget_exhausted` | `empty_node`) — which
+  finally makes `content_truncated` interpretable.
+- MCP: `ancestors="content"|"paths"` on the write tools — `"paths"` omits the
+  full `ancestors[].current_content` payload, which can exceed 45,000
+  characters (90% of a write result) on a mature KB. The default stays
+  `"content"` in 0.13.x and flips to `"paths"` in 0.14.0. Docstrings on the
+  write/search/delete/move tools now warn about invented provenance, the
+  missing stale-children guard on `kvault_write_summary`, and the char budget
+  that `parents != "none"` bypasses.
+- `kvault init` now writes `.kvault/.gitignore` (`*.db*`, `lock/`) so a fresh
+  KB inside a git repo never stages its runtime state.
+- Lock contention is visible: waits ≥1s and stale-lock breaks are reported as
+  `waited` notes at normal verbosity; sub-second waits surface only at
+  `--trace`, and uncontended acquisitions stay silent.
+
+### Changed
+
+- **A no-op write no longer rewrites the file.** It prints `Unchanged:`
+  instead of the false `Updated:`, reports `changed: false`, and leaves mtime
+  untouched — the byte-identical rewrite was manufacturing spurious
+  `PROPAGATE` warnings in `kvault check` and fake recency in search. The
+  legacy `_meta.json` cleanup still runs on the no-op path, and a legacy node
+  without frontmatter never takes it (the migrating write must run).
+  `ancestors`/`propagation_required` deliberately keep their meaning ("do
+  ancestor summaries exist to roll up"), so a stale chain from an earlier
+  write stays visible on retry.
+- **MCP write results are reordered**: `did`/`notes`/`changed`/
+  `propagation_required`/`ancestor_paths` now precede `ancestors`. Key order
+  is reading order for a model; the bulk payload was being read first.
+- `kvault write` appends the ancestor paths to `Ancestors to update: N`, and
+  suppresses the line entirely on a no-op.
+- `kvault write-summary` prints `Created summary:` when the node did not
+  exist — a typo'd path silently forks a new subtree, and now says so (with a
+  `created` note). Passing `meta` reports the frontmatter keys it dropped.
+- `kvault search --include-content` prints content in human mode at
+  `--explain`; it was previously a silent no-op.
+- `kvault tree` prints `(showing X of Y nodes — …)` when the view is pruned.
+- `kvault log summary` honours `--kb-root` (it was the only KB-scoped command
+  that didn't — it read a cwd-relative path) and the group-level `--json`,
+  includes ops-table counts, and reports `session_id: null` on an empty
+  database instead of a session id minted by the reader itself.
+- MCP `kvault_log_phase` no longer mints a new session per call (a production
+  DB had accumulated 146 rows across 61 one-row "sessions"); one server
+  process is one session. sqlite errors return a structured `system_error`
+  instead of escaping as an unhandled ToolError.
+- `kvault validate` on a clean KB prints one line, not two.
+
+### Fixed
+
+- A non-UTF-8 `_summary.md` no longer crashes `kvault search` with a
+  traceback (`UnicodeDecodeError` is a `ValueError`, not an `OSError`); it is
+  excluded and reported as a `skipped` note naming the file.
+- An unparseable `--date` on `kvault journal` was silently discarded; the
+  entry still files under today, now with a `guessed` note saying so.
+- The stale `__version__` fallback (0.11.3) in an uninstalled source tree.
+- `tests/fixtures/sample_kb/.kvault/logs.db` is no longer committed to git.
+
+### Frozen
+
+- `kvault check` human output and exit codes are byte-identical at every
+  verbosity tier — it feeds `UserPromptSubmit` hooks and automation that
+  parses its stdout. New signal is `--json`-only. Pinned by test.
+- In `--json` mode kvault emits exactly one JSON document and writes nothing
+  to stderr, at every tier. Pinned by a test matrix over every JSON-capable
+  command × every tier.
+
 ## 0.12.1 - 2026-07-27
 
 Bug-fix release. Three defects found by an external audit of a live 441-entity

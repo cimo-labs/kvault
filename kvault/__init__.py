@@ -13,11 +13,14 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("knowledgevault")
 except PackageNotFoundError:
-    __version__ = "0.11.3"
+    # Uninstalled source tree only; keep in sync with pyproject.toml.
+    __version__ = "0.13.0"
 
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
 from kvault.core.daily_artifacts import DailyArtifactResult, generate_daily_artifact, parse_iso_date
+from kvault.core.notes import NOTE_CODES, collapse, note
 from kvault.core.observability import ObservabilityLogger
+from kvault.core.oplog import OpLog
 from kvault.core.research import EntityResearcher, ResearchCandidate
 from kvault.core.summary_quality import (
     SummaryQualityIssue,
@@ -49,7 +52,11 @@ __all__ = [
     "parse_iso_date",
     "EntityResearcher",
     "ResearchCandidate",
+    "NOTE_CODES",
+    "note",
+    "collapse",
     "ObservabilityLogger",
+    "OpLog",
     "SummaryQualityIssue",
     "audit_summary_quality",
     "format_summary_quality_warnings",

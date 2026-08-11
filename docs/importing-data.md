@@ -34,8 +34,29 @@ propagate summaries. Expect it to follow the workflow from the generated `AGENTS
 search for existing nodes before creating, write with `--reasoning`, and batch-update
 ancestor summaries after each write.
 
+Each write prints a receipt of what kvault actually did — including decisions it made on
+the agent's behalf, as indented note lines — and names the ancestor summaries that now
+need updating:
+
+```
+Created: people/alice_smith
+  autofilled  source=auto:cli · aliases=[Alice Smith] · name=Alice Smith
+Journal: journal/2026-08/log.md
+Ancestors to update: 2  (people, .)
+```
+
+The batch summary update then confirms what it touched:
+
+```
+Updated 2 summaries: people, .
+```
+
 ## Tips
 
+- Set `KVAULT_SESSION=import-conversations` (any label) in the agent's environment before
+  a long import, so the many commands it runs are correlated as one session in the ops
+  log. Afterwards, `kvault log tail --session import-conversations` replays the whole
+  import as a single unit of work.
 - Process in batches (one week of conversations, one folder of notes) and let the agent
   run `kvault validate` between batches.
 - Watch the first few nodes it creates and correct the structure early — category choices

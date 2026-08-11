@@ -79,6 +79,11 @@ class KBWriteLock:
         self.timeout = timeout
         self.lock_dir = self.root / ".kvault" / LOCK_DIR_NAME
         self._key = str(self.root)
+        #: Contention diagnostics for the caller to report. Both were entirely
+        #: silent before: a caller could block for ten seconds, or destroy
+        #: another process's lock, with no record anywhere.
+        self.waited_ms: float = 0.0
+        self.broke_stale: bool = False
 
     # -- staleness ---------------------------------------------------------
 
@@ -111,14 +116,20 @@ class KBWriteLock:
         pid = owner.get("pid")
         return isinstance(pid, int) and not _pid_alive(pid)
 
-    def _break_stale(self) -> None:
-        """Break a stale lock atomically; losing a race here is fine."""
+    def _break_stale(self) -> bool:
+        """Break a stale lock atomically; returns True only if WE broke it.
+
+        Losing the rename race is fine — but it must not be *reported* as a
+        break, or both waiters claim the single break and a --strict pipeline
+        fails a process that performed a perfectly normal acquire.
+        """
         tombstone = self.lock_dir.parent / f"{LOCK_DIR_NAME}.stale.{uuid.uuid4().hex}"
         try:
             os.rename(self.lock_dir, tombstone)
         except OSError:
-            return  # someone else broke or refreshed it first
+            return False  # someone else broke or refreshed it first
         shutil.rmtree(tombstone, ignore_errors=True)
+        return True
 
     # -- acquire/release ---------------------------------------------------
 
@@ -129,13 +140,15 @@ class KBWriteLock:
                 self._local_depth[self._key] = depth + 1
                 return
 
-        deadline = time.monotonic() + self.timeout
+        started = time.monotonic()
+        deadline = started + self.timeout
         while True:
             try:
                 self.lock_dir.mkdir(parents=True)
             except FileExistsError:
                 if self._is_stale():
-                    self._break_stale()
+                    if self._break_stale():
+                        self.broke_stale = True
                     continue
                 if time.monotonic() >= deadline:
                     owner = self._owner_metadata() or {}
@@ -147,6 +160,7 @@ class KBWriteLock:
                 time.sleep(0.1)
                 continue
 
+            self.waited_ms = (time.monotonic() - started) * 1000.0
             atomic_write_text(
                 self.lock_dir / OWNER_FILE_NAME,
                 json.dumps(

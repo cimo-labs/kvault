@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from kvault.core import notes as nt
 from kvault.core.frontmatter import (
     FrontmatterError,
     build_frontmatter,
@@ -304,6 +305,73 @@ def derive_display_alias(entity_path: str) -> str:
     """Derive a human-friendly alias from the entity leaf path."""
     leaf = entity_path.split("/")[-1]
     return leaf.replace("_", " ").strip().title() or leaf
+
+
+# ---------------------------------------------------------------------------
+# Note helpers
+# ---------------------------------------------------------------------------
+
+
+def _fmt_value(value: Any) -> str:
+    """Render a frontmatter value compactly for a one-line note."""
+    if isinstance(value, list):
+        return "[" + ", ".join(str(v) for v in value) + "]"
+    return str(value)
+
+
+def _autofill_why(source: bool, aliases: bool, name: bool, create: bool) -> str:
+    """Explain each autofill, so --explain says why and not just what."""
+    reasons = []
+    if source:
+        reasons.append("source: none supplied and none on disk → default applied")
+    if aliases:
+        trigger = "--create with an empty alias list" if create else "no aliases supplied"
+        reasons.append(f"aliases: {trigger} → derived from the path leaf")
+    if name:
+        reasons.append("name: not supplied → first alias without '@' or a leading '+'")
+    return "; ".join(reasons)
+
+
+def _lock_notes(lock: KBWriteLock) -> List[Dict[str, Any]]:
+    """Report lock contention that was previously entirely silent.
+
+    Two failure modes had no record anywhere: a process blocking up to 10s on
+    another's lock, and a process forcibly breaking a lock it judged stale.
+    The second one destroys another process's mutual exclusion, so it is
+    reported at NORMAL rather than TRACE.
+    """
+    out: List[Dict[str, Any]] = []
+    waited_ms = getattr(lock, "waited_ms", 0.0) or 0.0
+    if getattr(lock, "broke_stale", False):
+        out.append(
+            nt.note(
+                "waited",
+                f"broke another process's stale write lock after {waited_ms:.0f}ms",
+                level=nt.NORMAL,
+                detail={"waited_ms": round(waited_ms, 1), "broke_stale": True},
+                why="the lock's owner process was gone, or the lock exceeded its hard staleness limit",
+            )
+        )
+    elif waited_ms >= 1000.0:
+        out.append(
+            nt.note(
+                "waited",
+                f"waited {waited_ms / 1000:.1f}s for another process's write lock",
+                level=nt.NORMAL,
+                detail={"waited_ms": round(waited_ms, 1), "broke_stale": False},
+            )
+        )
+    elif waited_ms >= 1.0:
+        # Sub-millisecond acquisitions are the uncontended norm; reporting them
+        # would put a note on every single write even at --trace.
+        out.append(
+            nt.note(
+                "waited",
+                f"waited {waited_ms:.0f}ms for the write lock",
+                detail={"waited_ms": round(waited_ms, 1), "broke_stale": False},
+            )
+        )
+    return out
 
 
 def _normalize_node_path(path: str) -> str:
@@ -889,16 +957,20 @@ def write_node(
             hint="Provide aliases as a list (can be empty: [])",
         )
 
-    # Auto-set 'name' from first alias
+    # Auto-set 'name' from first alias. This has had no signal at all until
+    # now — the display name a node is known by was silently derived.
+    autofilled_name = False
     if "name" not in meta and meta.get("aliases"):
         for alias in meta["aliases"]:
             if isinstance(alias, str) and "@" not in alias and not alias.startswith("+"):
                 meta["name"] = alias
+                autofilled_name = True
                 break
         if "name" not in meta and meta["aliases"]:
             first = meta["aliases"][0]
             if isinstance(first, str):
                 meta["name"] = first
+                autofilled_name = True
 
     if event_ids:
         refs = list(meta.get("source_refs") or [])
@@ -911,15 +983,31 @@ def write_node(
     # Date fields — a no-op rewrite (same body, same meta) keeps existing
     # created/updated so bulk re-writes don't flatten the recency signal.
     today = datetime.now().strftime("%Y-%m-%d")
+    is_noop = False
+    noop_dates: Dict[str, Any] = {}
     if create:
         meta["created"] = today
         meta["updated"] = today
     else:
         existing = _read_node_raw(kg_root, path)
-        if existing is not None and _is_noop_node_write(existing, content, meta):
+        # The legacy guard is load-bearing, and it CANNOT be has_frontmatter:
+        # _read_node_raw sets that to bool(meta) AFTER falling back to
+        # _meta.json, so a legacy node with metadata reports True. On such a
+        # node the comparison can match, and taking the fast path below would
+        # skip writing frontmatter *and* delete _meta.json — destroying the
+        # node's metadata entirely (2026-08-11 review, reproduced). Any node
+        # still carrying a _meta.json must take the full migrating write.
+        if (
+            existing is not None
+            and existing.get("has_frontmatter")
+            and not (full_path / "_meta.json").exists()
+            and _is_noop_node_write(existing, content, meta)
+        ):
+            is_noop = True
             for key in ("created", "updated"):
                 if key in existing["meta"]:
                     meta[key] = existing["meta"][key]
+                    noop_dates[key] = existing["meta"][key]
                 else:
                     meta.pop(key, None)
         else:
@@ -928,44 +1016,107 @@ def write_node(
     # Write
     frontmatter = build_frontmatter(meta)
     full_content = frontmatter + content
-    with KBWriteLock(kg_root):
+    meta_json_removed = False
+    with KBWriteLock(kg_root) as lock:
         full_path.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(summary_path, full_content)
+        # A detected no-op skips the rewrite entirely rather than rewriting
+        # identical bytes. That stops the mtime bump which made `kvault check`
+        # manufacture PROPAGATE warnings for edits that never happened.
+        if not is_noop:
+            atomic_write_text(summary_path, full_content)
 
-        # Remove legacy _meta.json
+        # Legacy _meta.json cleanup runs on BOTH paths, including the no-op
+        # fast path. storage.scan_entities still reads _meta.json as a
+        # fallback identity source, so leaving it behind would let a node
+        # carry two competing metadata records indefinitely.
         meta_json_path = full_path / "_meta.json"
         if meta_json_path.exists():
             meta_json_path.unlink()
+            meta_json_removed = True
+
+    notes: List[Dict[str, Any]] = []
+    if autofilled_source or autofilled_aliases or autofilled_name:
+        filled = {}
+        if autofilled_source:
+            filled["source"] = meta.get("source")
+        if autofilled_aliases:
+            filled["aliases"] = meta.get("aliases")
+        if autofilled_name:
+            filled["name"] = meta.get("name")
+        notes.append(
+            nt.note(
+                "autofilled",
+                " · ".join(f"{k}={_fmt_value(v)}" for k, v in filled.items()),
+                detail=filled,
+                why=_autofill_why(autofilled_source, autofilled_aliases, autofilled_name, create),
+            )
+        )
+    if is_noop:
+        preserved = ", ".join(f"{k} {v}" for k, v in sorted(noop_dates.items()))
+        notes.append(
+            nt.note(
+                "unchanged",
+                "body and metadata identical — file not rewritten"
+                + (f", {preserved} preserved" if preserved else ""),
+                detail=dict(noop_dates),
+                why="compared body and all frontmatter except created/updated; no difference",
+                next_step="nothing to do for this node",
+            )
+        )
+    if meta_json_removed:
+        notes.append(
+            nt.note(
+                "removed",
+                "legacy _meta.json deleted — metadata now lives in frontmatter",
+                detail={"path": f"{path}/_meta.json", "count": 1},
+            )
+        )
+    for lock_note in _lock_notes(lock):
+        notes.append(lock_note)
 
     result: Dict[str, Any] = {
         "success": True,
         "path": path,
         "created": create,
+        "changed": not is_noop,
     }
+    events_result: Optional[Dict[str, Any]] = None
+    events_warning: Optional[str] = None
     if event_ids:
         from kvault.core.events import promote_events
 
         promotion = promote_events(kg_root, event_ids, path)
-        result["events"] = promotion
+        events_result = promotion
         if not promotion.get("success"):
             # The node write already happened; surface the promotion failure
             # loudly instead of pretending the event was resolved.
-            result["events_warning"] = (
+            events_warning = (
                 "Node was written but event promotion failed; resolve the "
                 "events explicitly or retry with --event"
             )
-    if autofilled_source or autofilled_aliases:
-        result["meta_autofilled"] = {
-            "source": autofilled_source,
-            "aliases": autofilled_aliases,
-        }
-
-    # Fetch ancestor summaries for propagation.
-    propagation_targets = _propagation_targets(kg_root, path)
-    result["ancestors"] = propagation_targets
-    result["propagation_required"] = len(propagation_targets) > 0
+            ids = ", ".join(event_ids)
+            notes.append(
+                nt.note(
+                    "partial",
+                    f"node written, but event promotion FAILED — "
+                    f"{promotion.get('error', 'unknown error')}",
+                    detail={
+                        "event_ids": list(event_ids),
+                        "error_code": promotion.get("error_code"),
+                    },
+                    why=(
+                        "the event was pending when the write was admitted and changed "
+                        "state before promotion ran; the node is on disk, the event is "
+                        "not linked to it"
+                    ),
+                    next_step=f"kvault events show {event_ids[0]}",
+                )
+            )
+            del ids
 
     # Auto-journal if reasoning provided
+    journal_logged = False
+    journal_path: Optional[str] = None
     if reasoning:
         action_type = "create" if create else "update"
         source = journal_source or meta.get("source", "unknown")
@@ -980,10 +1131,54 @@ def write_node(
             ],
             source=source,
         )
-        result["journal_logged"] = journal_result.get("success", False)
-        result["journal_path"] = journal_result.get("journal_path")
-    else:
-        result["journal_logged"] = False
+        journal_logged = journal_result.get("success", False)
+        journal_path = journal_result.get("journal_path")
+
+    # Fetch ancestor summaries for propagation.
+    #
+    # NOTE ON SEMANTICS: propagation_required means "ancestor summaries exist
+    # and may need rolling up", NOT "this call dirtied them". It is
+    # deliberately left true after a detected no-op: an earlier changed write
+    # may still be unpropagated, and kvault cannot tell from this call alone.
+    # Narrowing it to "did I change something" would make a stale chain
+    # invisible on retry, which silently breaks the documented two-call
+    # workflow. The `changed` flag above answers the narrower question.
+    propagation_targets = _propagation_targets(kg_root, path)
+
+    verb = "created" if create else ("no change to" if is_noop else "updated")
+    did = f"{verb} {path}"
+    if events_warning:
+        did += "; event promotion failed"
+
+    # KEY ORDER IS READING ORDER over MCP: FastMCP hands the model
+    # json.dumps(result) and Python preserves insertion order. `ancestors`
+    # carries the full current_content of every ancestor — three complete
+    # documents on a typical write — so every decision signal is inserted
+    # BEFORE it, and the bulk payload goes last.
+    result["did"] = did
+    if notes:
+        result["notes"] = notes
+    if nt.has_partial(notes):
+        result["partial"] = True
+    next_step = next((n["next"] for n in notes if n.get("next")), None)
+    if next_step:
+        result["next"] = next_step
+    if autofilled_source or autofilled_aliases or autofilled_name:
+        result["meta_autofilled"] = {
+            "source": autofilled_source,
+            "aliases": autofilled_aliases,
+            "name": autofilled_name,
+        }
+    if events_result is not None:
+        result["events"] = events_result
+    if events_warning:
+        result["events_warning"] = events_warning
+    result["journal_logged"] = journal_logged
+    if journal_path is not None:
+        result["journal_path"] = journal_path
+    result["propagation_required"] = len(propagation_targets) > 0
+    result["ancestor_paths"] = [t["path"] for t in propagation_targets]
+    result["ancestors"] = propagation_targets
 
     return result
 
@@ -1007,17 +1202,71 @@ def write_summary(
         return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
     dir_path = kg_root if path == "." else kg_root / path
     summary_path = _summary_path_for_node(kg_root, path)
+    dir_existed = dir_path.exists()
+    summary_existed = summary_path.exists()
     existing = _read_node_raw(kg_root, path)
     preserved_meta = existing.get("meta", {}) if existing and meta is None else {}
     final_meta = meta if meta is not None else preserved_meta
+
+    # When the caller passes meta explicitly it REPLACES the existing
+    # frontmatter rather than merging — keys the caller didn't repeat are
+    # gone. That was silent; now it is a note. created/updated are NOT
+    # excluded: unlike write_node, write_summary never re-stamps dates, so a
+    # dropped `updated` really is lost (degrading check's PROPAGATE date
+    # comparison to its mtime fallback for that node).
+    dropped_keys: List[str] = []
+    if meta is not None and existing and isinstance(existing.get("meta"), dict):
+        dropped_keys = sorted(k for k in existing["meta"] if k not in meta)
+
     if final_meta:
         full_content = build_frontmatter(final_meta) + content
     else:
         full_content = content
-    with KBWriteLock(kg_root):
+    with KBWriteLock(kg_root) as lock:
         dir_path.mkdir(parents=True, exist_ok=True)
         atomic_write_text(summary_path, full_content)
-    return {"success": True, "path": path}
+
+    created = not summary_existed
+    notes: List[Dict[str, Any]] = []
+    if created and path != ".":
+        text = f"new node created at {path}"
+        if not dir_existed:
+            text += " (directory did not exist)"
+        notes.append(
+            nt.note(
+                "created",
+                text,
+                detail={"path": path, "dir_created": not dir_existed},
+                why=(
+                    "write-summary creates missing directories, so a typo'd path "
+                    "silently forks a new subtree"
+                ),
+                next_step="verify the path is intended; kvault move --confirm to relocate",
+            )
+        )
+    if dropped_keys:
+        notes.append(
+            nt.note(
+                "removed",
+                "frontmatter replaced wholesale — dropped keys: " + ", ".join(dropped_keys),
+                detail={"path": path, "dropped_keys": dropped_keys},
+                why=(
+                    "meta passed to write-summary replaces existing frontmatter "
+                    "instead of merging; omit meta to preserve it"
+                ),
+            )
+        )
+    notes.extend(_lock_notes(lock))
+
+    result: Dict[str, Any] = {
+        "success": True,
+        "path": path,
+        "created": created,
+        "did": ("created" if created else "updated") + f" summary {path}",
+    }
+    if notes:
+        result["notes"] = notes
+    return result
 
 
 def prepare_summary_update(kg_root: Path, path: str) -> Dict[str, Any]:
@@ -1112,15 +1361,26 @@ def _write_parent_summary_locked(
     if not result.get("success"):
         return result
 
-    return {
+    # Carry the nested write's narration — this is the RECOMMENDED parent
+    # path over MCP, and dropping the notes here meant the wholesale-meta
+    # 'removed' note fired only on the discouraged tool.
+    out: Dict[str, Any] = {
         "success": True,
         "path": prepared["path"],
-        "child_count": prepared["child_count"],
-        "children_digest": expected_digest,
-        "digest_algorithm": SUMMARY_UPDATE_DIGEST_ALGORITHM,
-        "max_direct_children": MAX_DIRECT_CHILDREN,
-        "hierarchy_hint": prepared["hierarchy_hint"],
+        "did": result.get("did"),
     }
+    if result.get("notes"):
+        out["notes"] = result["notes"]
+    out.update(
+        {
+            "child_count": prepared["child_count"],
+            "children_digest": expected_digest,
+            "digest_algorithm": SUMMARY_UPDATE_DIGEST_ALGORITHM,
+            "max_direct_children": MAX_DIRECT_CHILDREN,
+            "hierarchy_hint": prepared["hierarchy_hint"],
+        }
+    )
+    return out
 
 
 def update_summaries(
@@ -1140,6 +1400,7 @@ def _update_summaries_locked(
     updated: List[str],
     errors: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
+    item_notes: List[Dict[str, Any]] = []
     for item in updates:
         p = item.get("path")
         c = item.get("content")
@@ -1151,15 +1412,43 @@ def _update_summaries_locked(
             r = write_summary(kg_root, path=p, content=c, meta=m)
             if r.get("success"):
                 updated.append(p)
+                item_notes.extend(r.get("notes") or [])
             else:
                 errors.append({"path": p, "error": r.get("error", "Unknown error")})
         except Exception as e:
             errors.append({"path": p, "error": str(e)})
+
+    # Per-item notes are collapsed by code at the batch boundary — the ONLY
+    # place this loop's fan-out is aggregated. Without this, a 40-ancestor
+    # maintenance batch emits 40+ near-identical notes.
+    notes: List[Dict[str, Any]] = []
+    if errors:
+        notes.append(
+            nt.note(
+                "partial",
+                f"{len(errors)} of {len(updates)} summary updates failed",
+                detail={"failed_paths": [e.get("path") for e in errors]},
+                why="the batch continues past individual failures; success reflects the batch, not each item",
+                next_step="inspect errors[] and re-run the failed items",
+            )
+        )
+    notes.extend(nt.collapse(item_notes))
+
+    # `success` semantics deliberately unchanged (true when anything updated
+    # or the batch was empty). `partial` is the honest signal for mixed
+    # outcomes; flipping `success` here would break existing consumers.
     result: Dict[str, Any] = {
         "success": len(updated) > 0 or len(updates) == 0,
+        "did": f"updated {len(updated)} of {len(updates)} summaries",
         "updated": updated,
         "count": len(updated),
+        "attempted": len(updates),
+        "failed": len(errors),
     }
+    if errors:
+        result["partial"] = True
+    if notes:
+        result["notes"] = notes
     if errors:
         result["errors"] = errors
     return result
@@ -1236,9 +1525,42 @@ def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:
         validate_node_target(kg_root, path, require_exists=True)
     except PathSafetyError as exc:
         return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
-    with KBWriteLock(kg_root):
+    with KBWriteLock(kg_root) as lock:
+        # Count BEFORE rmtree — the only moment the answer to "what did I
+        # just destroy" is still knowable.
+        nodes_deleted = sum(1 for _ in full_path.rglob("_summary.md"))
+        files_deleted = sum(1 for p in full_path.rglob("*") if p.is_file())
         shutil.rmtree(full_path)
-    return {"success": True, "path": path, "deleted": True}
+
+    targets = _propagation_targets(kg_root, path)
+    notes = [
+        nt.note(
+            "removed",
+            f"deleted {nodes_deleted} node(s), {files_deleted} file(s) under {path}",
+            detail={"path": path, "nodes": nodes_deleted, "files": files_deleted},
+        ),
+        nt.note(
+            "propagate",
+            f"{len(targets)} ancestor summaries may still describe the deleted subtree",
+            level=nt.NORMAL,
+            detail={"ancestor_paths": [t["path"] for t in targets]},
+            why="delete does not rewrite parents; their rollups now reference nodes that are gone",
+            next_step="kvault update-summaries",
+        ),
+    ]
+    notes.extend(_lock_notes(lock))
+    return {
+        "success": True,
+        "path": path,
+        "deleted": True,
+        "did": f"deleted {path} ({nodes_deleted} nodes, {files_deleted} files)",
+        "notes": notes,
+        "nodes_deleted": nodes_deleted,
+        "files_deleted": files_deleted,
+        "propagation_required": len(targets) > 0,
+        "ancestor_paths": [t["path"] for t in targets],
+        "ancestors": targets,
+    }
 
 
 def move_entity(kg_root: Path, source_path: str, target_path: str) -> Dict[str, Any]:
@@ -1265,10 +1587,53 @@ def move_entity(kg_root: Path, source_path: str, target_path: str) -> Dict[str, 
     if target_full.exists():
         return error_response(ErrorCode.ALREADY_EXISTS, f"Target already exists: {target_path}")
 
-    with KBWriteLock(kg_root):
+    with KBWriteLock(kg_root) as lock:
+        nodes_moved = sum(1 for _ in source_full.rglob("_summary.md"))
         target_full.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(source_full), str(target_full))
-    return {"success": True, "source": source_path, "target": target_path}
+
+    # BOTH ancestor chains are stale after a move: the source chain still
+    # describes a subtree that left, the target chain doesn't yet describe
+    # the one that arrived.
+    src_targets = _propagation_targets(kg_root, source_path)
+    tgt_targets = _propagation_targets(kg_root, target_path)
+    combined: List[Dict[str, Any]] = []
+    seen_paths: Set[str] = set()
+    for t in src_targets + tgt_targets:
+        if t["path"] not in seen_paths:
+            seen_paths.add(t["path"])
+            combined.append(t)
+
+    notes = [
+        nt.note(
+            "propagate",
+            f"both ancestor chains are stale: {len(combined)} summaries to update",
+            level=nt.NORMAL,
+            detail={
+                "source_chain": [t["path"] for t in src_targets],
+                "target_chain": [t["path"] for t in tgt_targets],
+            },
+            why=(
+                "the source chain still describes the moved subtree; "
+                "the target chain does not describe it yet"
+            ),
+            next_step="kvault update-summaries",
+        )
+    ]
+    notes.extend(_lock_notes(lock))
+    return {
+        "success": True,
+        "source": source_path,
+        "target": target_path,
+        "did": f"moved {source_path} → {target_path} ({nodes_moved} nodes)",
+        "notes": notes,
+        "nodes_moved": nodes_moved,
+        "propagation_required": len(combined) > 0,
+        "ancestor_paths": [t["path"] for t in combined],
+        "ancestors_source": [t["path"] for t in src_targets],
+        "ancestors_target": [t["path"] for t in tgt_targets],
+        "ancestors": combined,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1324,11 +1689,14 @@ def write_journal(
 ) -> Dict[str, Any]:
     """Write a journal entry."""
     dt = datetime.now()
+    guessed_date: Optional[str] = None
     if date:
         try:
             dt = datetime.strptime(date, "%Y-%m-%d")
         except ValueError:
-            pass
+            # The fallback used to be completely silent — the entry landed
+            # under today's date with no indication the input was discarded.
+            guessed_date = date
 
     journal_rel_path = get_journal_path(dt)
     journal_full_path = kg_root / journal_rel_path
@@ -1345,11 +1713,22 @@ def write_journal(
             entry = header + entry
 
         atomic_write_text(journal_full_path, entry)
-    return {
+    result: Dict[str, Any] = {
         "success": True,
         "journal_path": journal_rel_path,
         "actions_logged": len(actions),
     }
+    if guessed_date:
+        result["notes"] = [
+            nt.note(
+                "guessed",
+                f"date '{guessed_date}' is not YYYY-MM-DD — entry filed under today "
+                f"({dt.strftime('%Y-%m-%d')})",
+                detail={"input": guessed_date, "used": dt.strftime("%Y-%m-%d")},
+                why="an unparseable date falls back to today rather than failing the journal write",
+            )
+        ]
+    return result
 
 
 # ---------------------------------------------------------------------------

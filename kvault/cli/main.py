@@ -1,6 +1,6 @@
 """kvault CLI — CLI-first knowledge base for AI agents."""
 
-import json
+import sqlite3
 from datetime import date
 from importlib.resources import files as resource_files
 from pathlib import Path
@@ -49,12 +49,28 @@ def _render(template: str, replacements: Dict[str, str]) -> str:
     help="Knowledge base root (auto-detected if not specified)",
 )
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.option("-q", "--quiet", is_flag=True, help="Receipt and warnings only")
+@click.option("--explain", is_flag=True, help="Add reasoning and next steps")
+@click.option("--trace", is_flag=True, help="Add cost/mechanics detail (implies --explain)")
+@click.option("--strict", is_flag=True, help="Exit 3 if any warning-class note was emitted")
 @click.pass_context
-def cli(ctx: click.Context, kb_root: Optional[Path], as_json: bool) -> None:
+def cli(
+    ctx: click.Context,
+    kb_root: Optional[Path],
+    as_json: bool,
+    quiet: bool,
+    explain: bool,
+    trace: bool,
+    strict: bool,
+) -> None:
     """kvault — personal knowledge base for AI agents."""
     ctx.ensure_object(dict)
     ctx.obj["kb_root"] = kb_root
     ctx.obj["as_json"] = as_json
+    ctx.obj["quiet"] = quiet
+    ctx.obj["explain"] = explain
+    ctx.obj["trace"] = trace
+    ctx.obj["strict"] = strict
 
 
 # Register commands
@@ -146,6 +162,10 @@ def init_kb(ctx: click.Context, path: Path, name: str) -> None:
     kvault_dir = path / ".kvault"
     kvault_dir.mkdir(parents=True, exist_ok=True)
     ObservabilityLogger(kvault_dir / "logs.db")
+    # Ship the ignore rules with the KB. Both pre-existing live KBs had to
+    # hand-roll this after accidentally staging a growing binary; `*.db*` also
+    # covers sqlite sidecar files (-wal/-shm) should a future tool create them.
+    (kvault_dir / ".gitignore").write_text("# kvault runtime state — never commit\n*.db*\nlock/\n")
 
     click.echo(f"Initialized knowledge base at {path}")
     click.echo(f"Owner: {name}")
@@ -231,6 +251,11 @@ def tree(
         )
     else:
         click.echo(ops.render_outline_text(outline))
+        if counts["shown_nodes"] < counts["total_nodes"]:
+            click.echo(
+                f"(showing {counts['shown_nodes']} of {counts['total_nodes']} nodes — "
+                "raise --depth or --max-children for the rest)"
+            )
 
 
 @cli.group("artifact")
@@ -310,56 +335,131 @@ def log_group() -> None:
     """Inspect kvault observability logs."""
 
 
+def _resolve_log_db(ctx: click.Context, db_path: Optional[Path]) -> Path:
+    """Resolve the log DB path: explicit --db wins, else <kb-root>/.kvault/logs.db.
+
+    ``log summary`` used to default to the CWD-RELATIVE ``.kvault/logs.db``
+    and silently ignore ``--kb-root`` — the only KB-scoped command that did.
+    An explicit ``--db`` that doesn't exist is a hard error; a missing default
+    DB just means "nothing logged yet".
+    """
+    if db_path is not None:
+        db_path = db_path.resolve()
+        if not db_path.exists():
+            raise click.ClickException(f"Log database does not exist: {db_path}")
+        return db_path
+    kb_root = resolve_kb_root(ctx)
+    return kb_root / ".kvault" / "logs.db"
+
+
 @log_group.command("summary")
 @click.option(
     "--db",
     "db_path",
     type=click.Path(path_type=Path),
-    default=Path(".kvault/logs.db"),
-    show_default=True,
-    help="Path to observability SQLite database",
+    default=None,
+    help="Path to the logs database (default: <kb-root>/.kvault/logs.db)",
 )
 @click.option(
     "--session-id",
     default=None,
-    help="Optional session id. Defaults to the latest session in the database.",
+    help="Optional legacy session id. Defaults to the latest session in the database.",
 )
-@click.option(
-    "--json",
-    "as_json",
-    is_flag=True,
-    help="Print summary as JSON.",
-)
-def log_summary(db_path: Path, session_id: Optional[str], as_json: bool) -> None:
-    """Show high-level stats for an observability session."""
-    db_path = db_path.resolve()
-    if not db_path.exists():
-        raise click.ClickException(f"Log database does not exist: {db_path}")
+@common_options
+@click.pass_context
+def log_summary(
+    ctx: click.Context,
+    db_path: Optional[Path],
+    session_id: Optional[str],
+    kb_root: Optional[Path],
+    as_json: bool,
+) -> None:
+    """Show operation counts and legacy phase-log stats for this KB."""
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
+    resolved_db = _resolve_log_db(ctx, db_path)
 
-    logger = ObservabilityLogger(db_path)
-    summary = logger.get_session_summary(session_id=session_id)
+    from kvault.core.oplog import OpLog
 
-    if as_json:
-        click.echo(json.dumps(summary, indent=2, sort_keys=True))
+    ops_summary = OpLog(kg_root=None, db_path=resolved_db).summary()
+    empty_legacy: Dict[str, object] = {
+        "session_id": None,
+        "phase_counts": {},
+        "action_counts": {},
+        "error_count": 0,
+        "total_logs": 0,
+    }
+    if resolved_db.exists():
+        try:
+            legacy = ObservabilityLogger(resolved_db).get_session_summary(session_id=session_id)
+        except sqlite3.Error:
+            # A corrupt/garbage logs.db must degrade like every other logging
+            # failure — zeros, not a raw traceback. OpLog.summary() above
+            # already returned zeros for the same reason.
+            legacy = dict(empty_legacy)
+    else:
+        legacy = dict(empty_legacy)
+
+    payload = {
+        "db": str(resolved_db),
+        "ops": ops_summary,
+        # Legacy phase-log stats keep their original top-level keys.
+        **legacy,
+    }
+    if ctx.obj.get("as_json"):
+        output_json(payload)
         return
 
-    click.echo(f"Session: {summary['session_id']}")
-    click.echo(f"Total logs: {summary['total_logs']}")
-    click.echo(f"Errors: {summary['error_count']}")
+    click.echo(f"Log database: {resolved_db}")
+    click.echo(
+        f"Operations: {ops_summary['total_ops']} "
+        f"({ops_summary['sessions']} sessions, {ops_summary['partial_count']} partial)"
+    )
+    for op_name, count in sorted(ops_summary["op_counts"].items()):
+        click.echo(f"  - {op_name}: {count}")
+    if legacy["total_logs"]:
+        click.echo(
+            f"Legacy phase logs: {legacy['total_logs']} rows, "
+            f"{legacy['error_count']} errors (latest session: {legacy['session_id']})"
+        )
 
-    click.echo("Phase counts:")
-    if summary["phase_counts"]:
-        for phase, count in sorted(summary["phase_counts"].items()):
-            click.echo(f"  - {phase}: {count}")
-    else:
-        click.echo("  - (none)")
 
-    click.echo("Action counts:")
-    if summary["action_counts"]:
-        for action, count in sorted(summary["action_counts"].items()):
-            click.echo(f"  - {action}: {count}")
-    else:
-        click.echo("  - (none)")
+@log_group.command("tail")
+@click.option("--limit", default=20, show_default=True, type=int, help="Rows to show")
+@click.option("--session", default=None, help="Filter to one session id")
+@common_options
+@click.pass_context
+def log_tail(
+    ctx: click.Context,
+    limit: int,
+    session: Optional[str],
+    kb_root: Optional[Path],
+    as_json: bool,
+) -> None:
+    """Show recent KB operations and the decisions they reported."""
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
+    root = resolve_kb_root(ctx)
+
+    from kvault.core.oplog import OpLog
+
+    rows = OpLog(root).tail(limit=limit, session=session)
+    if ctx.obj.get("as_json"):
+        output_json({"count": len(rows), "ops": rows})
+        return
+    if not rows:
+        click.echo("No operations logged.")
+        return
+    for row in reversed(rows):  # oldest first, like tail(1)
+        flags = ""
+        if row.get("partial"):
+            flags += " [partial]"
+        if row.get("changed") is False:
+            flags += " [unchanged]"
+        codes = ",".join(n.get("code", "?") for n in row.get("notes") or [])
+        note_part = f"  notes: {codes}" if codes else ""
+        click.echo(
+            f"{row['ts']}  {row['surface']}:{row['op']:<16} "
+            f"{row.get('path') or '-'}{flags}{note_part}"
+        )
 
 
 if __name__ == "__main__":

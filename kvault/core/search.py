@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from kvault.core import notes as nt
 from kvault.core.frontmatter import parse_frontmatter
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -48,6 +49,7 @@ class SearchResult:
     last_updated: str
     content: Optional[str] = None
     content_truncated: Optional[bool] = None
+    content_omitted_reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {
@@ -63,6 +65,12 @@ class SearchResult:
         if self.content is not None:
             data["content"] = self.content
             data["content_truncated"] = bool(self.content_truncated)
+            # Without this, content="" + content_truncated=True is emitted both
+            # for "the shared budget ran out before this result" and "cut at the
+            # per-result cap" — and a caller cannot tell either from an empty
+            # node. That ambiguity made content_truncated uninterpretable.
+            if self.content_omitted_reason:
+                data["content_omitted_reason"] = self.content_omitted_reason
         return data
 
 
@@ -74,15 +82,21 @@ def search_nodes(
     content_max_chars: int = 6000,
     total_max_chars: int = 20000,
 ) -> Dict[str, Any]:
-    """Search visible kvault nodes and return ranked results."""
+    """Search visible kvault nodes and return ranked results.
+
+    The result reports its own blind spots: ``total_matched`` vs ``count``
+    when ``limit`` cut the list, a ``truncated`` note when the shared content
+    budget ran out, and a ``skipped`` note for files that could not be read —
+    previously all silent.
+    """
     query = query.strip()
     if not query:
-        return {"query": query, "count": 0, "results": []}
+        return {"query": query, "count": 0, "total_matched": 0, "results": []}
 
-    documents = scan_search_documents(kg_root)
+    documents, unreadable = _scan_documents(kg_root)
     query_tokens = _tokens(query)
     if not query_tokens:
-        return {"query": query, "count": 0, "results": []}
+        return {"query": query, "count": 0, "total_matched": 0, "results": []}
 
     idf = _idf(documents, query_tokens)
     scored: List[Tuple[float, SearchDocument, Set[str]]] = []
@@ -92,15 +106,25 @@ def search_nodes(
             scored.append((score, doc, matched_fields))
 
     scored.sort(key=lambda item: (-item[0], item[1].path.count("/"), item[1].path))
+    total_matched = len(scored)
     results: List[SearchResult] = []
     remaining_total = max(0, total_max_chars)
+    budget_exhausted = False
     for score, doc, matched_fields in scored[: max(limit, 0)]:
         content: Optional[str] = None
         truncated: Optional[bool] = None
+        omitted_reason: Optional[str] = None
         if include_content:
+            budget_bound = remaining_total < max(0, content_max_chars)
             cap = min(max(0, content_max_chars), remaining_total)
             content, truncated = _truncate(doc.content, cap)
             remaining_total -= len(content)
+            if not doc.content:
+                omitted_reason = "empty_node"
+            elif truncated:
+                omitted_reason = "total_budget_exhausted" if budget_bound else "content_max_chars"
+                if budget_bound:
+                    budget_exhausted = True
         results.append(
             SearchResult(
                 path=doc.path,
@@ -113,20 +137,79 @@ def search_nodes(
                 last_updated=doc.last_updated,
                 content=content,
                 content_truncated=truncated,
+                content_omitted_reason=omitted_reason,
             )
         )
 
-    return {
+    notes: List[Dict[str, Any]] = []
+    if unreadable:
+        shown = ", ".join(e["path"] for e in unreadable[:3])
+        more = f" (+{len(unreadable) - 3} more)" if len(unreadable) > 3 else ""
+        notes.append(
+            nt.note(
+                "skipped",
+                f"{len(unreadable)} summary file(s) could not be read and were "
+                f"excluded from the search: {shown}{more}",
+                detail={"files": unreadable[:10]},
+                why="an unreadable or undecodable file is excluded rather than aborting the search",
+                next_step="repair or re-encode the listed files (UTF-8), then re-run",
+            )
+        )
+    if total_matched > len(results):
+        notes.append(
+            nt.note(
+                "truncated",
+                f"showing {len(results)} of {total_matched} matches",
+                detail={"total_matched": total_matched, "limit": limit},
+                next_step=f'kvault search "{query}" --limit {total_matched}',
+            )
+        )
+    if budget_exhausted:
+        notes.append(
+            nt.note(
+                "truncated",
+                "shared content budget exhausted — later results carry partial or no content",
+                detail={"total_max_chars": total_max_chars},
+                next_step="re-run with --max-total-chars raised, or a smaller --limit",
+            )
+        )
+
+    out: Dict[str, Any] = {
         "query": query,
+        "did": f"matched {total_matched} node(s), returning {len(results)}",
         "count": len(results),
-        "results": [result.to_dict() for result in results],
+        "total_matched": total_matched,
+        "limit": limit,
     }
+    if notes:
+        out["notes"] = notes
+    if include_content:
+        out["budget"] = {
+            "content_max_chars": content_max_chars,
+            "total_max_chars": total_max_chars,
+            "content_chars_returned": max(0, total_max_chars) - remaining_total,
+            "exhausted": budget_exhausted,
+        }
+    # Bulk payload last: over MCP, key order is reading order.
+    out["results"] = [result.to_dict() for result in results]
+    return out
 
 
 def scan_search_documents(kg_root: Path) -> List[SearchDocument]:
     """Return searchable documents for every visible ``_summary.md`` node."""
+    return _scan_documents(kg_root)[0]
+
+
+def _scan_documents(kg_root: Path) -> Tuple[List[SearchDocument], List[Dict[str, str]]]:
+    """Scan visible nodes, reporting unreadable files instead of hiding them.
+
+    ``UnicodeDecodeError`` is caught explicitly: it is a ``ValueError``, not an
+    ``OSError``, so one non-UTF-8 ``_summary.md`` used to crash the entire
+    search with a traceback.
+    """
     kg_root = Path(kg_root)
     documents: List[SearchDocument] = []
+    unreadable: List[Dict[str, str]] = []
     for summary_path in sorted(kg_root.rglob("_summary.md")):
         try:
             rel_summary = summary_path.relative_to(kg_root)
@@ -140,7 +223,8 @@ def scan_search_documents(kg_root: Path) -> List[SearchDocument]:
         )
         try:
             raw = summary_path.read_text()
-        except OSError:
+        except (OSError, UnicodeDecodeError) as exc:
+            unreadable.append({"path": str(rel_summary), "error": type(exc).__name__})
             continue
         meta, body = parse_frontmatter(raw)
         content = body if meta else raw
@@ -157,7 +241,7 @@ def scan_search_documents(kg_root: Path) -> List[SearchDocument]:
                 last_updated=_mtime_date(summary_path),
             )
         )
-    return documents
+    return documents, unreadable
 
 
 def _score_document(

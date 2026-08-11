@@ -1,5 +1,6 @@
 """CLI commands for entity operations: read, write, list, delete, move."""
 
+import time
 from typing import Optional
 
 import click
@@ -8,11 +9,17 @@ from pathlib import Path
 
 from kvault.cli._helpers import (
     apply_common_options,
+    apply_verbosity_options,
     common_options,
+    finish_op,
+    get_tier,
     output_json,
     read_stdin,
+    record_op,
     resolve_kb_root,
+    verbosity_options,
 )
+from kvault.cli.render import render_notes
 from kvault.core import operations as ops
 
 
@@ -80,6 +87,7 @@ def read_entity(
     help="Captured event ID this write promotes (repeatable); "
     "stamps provenance and resolves the event",
 )
+@verbosity_options
 @common_options
 @click.pass_context
 def write_entity(
@@ -91,6 +99,10 @@ def write_entity(
     event_ids: tuple,
     kb_root: Optional[Path],
     as_json: bool,
+    quiet: bool,
+    explain: bool,
+    trace: bool,
+    strict: bool,
 ) -> None:
     """Write a node from stdin (frontmatter + markdown body).
 
@@ -98,6 +110,7 @@ def write_entity(
     or omit it to use defaults.
     """
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
+    apply_verbosity_options(ctx, quiet=quiet, explain=explain, trace=trace, strict=strict)
     kb_root = resolve_kb_root(ctx)
     raw = read_stdin()
 
@@ -106,6 +119,7 @@ def write_entity(
 
     meta, body = parse_frontmatter(raw)
 
+    started = time.monotonic()
     result = ops.write_node(
         kb_root,
         path,
@@ -116,19 +130,28 @@ def write_entity(
         journal_source=journal_source,
         event_ids=list(event_ids) or None,
     )
+    record_op(kb_root, "write", result, started)
     if ctx.obj.get("as_json"):
         output_json(result)
     else:
         if result.get("success"):
-            action = "Created" if result.get("created") else "Updated"
+            if result.get("created"):
+                action = "Created"
+            elif result.get("changed", True):
+                action = "Updated"
+            else:
+                # Saying "Updated" for a detected no-op was actively false.
+                action = "Unchanged"
             click.echo(f"{action}: {result['path']}")
+            render_notes(result, get_tier(ctx))
             if result.get("journal_logged"):
                 click.echo(f"Journal: {result.get('journal_path')}")
-            n = len(result.get("ancestors", []))
-            if n:
-                click.echo(f"Ancestors to update: {n}")
+            paths = result.get("ancestor_paths") or []
+            if paths and result.get("changed", True):
+                click.echo(f"Ancestors to update: {len(paths)}  ({', '.join(paths)})")
         else:
             raise click.ClickException(result.get("error", "Write failed"))
+    finish_op(ctx, result)
 
 
 @click.command("list")
@@ -170,6 +193,7 @@ def _confirmation_error(operation: str, detail: str) -> dict:
 @click.argument("path")
 @click.option("--confirm", is_flag=True, help="Confirm this destructive operation")
 @click.option("--force", is_flag=True, help="Deprecated alias for --confirm")
+@verbosity_options
 @common_options
 @click.pass_context
 def delete_entity(
@@ -179,9 +203,14 @@ def delete_entity(
     force: bool,
     kb_root: Optional[Path],
     as_json: bool,
+    quiet: bool,
+    explain: bool,
+    trace: bool,
+    strict: bool,
 ) -> None:
     """Delete an entity (requires --confirm, or answering an interactive prompt)."""
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
+    apply_verbosity_options(ctx, quiet=quiet, explain=explain, trace=trace, strict=strict)
     kb_root = resolve_kb_root(ctx)
     confirmed = confirm or force
     if not confirmed:
@@ -189,20 +218,25 @@ def delete_entity(
             output_json(_confirmation_error("delete", f"delete '{path}' and its subtree"))
             ctx.exit(1)
         click.confirm(f"Delete entity '{path}'?", abort=True)
+    started = time.monotonic()
     result = ops.delete_entity(kb_root, path)
+    record_op(kb_root, "delete", result, started)
     if ctx.obj.get("as_json"):
         output_json(result)
     else:
         if result.get("success"):
             click.echo(f"Deleted: {path}")
+            render_notes(result, get_tier(ctx))
         else:
             raise click.ClickException(result.get("error", "Delete failed"))
+    finish_op(ctx, result)
 
 
 @click.command("move")
 @click.argument("source")
 @click.argument("target")
 @click.option("--confirm", is_flag=True, help="Confirm this destructive operation")
+@verbosity_options
 @common_options
 @click.pass_context
 def move_entity(
@@ -212,9 +246,14 @@ def move_entity(
     confirm: bool,
     kb_root: Optional[Path],
     as_json: bool,
+    quiet: bool,
+    explain: bool,
+    trace: bool,
+    strict: bool,
 ) -> None:
     """Move an entity (requires --confirm, or answering an interactive prompt)."""
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
+    apply_verbosity_options(ctx, quiet=quiet, explain=explain, trace=trace, strict=strict)
     kb_root = resolve_kb_root(ctx)
     if not confirm:
         if ctx.obj.get("as_json"):
@@ -223,11 +262,15 @@ def move_entity(
             )
             ctx.exit(1)
         click.confirm(f"Move '{source}' to '{target}'?", abort=True)
+    started = time.monotonic()
     result = ops.move_entity(kb_root, source, target)
+    record_op(kb_root, "move", result, started)
     if ctx.obj.get("as_json"):
         output_json(result)
     else:
         if result.get("success"):
             click.echo(f"Moved: {source} → {target}")
+            render_notes(result, get_tier(ctx))
         else:
             raise click.ClickException(result.get("error", "Move failed"))
+    finish_op(ctx, result)

@@ -1,5 +1,6 @@
 """CLI commands for the capture journal: capture, events list/show/resolve/import."""
 
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -8,10 +9,14 @@ import click
 from kvault.cli._helpers import (
     apply_common_options,
     common_options,
+    finish_op,
+    get_tier,
     output_json,
     read_stdin,
+    record_op,
     resolve_kb_root,
 )
+from kvault.cli.render import render_notes
 from kvault.core import events as ev
 
 
@@ -43,6 +48,7 @@ def capture(
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
     body = read_stdin()
+    started = time.monotonic()
     result = ev.capture_event(
         kb_root,
         body=body,
@@ -52,6 +58,10 @@ def capture(
         sensitivity=sensitivity,
         tags=list(tags),
     )
+    if result.get("success") and "did" not in result:
+        verb = "captured" if result.get("created") else "already captured"
+        result["did"] = f"{verb} {result.get('event_id')} ({result.get('status')})"
+    record_op(kb_root, "capture", result, started)
     if ctx.obj.get("as_json"):
         output_json(result)
         if not result.get("success"):
@@ -59,8 +69,10 @@ def capture(
     elif result.get("success"):
         verb = "Captured" if result.get("created") else "Already captured"
         click.echo(f"{verb}: {result['event_id']} ({result['status']})")
+        render_notes(result, get_tier(ctx))
     else:
         raise click.ClickException(result.get("error", "Capture failed"))
+    finish_op(ctx, result)
 
 
 @click.group("events")
@@ -156,15 +168,21 @@ def resolve_event_cmd(
     """
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
+    started = time.monotonic()
     result = ev.resolve_event(kb_root, event_id, outcome=outcome, note=note)
+    if result.get("success") and "did" not in result:
+        result["did"] = f"resolved {event_id}: {outcome}"
+    record_op(kb_root, "events-resolve", result, started)
     if ctx.obj.get("as_json"):
         output_json(result)
         if not result.get("success"):
             ctx.exit(1)
     elif result.get("success"):
         click.echo(f"Resolved {event_id}: {outcome}")
+        render_notes(result, get_tier(ctx))
     else:
         raise click.ClickException(result.get("error", "Resolve failed"))
+    finish_op(ctx, result)
 
 
 @events_group.command("import")

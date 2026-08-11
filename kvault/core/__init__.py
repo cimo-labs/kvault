@@ -1,8 +1,10 @@
 """kvault core modules."""
 
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
+from kvault.core.notes import NOTE_CODES, collapse, note
 from kvault.core.storage import SimpleStorage, normalize_entity_id
 from kvault.core.observability import ObservabilityLogger
+from kvault.core.oplog import OpLog
 from kvault.core.research import EntityResearcher, ResearchCandidate
 from kvault.core.daily_artifacts import (
     DailyArtifactResult,
@@ -22,7 +24,11 @@ __all__ = [
     "merge_frontmatter",
     "SimpleStorage",
     "normalize_entity_id",
+    "NOTE_CODES",
+    "note",
+    "collapse",
     "ObservabilityLogger",
+    "OpLog",
     "EntityResearcher",
     "ResearchCandidate",
     "DailyArtifactResult",

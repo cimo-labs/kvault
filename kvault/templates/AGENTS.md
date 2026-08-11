@@ -52,7 +52,8 @@ Customize this section with your details.
 ├── accomplishments/
 ├── journal/YYYY-MM/log.md
 └── .kvault/
-    └── logs.db              # Observability
+    ├── .gitignore           # Written by init — keeps runtime state out of git
+    └── logs.db              # Ops log — every mutating command appends a row
 ```
 
 ---
@@ -93,7 +94,10 @@ aliases: [Alice Smith, alice@acme.com]
 Context and notes here.
 EOF
 ```
-Output: `{"success": true, "ancestors": [{path, current_content, has_meta}, ...], "journal_logged": true}`
+Output: `{"success": true, "changed": true, "did": "created ...", "notes": [...],
+"propagation_required": true, "ancestor_paths": [...], "ancestors": [{path, current_content, has_meta}, ...], "journal_logged": true}`
+A no-op write reports `changed: false` with an `unchanged` note — the file is not rewritten.
+`ancestors` still lists the chain, so propagate whenever `propagation_required` is true.
 
 ### 3. PROPAGATE — Batch-update ancestors (Call 2)
 Read the `ancestors` array from Call 1's output. For each ancestor, compose an updated summary
@@ -107,6 +111,23 @@ kvault update-summaries --json <<'EOF'
 ]
 EOF
 ```
+
+### Reading the output — notes
+
+Every result carries `did` (one line of what happened) and `notes` — the decisions kvault made
+(`{code, text, why?, next?}`). Three codes require action:
+
+| Code | Meaning | Your move |
+|------|---------|-----------|
+| `partial` | Part succeeded, part did not | Repair manually — never ignore; shown even at `-q` |
+| `skipped` | Something unreadable was excluded; operation continued | Inspect the named file |
+| `removed` | Something was destroyed, with a count | Verify the count matches intent |
+
+The rest are informational: `autofilled`, `unchanged`, `created`, `truncated`, `guessed`, `waited`,
+`propagate` (stale ancestors — the PROPAGATE step above already handles it).
+Tiers: `-q` trims output (`partial` still shows), `--explain` adds why + the exact next command;
+`--strict` exits 3 on `partial`/`skipped`/broken-lock notes. Set `KVAULT_SESSION=<task-id>` so the
+ops log groups one task's commands — review with `kvault log tail`.
 
 MCP clients should use strict parent-summary tools when available:
 

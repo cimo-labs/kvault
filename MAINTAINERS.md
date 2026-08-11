@@ -36,6 +36,16 @@ kvault/
    emits warn-only `SUMMARY:` findings for weak rollups.
 9. MCP parent-summary writes should use strict prepare/write tools so direct child summaries are
    read before a parent rollup is rewritten.
+10. **J1**: in `--json` mode kvault emits exactly one JSON document and writes nothing to
+    stderr, at every verbosity tier. Pinned by `tests/test_output_channels.py` (a matrix
+    over every JSON-capable command × every tier).
+11. **M1**: no stream writers under `kvault/core/` or `kvault/mcp/` — over MCP, stdout is
+    the JSON-RPC transport and one stray print corrupts the framing. Rendering happens
+    only in `kvault/cli/render.py`. Pinned by `tests/test_output_channels.py`.
+12. **No WAL on `.kvault/logs.db`**, ever. WAL creates `-wal`/`-shm` sidecar files next to
+    the DB, and unexpected untracked sidecars break KB git-sync automation. Logging sits
+    off the write path, so the contention WAL solves does not exist here. Pinned by
+    `tests/test_oplog.py` (`test_no_wal_anywhere`).
 
 ## Core APIs
 
@@ -66,9 +76,13 @@ from kvault.core import (
     parse_frontmatter,
     build_frontmatter,
     merge_frontmatter,
+    NOTE_CODES,
+    note,
+    collapse,
     EntityResearcher,
     ResearchCandidate,
     ObservabilityLogger,
+    OpLog,
     SearchDocument,
     SearchResult,
     scan_search_documents,
@@ -119,7 +133,13 @@ kvault check [--kb-root PATH] [--json] [--no-summary-quality] [--summary-max-war
 # Init & artifacts
 kvault init <path> [--name NAME]
 kvault artifact daily [--kb-root PATH] [--date YYYY-MM-DD] [--force] [--stdout] [--json]
-kvault log summary [--db PATH] [--session-id ID] [--json]
+
+# Ops log
+kvault log tail [--limit N] [--session ID] [--kb-root PATH] [--json]
+kvault log summary [--db PATH] [--session-id ID] [--kb-root PATH] [--json]
+
+# Output tiers & strict mode (accepted on the group and after subcommands)
+kvault [-q|--quiet] [--explain] [--trace] [--strict] <command> ...
 
 # MCP compatibility
 kvault-mcp --kb-root PATH
@@ -135,6 +155,11 @@ kvault status --json
 ```bash
 pytest -q
 ```
+
+**No test may use `result.stderr`.** On click 8.1.x (the Python 3.9 CI leg),
+`CliRunner`'s `Result.output` and `Result.stdout` are the merged stdout+stderr stream and
+`Result.stderr` raises ValueError. `json.loads(result.output)` is the portable guard: the
+merged stream catches pollution on both channels across the whole matrix.
 
 Prefer adding tests in `tests/` whenever changing:
 

@@ -146,8 +146,8 @@ kvault-mcp --kb-root PATH
 # Preferred MCP summary flow:
 # kvault_prepare_summary_update -> kvault_write_parent_summary
 
-# Version
-kvault status --json
+# Version (also reported as `version` in `kvault status --json` and `kvault doctor`)
+kvault --version
 ```
 
 ## Testing

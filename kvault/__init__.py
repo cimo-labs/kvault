@@ -8,13 +8,7 @@ Also available as a legacy MCP server.
 No external API keys. No extra cost. Just files.
 """
 
-from importlib.metadata import PackageNotFoundError, version
-
-try:
-    __version__ = version("knowledgevault")
-except PackageNotFoundError:
-    # Uninstalled source tree only; keep in sync with pyproject.toml.
-    __version__ = "0.13.0"
+from kvault._version import __version__
 
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
 from kvault.core.daily_artifacts import DailyArtifactResult, generate_daily_artifact, parse_iso_date
@@ -38,6 +32,7 @@ from kvault.core.storage import (
 )
 
 __all__ = [
+    "__version__",
     "parse_frontmatter",
     "build_frontmatter",
     "merge_frontmatter",

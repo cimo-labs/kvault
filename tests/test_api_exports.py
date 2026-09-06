@@ -17,3 +17,11 @@ def test_top_level_search_exports():
     assert SearchDocument is CoreSearchDocument
     assert SearchResult is CoreSearchResult
     assert search_nodes is core_search_nodes
+
+
+def test_top_level_version_is_single_sourced():
+    from kvault import __version__
+    from kvault._version import __version__ as source_version
+
+    assert __version__ == source_version
+    assert __version__.count(".") == 2

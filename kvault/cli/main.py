@@ -19,6 +19,7 @@ from kvault.cli.validate import validate_kb
 from kvault.core.daily_artifacts import generate_daily_artifact, parse_iso_date
 from kvault.core.observability import ObservabilityLogger
 from kvault.core import operations as ops
+from kvault._version import __version__
 
 # -------------------------
 # Helpers
@@ -42,6 +43,7 @@ def _render(template: str, replacements: Dict[str, str]) -> str:
 
 
 @click.group()
+@click.version_option(version=__version__, prog_name="kvault", message="%(prog)s %(version)s")
 @click.option(
     "--kb-root",
     type=click.Path(path_type=Path),

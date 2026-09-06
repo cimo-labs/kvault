@@ -57,6 +57,22 @@ class TestHelp:
         assert result.exit_code == 0
         assert "KB root" in result.output
 
+    def test_version_flag(self, runner):
+        from kvault import __version__
+
+        result = runner.invoke(cli, ["--version"])
+        assert result.exit_code == 0
+        assert result.output.strip() == f"kvault {__version__}"
+
+    def test_status_json_has_version(self, runner, cli_kb):
+        from kvault import __version__
+
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "status", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["version"] == __version__
+        assert list(data)[0] == "version"  # first key: the handshake is read before the payload
+
     def test_status_json(self, runner, cli_kb):
         result = runner.invoke(cli, ["--kb-root", str(cli_kb), "--json", "status"])
         assert result.exit_code == 0

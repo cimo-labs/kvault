@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from kvault._version import __version__
 from kvault.core import notes as nt
 from kvault.core.frontmatter import (
     FrontmatterError,
@@ -672,6 +673,7 @@ def get_kb_info(kg_root: Path) -> Dict[str, Any]:
     root_summary = root_summary_path.read_text() if root_summary_path.exists() else ""
     outline = build_outline(kg_root, depth=2)
     return {
+        "version": __version__,
         "kg_root": str(kg_root),
         "root_summary": root_summary,
         "hierarchy": render_outline_text(outline) if outline else "",

@@ -554,3 +554,61 @@ def test_cli_events_retract_json(kb):
     )
     assert again.exit_code == 1
     json.loads(again.output)
+
+
+# ---------------------------------------------------------------------------
+# events list --limit / --since (0.14.0)
+# ---------------------------------------------------------------------------
+
+
+def test_events_list_limit_and_since(kb):
+    for day in range(1, 8):
+        ev.capture_event(
+            kb, body=f"Fact {day}.", source="t", captured_at=f"2026-03-{day:02d}T00:00:00Z"
+        )
+    everything = ev.list_events(kb)
+    assert everything["count"] == everything["total_matched"] == 7 and "notes" not in everything
+
+    page = ev.list_events(kb, limit=3)
+    assert page["count"] == 3 and page["total_matched"] == 7 and page["limit"] == 3
+    assert [e["captured_at"][:10] for e in page["events"]] == [
+        "2026-03-07",
+        "2026-03-06",
+        "2026-03-05",
+    ]
+    note = page["notes"][0]
+    assert note["code"] == "truncated" and note["next"].endswith("--limit 0")
+
+    recent = ev.list_events(kb, since="2026-03-06")
+    assert [e["captured_at"][:10] for e in recent["events"]] == ["2026-03-07", "2026-03-06"]
+    assert ev.list_events(kb, limit=0)["count"] == 7  # 0 = all
+
+    bad = ev.list_events(kb, since="yesterday")
+    assert not bad["success"] and bad["error_code"] == "validation_error"
+
+    # check sees every pending event regardless of any default page size.
+    assert len(ev.pending_event_findings(kb, max_age_days=0)) == 7
+
+
+def test_cli_events_list_default_page_and_since_error(kb):
+    for i in range(60):
+        ev.capture_event(
+            kb, body=f"Fact {i}.", source="t", captured_at=f"2026-01-01T00:{i:02d}:00Z"
+        )
+    runner = CliRunner()
+    listed = json.loads(
+        runner.invoke(cli, ["--kb-root", str(kb), "--json", "events", "list"]).output
+    )
+    assert listed["count"] == 50 and listed["total_matched"] == 60
+    assert listed["notes"][0]["code"] == "truncated"
+    human = runner.invoke(cli, ["--kb-root", str(kb), "events", "list"])
+    assert "(showing 50 of 60" in human.output
+    everything = json.loads(
+        runner.invoke(
+            cli, ["--kb-root", str(kb), "--json", "events", "list", "--limit", "0"]
+        ).output
+    )
+    assert everything["count"] == 60
+    bad = runner.invoke(cli, ["--kb-root", str(kb), "--json", "events", "list", "--since", "bogus"])
+    assert bad.exit_code == 1
+    assert json.loads(bad.output)["error_code"] == "validation_error"  # still one document

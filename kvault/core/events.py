@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from kvault.core import notes as nt
 from kvault.core.frontmatter import (
     FrontmatterError,
     build_frontmatter,
@@ -252,12 +253,28 @@ def _outcome(event: Dict[str, Any]) -> Optional[str]:
     return (event.get("resolution") or {}).get("outcome")
 
 
-def list_events(kg_root: Path, status: Optional[str] = None) -> Dict[str, Any]:
-    """List events, newest first, optionally filtered by status.
+def list_events(
+    kg_root: Path,
+    status: Optional[str] = None,
+    limit: Optional[int] = None,
+    since: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List events, newest first, optionally filtered by status and date.
 
     ``status="retracted"`` selects by outcome (retracted events keep
-    ``status: resolved``); ``status="resolved"`` excludes them.
+    ``status: resolved``); ``status="resolved"`` excludes them. ``since`` is
+    an inclusive ``YYYY-MM-DD`` lower bound on ``captured_at``. ``limit``
+    (``None``/``0`` = all) applies after sorting newest-first;
+    ``total_matched`` and a ``truncated`` note say when it cut the list.
     """
+    if since is not None:
+        try:
+            datetime.strptime(since, "%Y-%m-%d")
+        except (TypeError, ValueError):
+            return error_response(
+                ErrorCode.VALIDATION_ERROR,
+                f"since must be YYYY-MM-DD, got {since!r}",
+            )
     events = []
     for path in _iter_event_files(kg_root):
         event = _load_event_file(path)
@@ -269,9 +286,30 @@ def list_events(kg_root: Path, status: Optional[str] = None) -> Dict[str, Any]:
         elif status:
             if event.get("status") != status or _outcome(event) == OUTCOME_RETRACTED:
                 continue
+        if since is not None and str(event.get("captured_at", ""))[:10] < since:
+            continue
         events.append(_public(event))
     events.sort(key=lambda e: str(e.get("captured_at", "")), reverse=True)
-    return {"success": True, "count": len(events), "events": events}
+    total = len(events)
+    if limit:
+        events = events[: max(limit, 0)]
+    out: Dict[str, Any] = {
+        "success": True,
+        "count": len(events),
+        "total_matched": total,
+        "limit": limit or 0,
+    }
+    if total > len(events):
+        out["notes"] = [
+            nt.note(
+                "truncated",
+                f"showing {len(events)} of {total} events",
+                detail={"total_matched": total, "limit": limit},
+                next_step="kvault events list --limit 0",
+            )
+        ]
+    out["events"] = events
+    return out
 
 
 def get_event(kg_root: Path, event_id: str) -> Dict[str, Any]:
@@ -486,7 +524,8 @@ def retracted_reference_findings(kg_root: Path) -> List[Dict[str, Any]]:
 def pending_event_findings(kg_root: Path, max_age_days: int = 7) -> List[Dict[str, Any]]:
     """Events pending longer than *max_age_days*, for ``kvault check``."""
     findings = []
-    for event in list_events(kg_root, status=STATUS_PENDING)["events"]:
+    # limit=None: check must see every pending event, never a page of them.
+    for event in list_events(kg_root, status=STATUS_PENDING, limit=None)["events"]:
         age = event.get("age_days")
         if age is not None and age > max_age_days:
             findings.append(

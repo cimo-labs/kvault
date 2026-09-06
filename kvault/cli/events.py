@@ -94,21 +94,35 @@ def events_group() -> None:
     default=None,
     help="Filter by lifecycle status (retracted = resolved with outcome retracted)",
 )
+@click.option(
+    "--limit",
+    type=int,
+    default=50,
+    show_default=True,
+    help="Newest N events (0 = all). A mature KB's full list exceeds 140 KB.",
+)
+@click.option("--since", default=None, help="Only events captured on/after YYYY-MM-DD")
 @common_options
 @click.pass_context
 def list_events_cmd(
     ctx: click.Context,
     status: Optional[str],
+    limit: int,
+    since: Optional[str],
     kb_root: Optional[Path],
     as_json: bool,
 ) -> None:
-    """List captured events, newest first."""
+    """List captured events, newest first (50 by default; --limit 0 for all)."""
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
-    result = ev.list_events(kb_root, status=status)
+    result = ev.list_events(kb_root, status=status, limit=limit, since=since)
     if ctx.obj.get("as_json"):
         output_json(result)
+        if not result.get("success"):
+            ctx.exit(1)
         return
+    if not result.get("success"):
+        raise click.ClickException(result.get("error", "List failed"))
     if not result["events"]:
         click.echo("No events.")
         return
@@ -117,6 +131,10 @@ def list_events_cmd(
         outcome = (event.get("resolution") or {}).get("outcome", "")
         state = f"{event['status']}{f'/{outcome}' if outcome else ''}"
         click.echo(f"  {event['id']}  {state:<22} {age:>4}  {event.get('snippet', '')}")
+    if result["total_matched"] > result["count"]:
+        click.echo(
+            f"  (showing {result['count']} of {result['total_matched']} — --limit 0 for all)"
+        )
 
 
 @events_group.command("show")

@@ -76,7 +76,7 @@ JSON_COMMANDS = [
     ),
     (["capture", "--source", "test"], "A memory candidate.\n"),
     (["events", "list"], None),
-    (["events", "list", "--status", "retracted"], None),
+    (["events", "list", "--status", "retracted", "--limit", "5", "--since", "2025-01-01"], None),
     (["events", "show", SEED_EVENT_ID], None),
     (["events", "retract", SEED_EVENT_ID, "--reason", "wrong evidence"], None),
     (

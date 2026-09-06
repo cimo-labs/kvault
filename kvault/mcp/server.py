@@ -212,11 +212,12 @@ def create_server(kb_root: Path | str) -> Any:
         return success_response(result)
 
     def _strip_ancestors(result: Dict[str, Any], ancestors: str) -> Dict[str, Any]:
-        """ancestors='paths' keeps ancestor_paths and drops the full documents.
+        """ancestors='paths' (the default since 0.14.0) keeps ancestor_paths and
+        drops the full documents.
 
         `ancestors[].current_content` can exceed 45,000 characters on a mature
-        KB — 90% of a write result. The default stays 'content' in 0.13.x and
-        flips to 'paths' in 0.14.0; pass the param explicitly to pin either.
+        KB — 90% of a write result. Pass ancestors='content' to get the
+        documents inline, or fetch them with kvault_get_parent_summaries.
         """
         if ancestors == "paths" and isinstance(result, dict) and result.get("success"):
             result.pop("ancestors", None)
@@ -230,7 +231,7 @@ def create_server(kb_root: Path | str) -> Any:
         create: bool = False,
         reasoning: Optional[str] = None,
         journal_source: Optional[str] = None,
-        ancestors: str = "content",
+        ancestors: str = "paths",
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create or update an entity.
@@ -242,7 +243,8 @@ def create_server(kb_root: Path | str) -> Any:
         A `partial` note means the node was written but a linked step (event
         promotion) FAILED and needs manual repair. Then rewrite the returned
         ancestor summaries (`kvault_update_summaries`). ancestors='paths'
-        omits the bulky `ancestors[].current_content` (see kvault_write_node).
+        (default) omits the bulky `ancestors[].current_content`; pass
+        ancestors='content' to inline it (see kvault_write_node).
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -274,7 +276,7 @@ def create_server(kb_root: Path | str) -> Any:
         create: bool = False,
         reasoning: Optional[str] = None,
         journal_source: Optional[str] = None,
-        ancestors: str = "content",
+        ancestors: str = "paths",
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create or update any node summary.
@@ -284,7 +286,9 @@ def create_server(kb_root: Path | str) -> Any:
         half-failed event promotion, lock contention), `changed`,
         `propagation_required`, and `ancestor_paths` all precede `ancestors`.
         Act on `notes` first — a `partial` note means part of the operation
-        failed even though success=true.
+        failed even though success=true. Since 0.14.0 `ancestors` (the full
+        documents) is omitted by default; pass ancestors='content' to inline
+        it, or read the chain with kvault_get_parent_summaries.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:

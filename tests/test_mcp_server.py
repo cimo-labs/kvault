@@ -434,7 +434,12 @@ def test_mcp_write_node_reading_order_puts_notes_before_ancestors(tmp_path):
     raw = asyncio.run(
         server.call_tool(
             "kvault_write_node",
-            {"path": "people/contacts/jane", "content": "# Jane\n\nx.\n", "create": True},
+            {
+                "path": "people/contacts/jane",
+                "content": "# Jane\n\nx.\n",
+                "create": True,
+                "ancestors": "content",  # 0.14.0 default is 'paths'; ask for the bulk payload
+            },
         )
     )
     text = _tool_text(raw)
@@ -543,3 +548,18 @@ def test_mcp_write_surfaces_failed_oplog_append_as_skipped_note(tmp_path):
 
     assert result["success"] is True
     assert any(n["code"] == "skipped" for n in result["notes"])
+
+
+def test_mcp_write_tools_default_ancestors_is_paths(tmp_path):
+    """Announced in 0.13.0, flipped in 0.14.0: the ~45 KB chain is opt-in."""
+    kb = _make_kb(tmp_path)
+    server = create_server(kb)
+    for tool in ("kvault_write_node", "kvault_write_entity"):
+        result = _run_tool(
+            server,
+            tool,
+            {"path": f"people/contacts/{tool}", "content": "# X\n\nx.\n", "create": True},
+        )
+        assert result["success"] is True
+        assert "ancestors" not in result
+        assert result["ancestor_paths"] == ["people/contacts", "people", "."]

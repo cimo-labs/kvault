@@ -302,6 +302,21 @@ class TestSearchNarration:
         assert result["budget"]["exhausted"] is True
         assert any(n["code"] == "truncated" and "budget" in n["text"] for n in result["notes"])
 
+    def test_collapse_emits_truncated_note_that_is_not_a_strict_warning(self, tmp_path):
+        kb = _make_kb(tmp_path)
+        ops.write_node(kb, "people/contacts/p1", "# P1\n\nwidget fact.\n", create=True)
+        (kb / "people" / "contacts" / "_summary.md").write_text(
+            "# Contacts\n\n## 2026-08-01 Delta\n\nwidget fact.\n"
+        )
+        result = ops.search_nodes(kb, "widget fact", limit=5)
+        note = next(n for n in result["notes"] if "collapsed" in n["text"])
+        assert note["code"] == "truncated"
+        assert note["detail"]["collapsed_paths"] == ["people/contacts"]
+        assert note["why"] and note["next"].endswith("--no-collapse")
+        from kvault.cli.render import strict_exit_code
+
+        assert strict_exit_code(result, True) is None  # collapse is informational
+
     def test_per_result_cap_is_distinguished_from_budget(self, tmp_path):
         kb = _make_kb(tmp_path)
         long_body = "# Long\n\n" + ("widget " * 400)

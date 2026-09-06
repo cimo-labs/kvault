@@ -338,6 +338,25 @@ class TestSearchCommand:
         assert data["query"] == "alice"
         assert data["results"][0]["path"] == "people/friends/alice_smith"
 
+    def test_search_collapse_flags(self, runner, cli_kb_with_entity):
+        friends = cli_kb_with_entity / "people" / "friends" / "_summary.md"
+        friends.write_text("# Friends\n\nFriends list.\n\n## 2026-01-15 Delta\n\nA friend.\n")
+        base = ["--kb-root", str(cli_kb_with_entity), "search", "A friend", "--json"]
+        collapsed = json.loads(runner.invoke(cli, base).output)
+        assert collapsed["collapsed"] == 1 and collapsed["collapsed_paths"] == ["people/friends"]
+        kept = json.loads(runner.invoke(cli, base + ["--no-collapse"]).output)
+        assert kept["collapsed"] == 0
+        assert any(r["path"] == "people/friends" for r in kept["results"])
+        filtered = json.loads(
+            runner.invoke(cli, base + ["--kind", "category", "--no-collapse"]).output
+        )
+        assert filtered["kinds"] == ["category"]
+        assert {r["kind"] for r in filtered["results"]} <= {"category"}
+        scoped = json.loads(runner.invoke(cli, base + ["--path", "projects"]).output)
+        assert scoped["results"] == [] and scoped["path_prefix"] == "projects"
+        bad = runner.invoke(cli, base + ["--kind", "leaf"])
+        assert bad.exit_code != 0
+
     def test_search_plain_text(self, runner, cli_kb_with_entity):
         result = runner.invoke(cli, ["--kb-root", str(cli_kb_with_entity), "search", "friends"])
         assert result.exit_code == 0

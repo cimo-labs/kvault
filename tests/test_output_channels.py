@@ -60,6 +60,7 @@ JSON_COMMANDS = [
     (["ancestors", "people/contacts"], None),
     (["validate"], None),
     (["search", "people", "--limit", "1"], None),
+    (["search", "people", "--no-collapse", "--kind", "category", "--path", "people"], None),
     (["write", "people/contacts/jane_doe", "--create"], "# Jane Doe\n\nA fact.\n"),
     (["write-summary", "projects"], "# Projects\n\nNew branch.\n"),
     (

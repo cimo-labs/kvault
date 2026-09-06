@@ -14,11 +14,20 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from kvault.core import notes as nt
+from kvault.core.conventions import is_background_child
 from kvault.core.frontmatter import parse_frontmatter
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _H_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 _SNIPPET_MAX_CHARS = 440
+KINDS = ("root", "category", "entity")
+#: Fields whose match on an ancestor is usually a propagated copy of a
+#: descendant's fact. A match on path/title/aliases anchors the node itself.
+_PROPAGATED_FIELDS = frozenset({"body", "headings"})
+#: An ancestor is collapsed only when a kept strict descendant carries at
+#: least this share of its score — a 1-point child must not evict a rollup
+#: that genuinely holds the fact.
+_COLLAPSE_SCORE_RATIO = 0.5
 
 
 @dataclass(frozen=True)
@@ -81,13 +90,23 @@ def search_nodes(
     include_content: bool = False,
     content_max_chars: int = 6000,
     total_max_chars: int = 20000,
+    collapse: bool = True,
+    kinds: Optional[Sequence[str]] = None,
+    path_prefix: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Search visible kvault nodes and return ranked results.
 
     The result reports its own blind spots: ``total_matched`` vs ``count``
     when ``limit`` cut the list, a ``truncated`` note when the shared content
-    budget ran out, and a ``skipped`` note for files that could not be read —
-    previously all silent.
+    budget ran out, a ``truncated`` note naming collapsed ancestors, and a
+    ``skipped`` note for files that could not be read.
+
+    ``collapse`` (default on) drops a root/category hit that only repeats a
+    descendant's fact: its matched fields are body/headings only, and a kept
+    strict descendant — not a background child such as ``deep_context/`` —
+    scores at least half as much. Anchored matches (path/title/aliases) are
+    never collapsed. ``kinds`` and ``path_prefix`` filter after scoring so
+    IDF stays corpus-wide.
     """
     query = query.strip()
     if not query:
@@ -105,7 +124,19 @@ def search_nodes(
         if score > 0:
             scored.append((score, doc, matched_fields))
 
-    scored.sort(key=lambda item: (-item[0], item[1].path.count("/"), item[1].path))
+    wanted_kinds = {k.strip().lower() for k in kinds or () if k and k.strip()}
+    prefix = _normalize_prefix(path_prefix)
+    if wanted_kinds:
+        scored = [item for item in scored if item[1].kind in wanted_kinds]
+    if prefix is not None:
+        scored = [item for item in scored if _under_prefix(item[1].path, prefix)]
+
+    collapsed_paths: List[str] = []
+    if collapse:
+        scored, collapsed_paths = _collapse_ancestors(scored)
+
+    # Deeper (more specific) first on equal score; root is depth 0.
+    scored.sort(key=lambda item: (-item[0], -_depth(item[1].path), item[1].path))
     total_matched = len(scored)
     results: List[SearchResult] = []
     remaining_total = max(0, total_max_chars)
@@ -173,6 +204,19 @@ def search_nodes(
                 next_step="re-run with --max-total-chars raised, or a smaller --limit",
             )
         )
+    if collapsed_paths:
+        shown = ", ".join(collapsed_paths[:3])
+        more = f" (+{len(collapsed_paths) - 3} more)" if len(collapsed_paths) > 3 else ""
+        notes.append(
+            nt.note(
+                "truncated",
+                f"collapsed {len(collapsed_paths)} ancestor hit(s) that only repeat a "
+                f"descendant's match: {shown}{more}",
+                detail={"collapsed": len(collapsed_paths), "collapsed_paths": collapsed_paths[:10]},
+                why="a propagated fact appears in every ancestor summary; the deepest node is canonical",
+                next_step=f'kvault search "{query}" --no-collapse',
+            )
+        )
 
     out: Dict[str, Any] = {
         "query": query,
@@ -180,7 +224,14 @@ def search_nodes(
         "count": len(results),
         "total_matched": total_matched,
         "limit": limit,
+        "collapsed": len(collapsed_paths),
     }
+    if collapsed_paths:
+        out["collapsed_paths"] = collapsed_paths[:10]
+    if wanted_kinds:
+        out["kinds"] = sorted(wanted_kinds)
+    if prefix is not None:
+        out["path_prefix"] = prefix
     if notes:
         out["notes"] = notes
     if include_content:
@@ -193,6 +244,55 @@ def search_nodes(
     # Bulk payload last: over MCP, key order is reading order.
     out["results"] = [result.to_dict() for result in results]
     return out
+
+
+def _depth(path: str) -> int:
+    return 0 if path == "." else path.count("/") + 1
+
+
+def _normalize_prefix(path_prefix: Optional[str]) -> Optional[str]:
+    if path_prefix is None:
+        return None
+    prefix = path_prefix.strip().strip("/")
+    return "." if prefix in ("", ".") else prefix
+
+
+def _under_prefix(path: str, prefix: str) -> bool:
+    if prefix == ".":
+        return True
+    return path == prefix or path.startswith(prefix + "/")
+
+
+def _is_strict_descendant(candidate: str, ancestor: str) -> bool:
+    if candidate == ancestor:
+        return False
+    return ancestor == "." or candidate.startswith(ancestor + "/")
+
+
+def _collapse_ancestors(
+    scored: List[Tuple[float, SearchDocument, Set[str]]],
+) -> Tuple[List[Tuple[float, SearchDocument, Set[str]]], List[str]]:
+    """Drop ancestor hits that only echo a kept descendant's match.
+
+    Processed deepest-first so a descendant's own fate is settled before it
+    is allowed to justify collapsing an ancestor.
+    """
+    kept: List[Tuple[float, SearchDocument, Set[str]]] = []
+    collapsed: List[str] = []
+    for item in sorted(scored, key=lambda it: -_depth(it[1].path)):
+        score, doc, matched = item
+        if doc.kind in ("root", "category") and matched and matched <= _PROPAGATED_FIELDS:
+            justified = any(
+                _is_strict_descendant(other.path, doc.path)
+                and not is_background_child(other.path.rsplit("/", 1)[-1])
+                and other_score >= _COLLAPSE_SCORE_RATIO * score
+                for other_score, other, _ in kept
+            )
+            if justified:
+                collapsed.append(doc.path)
+                continue
+        kept.append(item)
+    return kept, sorted(collapsed, key=_depth)
 
 
 def scan_search_documents(kg_root: Path) -> List[SearchDocument]:
@@ -419,6 +519,7 @@ def _mtime_date(path: Path) -> str:
 
 
 __all__ = [
+    "KINDS",
     "SearchDocument",
     "SearchResult",
     "scan_search_documents",

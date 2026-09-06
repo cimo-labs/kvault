@@ -16,6 +16,7 @@ import click
 
 from kvault.core import notes as nt
 from kvault.core import operations as ops
+from kvault.core.search import KINDS
 from kvault.core.daily_artifacts import generate_daily_artifact, parse_iso_date
 from kvault.core.observability import ObservabilityLogger
 from kvault.core.oplog import OpLog, oplog_disabled, resolve_session_id
@@ -370,16 +371,23 @@ def create_server(kb_root: Path | str) -> Any:
         limit: int = 10,
         include_content: bool = False,
         parents: str = "none",
+        collapse: bool = True,
+        kind: Optional[str] = None,
+        path_prefix: Optional[str] = None,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Search visible node summaries.
 
         The result reports its own blind spots: `total_matched` vs `count`
         when `limit` cut the list, per-result `content_omitted_reason`
-        (content_max_chars | total_budget_exhausted | empty_node), and
-        `notes` for unreadable files that were skipped. CAUTION: the char
-        budget applies only to `content` — `parents != "none"` attaches full
-        parent documents OUTSIDE any budget and can dwarf the results.
+        (content_max_chars | total_budget_exhausted | empty_node), `collapsed`
+        / `collapsed_paths` for ancestor hits that only repeated a descendant's
+        match (collapse=False keeps them), and `notes` for unreadable files
+        that were skipped. `kind` is a comma-separated subset of
+        root,category,entity; `path_prefix` restricts to a subtree. CAUTION:
+        the char budget applies only to `content` — `parents != "none"`
+        attaches full parent documents OUTSIDE any budget and can dwarf the
+        results.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -390,11 +398,20 @@ def create_server(kb_root: Path | str) -> Any:
                 ErrorCode.VALIDATION_ERROR,
                 "parents must be one of: none, immediate, all",
             )
+        kinds = [k.strip() for k in (kind or "").split(",") if k.strip()] or None
+        if kinds and any(k not in KINDS for k in kinds):
+            return error_response(
+                ErrorCode.VALIDATION_ERROR,
+                "kind must be a comma-separated subset of: " + ", ".join(KINDS),
+            )
         result = ops.search_nodes(
             root,
             query=query,
             limit=limit,
             include_content=include_content,
+            collapse=collapse,
+            kinds=kinds,
+            path_prefix=path_prefix,
         )
         if parents != "none":
             for item in result["results"]:

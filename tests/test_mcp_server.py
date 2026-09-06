@@ -135,6 +135,22 @@ def test_mcp_server_exposes_compatible_tools_and_calls(tmp_path):
         item["path"] == "people/contacts/professional/education/person"
         for item in search["results"]
     )
+    assert search["collapsed"] == 0
+    filtered = _run_tool(
+        server,
+        "kvault_search",
+        {
+            "query": "deep path",
+            "limit": 3,
+            "kind": "entity",
+            "path_prefix": "people",
+            "collapse": False,
+        },
+    )
+    assert filtered["success"] is True and filtered["kinds"] == ["entity"]
+    assert filtered["path_prefix"] == "people"
+    bad_kind = _run_tool(server, "kvault_search", {"query": "deep path", "kind": "leaf"})
+    assert bad_kind["success"] is False
 
 
 def test_mcp_strict_summary_update_tools_prepare_and_write(tmp_path):

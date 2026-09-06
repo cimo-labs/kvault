@@ -19,7 +19,7 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from kvault._version import __version__
 from kvault.core import notes as nt
@@ -1500,6 +1500,9 @@ def search_nodes(
     include_content: bool = False,
     content_max_chars: int = 6000,
     total_max_chars: int = 20000,
+    collapse: bool = True,
+    kinds: Optional[Sequence[str]] = None,
+    path_prefix: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Search visible kvault node summaries."""
     from kvault.core.search import search_nodes as _search_nodes
@@ -1511,6 +1514,9 @@ def search_nodes(
         include_content=include_content,
         content_max_chars=content_max_chars,
         total_max_chars=total_max_chars,
+        collapse=collapse,
+        kinds=kinds,
+        path_prefix=path_prefix,
     )
 
 

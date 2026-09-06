@@ -638,6 +638,106 @@ class TestSearchNodes:
         result = ops.search_nodes(ops_kb, "needle phrase", limit=5)
         assert result["results"] == []
 
+    # -- collapse / filters / tie-break (0.14.0) ------------------------------
+
+    def _propagated(self, ops_kb):
+        """A fact stated in a leaf and copied verbatim into both ancestors."""
+        fact = "Gusto AutoPilot payroll debits the account on the 25th."
+        leaf = ops_kb / "people" / "friends" / "payroll_note"
+        leaf.mkdir(parents=True)
+        (leaf / "_summary.md").write_text(f"# Payroll Note\n\n{fact}\n")
+        (ops_kb / "people" / "friends" / "_summary.md").write_text(
+            f"# Friends\n\nAlice, José, payroll note.\n\n## 2026-08-19 Gusto Retention Delta\n\n{fact}\n"
+        )
+        (ops_kb / "people" / "_summary.md").write_text(
+            f"# People\n\nFriends and work.\n\n## 2026-08-19 Gusto Retention Delta\n\n{fact}\n"
+        )
+        return fact
+
+    def test_collapse_drops_body_only_ancestors(self, ops_kb):
+        self._propagated(ops_kb)
+        result = ops.search_nodes(ops_kb, "Gusto AutoPilot payroll", limit=10)
+        paths = [r["path"] for r in result["results"]]
+        assert paths[0] == "people/friends/payroll_note"
+        assert "people/friends" not in paths and "people" not in paths
+        assert result["collapsed"] == 2
+        assert result["collapsed_paths"] == ["people", "people/friends"]
+        assert result["total_matched"] == len(paths)
+        note = next(n for n in result["notes"] if n["code"] == "truncated")
+        assert "collapsed 2 ancestor hit(s)" in note["text"]
+        assert "--no-collapse" in note["next"]
+
+    def test_no_collapse_restores_ancestors(self, ops_kb):
+        self._propagated(ops_kb)
+        result = ops.search_nodes(ops_kb, "Gusto AutoPilot payroll", limit=10, collapse=False)
+        paths = [r["path"] for r in result["results"]]
+        assert {"people", "people/friends", "people/friends/payroll_note"} <= set(paths)
+        assert result["collapsed"] == 0 and "notes" not in result
+
+    def test_collapse_keeps_anchored_parent_and_its_child(self, ops_kb):
+        sven = ops_kb / "people" / "friends" / "sven_schmit"
+        (sven / "deep_context").mkdir(parents=True)
+        (sven / "_summary.md").write_text(
+            "---\nname: Sven Schmit\naliases: [Sven Schmit]\n---\n# Sven Schmit\n\nData scientist.\n"
+        )
+        (sven / "deep_context" / "_summary.md").write_text(
+            "# Deep context\n\nLong notes about Sven Schmit and his talks.\n"
+        )
+        result = ops.search_nodes(ops_kb, "Sven Schmit", limit=10)
+        paths = [r["path"] for r in result["results"]]
+        assert paths[0] == "people/friends/sven_schmit"
+        assert "people/friends/sven_schmit/deep_context" in paths
+        assert result["collapsed"] == 0
+
+    def test_background_child_never_collapses_its_parent(self, ops_kb):
+        # Body-only match on an entity that keeps notes in deep_context/: the
+        # entity is kind=category, but its child must not evict it.
+        reg = ops_kb / "people" / "friends" / "regilio"
+        (reg / "deep_context").mkdir(parents=True)
+        (reg / "_summary.md").write_text("# Regilio\n\nBirthday is in March; loves jazz.\n")
+        (reg / "deep_context" / "_summary.md").write_text("# Deep\n\nBirthday party notes.\n")
+        result = ops.search_nodes(ops_kb, "birthday", limit=10)
+        paths = [r["path"] for r in result["results"]]
+        assert "people/friends/regilio" in paths
+        assert result["collapsed"] == 0
+
+    def test_collapse_needs_a_descendant_with_half_the_score(self, ops_kb):
+        # A content-holding category with a weak descendant match keeps its place.
+        cat = ops_kb / "projects" / "moss"
+        (cat / "runner").mkdir(parents=True)
+        (cat / "_summary.md").write_text(
+            "# Moss\n\n## Lobster\n\nlobster lobster lobster lobster lobster is the workflow runner "
+            "and lobster is documented here in depth; lobster commands, lobster config.\n"
+        )
+        # A weak, body-only mention in a child (no path/title anchor) must not evict the parent.
+        (cat / "runner" / "_summary.md").write_text("# Runner\n\nSee also the lobster plugin.\n")
+        result = ops.search_nodes(ops_kb, "lobster", limit=10)
+        paths = [r["path"] for r in result["results"]]
+        assert paths[0] == "projects/moss"
+        assert result["collapsed"] == 0
+
+    def test_kind_and_path_filters(self, ops_kb):
+        self._propagated(ops_kb)
+        only_entities = ops.search_nodes(
+            ops_kb, "Gusto", limit=10, collapse=False, kinds=["entity"]
+        )
+        assert {r["kind"] for r in only_entities["results"]} == {"entity"}
+        assert only_entities["kinds"] == ["entity"]
+        under = ops.search_nodes(
+            ops_kb, "Gusto", limit=10, collapse=False, path_prefix="people/friends"
+        )
+        assert all(r["path"].startswith("people/friends") for r in under["results"])
+        assert under["path_prefix"] == "people/friends"
+        assert ops.search_nodes(ops_kb, "Gusto", limit=10, path_prefix="projects")["results"] == []
+
+    def test_tiebreak_prefers_deeper_node_on_equal_score(self, ops_kb):
+        text = "# Node\n\nzebra crossing.\n"
+        (ops_kb / "_summary.md").write_text(text)
+        (ops_kb / "people" / "_summary.md").write_text(text)
+        result = ops.search_nodes(ops_kb, "zebra crossing", limit=5, collapse=False)
+        paths = [r["path"] for r in result["results"]]
+        assert paths.index("people") < paths.index(".")
+
 
 class TestGetAncestors:
     def test_ancestors_include_root(self, ops_kb):

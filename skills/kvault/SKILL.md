@@ -33,10 +33,8 @@ KVEOF
 **Never `echo "…" | kvault capture`.** An unquoted `$1,208` reaches kvault as `,208`,
 `$0.00` as `zsh.00` or `/bin/zsh.00` (depending on how the shell was invoked), and a bare `$250` vanishes with no trace. kvault ≥0.14 refuses the
 residues it can see (`validation_error`, bypass with `--allow-suspicious` for legitimate
-leading-dot decimals such as `.45 CoF`); the quoted heredoc is the real control. A capture
-that was wrong evidence is withdrawn with `kvault events retract <id> --reason "…"
-[--superseded-by <new-id>]`; `kvault check` then lists nodes still citing it as `RETRACTED:`
-until they are rewritten and re-linked with `write --event <new-id>`.
+leading-dot decimals such as `.45 CoF`); the quoted heredoc is the real control.
+Repair bad captures using the evidence-and-corrections workflow below.
 
 The event ID is the handoff token: pass it to whoever does the semantic write. Promotion
 uses the normal write workflow below plus `--event <id>` — it stamps `journal:<id>` into the
@@ -60,6 +58,33 @@ error ("already captured with different content") means a wrong or reused ref �
 ref, don't force it. And if identity or placement is genuinely ambiguous, leaving the
 event pending while you ask the owner is correct; a wrong promotion is worse than a
 pending event.
+
+## Bounded reads and verification
+
+Use `ancestors <path> --paths-only --json` when only routing is needed; read each
+summary when actually editing it. `read` omits parent content by default; add
+`--parents immediate` when needed. `status` omits root text unless
+`--root-summary` is requested.
+
+`events list` returns the newest 50 by default. Compare `count` with
+`total_matched`; use `--limit 0` when draining the complete pending queue.
+Do not report the full queue processed while its result is truncated.
+Save large JSON receipts to a file and report outcomes, warnings, paths, and
+counts; inspect full content only where the write or review needs it.
+
+## Evidence and corrections
+
+Record what the evidence proves, its time, and unresolved verification. For
+operational facts, distinguish configured state, observed execution, and actual
+delivery; a successful internal test does not establish all three. Propagate
+that qualification into ancestor summaries.
+
+When evidence was wrong, capture the correction first, then use
+`kvault events retract <old-id> --reason "..." --superseded-by <new-id>`.
+Rewrite affected nodes with `write --event <new-id>` and inspect removed refs.
+Keep unrelated `source_refs` and owner facts. A later state change does not make
+an accurate historical event false: retain its provenance, update current state,
+and keep chronology in the journal.
 
 ## Workflow: orient → research → write → propagate
 
@@ -166,7 +191,10 @@ maintenance pass to see what has already been touched.
 - Required frontmatter: `source`, `aliases` (kvault stamps `created`/`updated`, and
   preserves them on no-op rewrites).
 - `kvault check` warnings are maintenance work even when the exit code is 0.
-- If the KB lives in its own git repo, commit and push after KB edits.
+- Follow the KB owner's Git rules. Commit locally when appropriate; push only
+  when authorized. Before a write or mirror, check the current branch, HEAD, and
+  working tree so another writer's changes are preserved. Report the exact repo
+  and commit; deployed, committed, mirrored, and pushed are distinct states.
 
 ## Command reference
 

@@ -45,6 +45,7 @@ def kb(tmp_path):
 # (autofill on write, created on write-summary, truncation on search).
 JSON_COMMANDS = [
     (["status"], None),
+    (["doctor"], None),
     (["tree"], None),
     (["list", "."], None),
     (["read", "people"], None),
@@ -218,3 +219,28 @@ def test_cross_level_flag_conflict_fails_before_the_write(kb):
     )
     assert result.exit_code != 0
     assert not (kb / "people" / "pre_write").exists()
+
+
+def test_doctor_never_fails_without_kb(tmp_path, monkeypatch):
+    """doctor is what you run when things are broken: a missing KB is a finding."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("KVAULT_KB_ROOT", raising=False)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--json", "doctor"])
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["kb"]["root"] is None
+    assert report["kb"]["resolved_from"] == "none"
+    assert report["kb"]["is_kb"] is False
+    assert report["version"]
+
+
+def test_doctor_reports_disallowed_root_without_failing(kb, monkeypatch):
+    monkeypatch.setenv("KVAULT_ALLOWED_ROOTS", str(kb.parent / "elsewhere"))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--json", "doctor", "--kb-root", str(kb)])
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["kb"]["is_kb"] is True
+    assert report["kb"]["allowed_root_error"]
+    assert report["env"]["KVAULT_ALLOWED_ROOTS"]

@@ -73,6 +73,26 @@ class TestHelp:
         assert data["version"] == __version__
         assert list(data)[0] == "version"  # first key: the handshake is read before the payload
 
+    def test_doctor_reports_kb_binding(self, runner, cli_kb):
+        from kvault import __version__
+
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "doctor", "--json"])
+        assert result.exit_code == 0, result.output
+        report = json.loads(result.output)
+        assert report["version"] == __version__
+        assert report["kb"]["resolved_from"] == "explicit"
+        assert report["kb"]["is_kb"] is True
+        assert report["kb"]["events"] == {"pending": 0, "resolved": 0, "retracted": 0}
+        assert report["kb"]["ops_log"]["writable"] is True
+        assert report["python"]["version"]
+        assert report["install"]["location"].endswith("kvault")
+
+    def test_doctor_human_output_is_flat_key_values(self, runner, cli_kb):
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "doctor"])
+        assert result.exit_code == 0
+        assert "version: " in result.output
+        assert "kb.is_kb: True" in result.output
+
     def test_status_json(self, runner, cli_kb):
         result = runner.invoke(cli, ["--kb-root", str(cli_kb), "--json", "status"])
         assert result.exit_code == 0

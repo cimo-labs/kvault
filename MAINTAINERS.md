@@ -129,6 +129,7 @@ kvault status [--json]
 kvault tree [--depth N]
 kvault validate [--json]
 kvault check [--kb-root PATH] [--json] [--no-summary-quality] [--summary-max-warnings N]
+kvault doctor [--kb-root PATH] [--json]   # runtime/env/KB-binding report; exit 0 always
 
 # Init & artifacts
 kvault init <path> [--name NAME]

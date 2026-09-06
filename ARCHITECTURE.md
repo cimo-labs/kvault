@@ -40,6 +40,7 @@ and `--json`; command groups and server-launching commands may have command-spec
 - `events.py`: capture, events list/show/resolve/import (capture journal)
 - `validate.py`: validate
 - `check.py`: check (propagation staleness and summary-quality warnings)
+- `doctor.py`: doctor (version, python, install location, KB binding, env — never fails)
 - `main.py`: init, status, tree, artifact daily, log tail / log summary
 - `render.py`: human rendering of result notes; verbosity-tier resolution
 - `_helpers.py`: shared option decorators, KB-root resolution, ops-log append

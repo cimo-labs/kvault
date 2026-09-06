@@ -2,6 +2,87 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.14.0 - 2026-09-06
+
+Bounded outputs and a version handshake. Motivated by an audit of a 191-node
+KB whose root summary had grown to 7,300 words / 29 dated "delta" sections
+while `check` stayed green, whose agent-facing outputs were unbounded
+(`status --json` 56 KB, `ancestors` 116 KB, `events list` 144 KB), and where
+a deployed skill document described 0.13.0 against a 0.12.1 runtime with no
+way for an agent to notice.
+
+### Added
+
+- **`kvault --version`**, a `version` key leading `status --json` and MCP
+  `kvault_status`, and **`kvault doctor [--json]`**: version, python, install
+  location, MCP extra, KB root and how it was resolved, root-summary size,
+  event counts, ops-log writability, allowed-root error, `KVAULT_*` env. A
+  missing KB is a finding; the exit code is always 0. In the J1 matrix.
+- **`check` ceilings.** Two warn-only `SUMMARY:` codes: `too_long`
+  (`min(2000, 1000 + 50*children + 5*descendants)` words;
+  `--summary-max-words N` = hard ceiling, `0` = off) and `stale_history`
+  (more than `--summary-max-dated-sections` (3) dated/delta H2–H6 headings;
+  `0` = off). A parent whose only children are background dirs
+  (`deep_context/`, see `core/conventions.py`) is budgeted as a leaf.
+  Calibrated on the audited KB: flags exactly its seven accreted parents,
+  passes every healthy one.
+- **`capture` refuses shell-mangled bodies.** The residues left when
+  agent-authored text goes through `echo "…"` under zsh (`,208.25`, `.00`,
+  `/bin/zsh`) return a `validation_error` naming the match and the
+  quoted-heredoc fix; `--allow-suspicious` bypasses. A tripwire, not a
+  guarantee — a bare `$250` vanishes without residue. Legacy import is
+  tolerant.
+- **`events retract <id> --reason TEXT [--superseded-by ID]`** (outcome
+  `retracted`, allowed on pending and resolved events, prior resolution kept
+  under `previous`) and **`RETRACTED:`** findings in `check` for nodes whose
+  `source_refs` cite a retracted event — cleared once the superseding event
+  is promoted into the same node. `events list --status retracted`.
+- **Search filters and reporting**: `--kind {root,category,entity}`
+  (repeatable), `--path PREFIX`, `--no-collapse`; `collapsed` /
+  `collapsed_paths` in the result and a `truncated` note naming what was
+  collapsed. MCP `kvault_search(collapse, kind, path_prefix)`.
+- `status --root-summary` / MCP `include_root_summary`; `root_summary_chars`
+  always. `ancestors --paths-only` and an `ancestor_paths` list always; MCP
+  `kvault_get_parent_summaries(ancestors="paths"|"content")` and aliases.
+  `events list --limit N` (default 50, `0` = all) and `--since YYYY-MM-DD`,
+  with `total_matched` and a `truncated` note. `artifact daily --json`
+  reports `content_chars`.
+- `kvault/core/conventions.py`: `BACKGROUND_CHILD_DIRS = ("deep_context",)`
+  — the one place two rules (summary ceilings, search collapse) agree on
+  which child directories are supporting material rather than nodes.
+
+### Changed
+
+- **Search collapses propagated copies.** A root/category hit whose matched
+  fields are only body/headings is dropped when a kept strict descendant
+  (never a background child) scores at least half as much; anchored matches
+  (path/title/aliases) never collapse. Equal scores now prefer the deeper
+  node (root is depth 0). Before: the tie-break sorted shallowest-first, so
+  root outranked the canonical leaf for every propagated fact.
+- **`read` defaults to `--parents none`**; MCP `kvault_read_node` and
+  `kvault_read_entity` likewise (`parents="immediate"` restores the parent
+  summary). Python `read_node`/`read_entity` defaults are unchanged.
+- **`status --json` omits `root_summary`** unless requested.
+- **`artifact daily --json` omits `content`** unless `--stdout`.
+- **`events list` shows the newest 50 by default.**
+- **MCP write tools default `ancestors="paths"`** (announced in 0.13.0).
+- `check_events_promotable` judges by outcome, not status: any outcome other
+  than `promoted` blocks `write --event`, so a retracted id fails fast without
+  touching the tree.
+- `__version__` is single-sourced in `kvault/_version.py`.
+
+### Fixed
+
+- The fallback version string in an uninstalled source tree (was 0.13.0,
+  duplicated against `pyproject.toml`).
+
+### Frozen
+
+- `check` human output remains tier-invariant and `--json` remains one
+  document (J1). The finding set is **not** frozen: the line-prefix
+  vocabulary is now `[KB]`, `SUMMARY:`, `PENDING:`, `RETRACTED:`; adding a
+  prefix is a minor-version change listed here.
+
 ## 0.13.0 - 2026-08-11
 
 Work reporting. kvault now tells you what it decided, not just what you asked

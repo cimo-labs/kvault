@@ -73,6 +73,9 @@ parent-summary helpers backed by direct-child digests.
 - `observability.py`: legacy phase logs (`logs` table) in `.kvault/logs.db`.
 - `daily_artifacts.py`: deterministic daily artifact generation.
 - `summary_quality.py`: warn-only parent-summary quality audit used by `kvault check`.
+- `conventions.py`: layout conventions shared by more than one rule (`BACKGROUND_CHILD_DIRS`,
+  the `deep_context/` supporting-material child: budgeted as a leaf by the summary audit,
+  never a reason for search to collapse its parent).
 
 ## Storage Model
 
@@ -216,6 +219,10 @@ pytest -q
 
 ## Version Notes
 
+- 0.14.0: bounded outputs — `--version`/`doctor` handshake, `check` ceilings (`too_long`,
+  `stale_history`), capture tripwire for shell-mangled text, `events retract` + `RETRACTED:`,
+  search ancestor collapse + `--kind`/`--path`, defaults flipped (`read --parents none`,
+  `status` without `root_summary`, `events list --limit 50`, MCP `ancestors="paths"`).
 - 0.13.0: work reporting — note vocabulary + verbosity tiers, `did`/`changed`/`notes`
   in results, durable ops log (`kvault log tail`), no-op writes skip the file rewrite;
   `check` human output/exit codes frozen.

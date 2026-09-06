@@ -111,8 +111,8 @@ from kvault.core.storage import (
 
 ```bash
 # Node operations
-kvault search <query> [--json]
-kvault read <path> [--parents none|immediate|all] [--json]
+kvault search <query> [--limit N] [--kind root|category|entity]... [--path PREFIX] [--no-collapse] [--json]
+kvault read <path> [--parents none|immediate|all] [--json]      # default none since 0.14.0
 kvault write <path> [--create] [--reasoning TEXT] [--json] < content.md
 kvault list [path] [--recursive] [--json]
 
@@ -122,18 +122,18 @@ kvault move <source> <target> [--json]
 kvault read-summary <path> [--json]
 kvault write-summary <path> [--json] < content.md
 kvault update-summaries [--json] < updates.json
-kvault ancestors <path> [--json]
+kvault ancestors <path> [--paths-only] [--json]
 
 # Journal
 kvault journal --source TEXT [--date YYYY-MM-DD] [--json] < actions.json
 
 # Capture journal
 kvault capture --source S [--source-ref R] [--tag T] [--allow-suspicious] [--json] < text
-kvault events list [--status pending|resolved|retracted] [--json]
+kvault events list [--status pending|resolved|retracted] [--limit N|0] [--since YYYY-MM-DD] [--json]
 kvault events retract <id> --reason TEXT [--superseded-by ID] [--json]
 
 # Status & validation
-kvault status [--json]
+kvault status [--root-summary] [--json]
 kvault tree [--depth N]
 kvault validate [--json]
 kvault check [--kb-root PATH] [--json] [--no-summary-quality] [--summary-max-warnings N] \
@@ -142,7 +142,7 @@ kvault doctor [--kb-root PATH] [--json]   # runtime/env/KB-binding report; exit 
 
 # Init & artifacts
 kvault init <path> [--name NAME]
-kvault artifact daily [--kb-root PATH] [--date YYYY-MM-DD] [--force] [--stdout] [--json]
+kvault artifact daily [--kb-root PATH] [--date YYYY-MM-DD] [--force] [--stdout] [--json]   # --json carries content only with --stdout
 
 # Ops log
 kvault log tail [--limit N] [--session ID] [--kb-root PATH] [--json]

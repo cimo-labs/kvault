@@ -31,6 +31,10 @@ EVENTS_DIR = "events"
 STATUS_PENDING = "pending"
 STATUS_RESOLVED = "resolved"
 OUTCOMES = ("promoted", "journal_only", "duplicate", "no_op", "rejected")
+#: Set only by ``retract_event`` (never by ``resolve``): the captured text was
+#: wrong evidence. Status stays ``resolved``; the outcome carries the retraction.
+OUTCOME_RETRACTED = "retracted"
+ALL_OUTCOMES = OUTCOMES + (OUTCOME_RETRACTED,)
 
 #: Residue a shell leaves when agent-authored text goes through ``echo "…"``
 #: unquoted. zsh expands any ``$<digits>`` run: ``$1,208.25`` -> ``,208.25``,
@@ -244,15 +248,27 @@ def capture_event(
     }
 
 
+def _outcome(event: Dict[str, Any]) -> Optional[str]:
+    return (event.get("resolution") or {}).get("outcome")
+
+
 def list_events(kg_root: Path, status: Optional[str] = None) -> Dict[str, Any]:
-    """List events, newest first, optionally filtered by status."""
+    """List events, newest first, optionally filtered by status.
+
+    ``status="retracted"`` selects by outcome (retracted events keep
+    ``status: resolved``); ``status="resolved"`` excludes them.
+    """
     events = []
     for path in _iter_event_files(kg_root):
         event = _load_event_file(path)
         if event is None:
             continue
-        if status and event.get("status") != status:
-            continue
+        if status == OUTCOME_RETRACTED:
+            if _outcome(event) != OUTCOME_RETRACTED:
+                continue
+        elif status:
+            if event.get("status") != status or _outcome(event) == OUTCOME_RETRACTED:
+                continue
         events.append(_public(event))
     events.sort(key=lambda e: str(e.get("captured_at", "")), reverse=True)
     return {"success": True, "count": len(events), "events": events}
@@ -274,6 +290,12 @@ def resolve_event(
     target_paths: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Resolve a pending event with an explicit outcome."""
+    if outcome == OUTCOME_RETRACTED:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            "Use `kvault events retract <id> --reason …` to retract an event",
+            hint="retract works on pending and resolved events and records why",
+        )
     if outcome not in OUTCOMES:
         return error_response(
             ErrorCode.VALIDATION_ERROR,
@@ -316,14 +338,15 @@ def check_events_promotable(kg_root: Path, event_ids: List[str]) -> Dict[str, An
         event = _find_event(kg_root, event_id)
         if event is None:
             return error_response(ErrorCode.NOT_FOUND, f"Event not found: {event_id}")
-        if event.get("status") == STATUS_RESOLVED:
-            outcome = (event.get("resolution") or {}).get("outcome")
-            if outcome != "promoted":
-                return error_response(
-                    ErrorCode.WORKFLOW_ERROR,
-                    f"Event {event_id} was already resolved as {outcome}",
-                    details={"resolution": event.get("resolution")},
-                )
+        outcome = _outcome(event)
+        # Judged by outcome, not status: a retracted event is never promotable,
+        # whatever its status field says.
+        if outcome not in (None, "promoted"):
+            return error_response(
+                ErrorCode.WORKFLOW_ERROR,
+                f"Event {event_id} was already resolved as {outcome}",
+                details={"resolution": event.get("resolution")},
+            )
     return {"success": True}
 
 
@@ -353,6 +376,111 @@ def promote_events(kg_root: Path, event_ids: List[str], target_path: str) -> Dic
             _write_event(kg_root, event)
             promoted.append(event_id)
     return {"success": True, "promoted": promoted, "target_path": target_path}
+
+
+def retract_event(
+    kg_root: Path,
+    event_id: str,
+    reason: str,
+    superseded_by: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Mark an event's captured text as wrong evidence.
+
+    Allowed on pending *and* resolved events (the one exception to
+    "resolved is terminal"): a promoted event whose body turned out to be
+    corrupt must be flagged so the node that cites it gets repaired, not
+    silently kept as provenance. Status becomes ``resolved`` unconditionally;
+    the prior resolution is kept under ``previous`` for audit.
+    """
+    if not reason or not reason.strip():
+        return error_response(ErrorCode.VALIDATION_ERROR, "A retraction needs a --reason")
+    with KBWriteLock(kg_root):
+        event = _find_event(kg_root, event_id)
+        if event is None:
+            return error_response(ErrorCode.NOT_FOUND, f"Event not found: {event_id}")
+        if _outcome(event) == OUTCOME_RETRACTED:
+            return error_response(
+                ErrorCode.WORKFLOW_ERROR,
+                f"Event {event_id} is already retracted",
+                details={"resolution": event.get("resolution")},
+            )
+        if superseded_by is not None:
+            if superseded_by == event_id:
+                return error_response(
+                    ErrorCode.VALIDATION_ERROR, "An event cannot supersede itself"
+                )
+            if _find_event(kg_root, superseded_by) is None:
+                return error_response(
+                    ErrorCode.NOT_FOUND, f"Superseding event not found: {superseded_by}"
+                )
+        resolution: Dict[str, Any] = {
+            "outcome": OUTCOME_RETRACTED,
+            "reason": reason.strip(),
+            "retracted_at": _now_iso(),
+        }
+        if superseded_by:
+            resolution["superseded_by"] = superseded_by
+        previous = event.get("resolution")
+        if previous:
+            resolution["previous"] = previous
+        event["status"] = STATUS_RESOLVED
+        event["resolution"] = resolution
+        _write_event(kg_root, event)
+    return {"success": True, "event_id": event_id, "resolution": resolution}
+
+
+def retracted_reference_findings(kg_root: Path) -> List[Dict[str, Any]]:
+    """Nodes whose ``source_refs`` cite a retracted event, for ``kvault check``.
+
+    Suppressed once the superseding event has been promoted into the same
+    node (its ``journal:<id>`` ref is present) — that is the documented
+    close-out: retract the bad event with ``--superseded-by``, then
+    ``write <node> --event <new>``.
+    """
+    retracted: Dict[str, Dict[str, Any]] = {}
+    for path in _iter_event_files(kg_root):
+        event = _load_event_file(path)
+        if event is not None and _outcome(event) == OUTCOME_RETRACTED:
+            retracted[str(event["id"])] = event
+    if not retracted:
+        return []  # fast path: no node scan when nothing is retracted
+
+    from kvault.core.frontmatter import parse_frontmatter
+
+    findings: List[Dict[str, Any]] = []
+    root = Path(kg_root)
+    for summary_path in sorted(root.rglob("_summary.md")):
+        rel = summary_path.relative_to(root)
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        try:
+            meta, _ = parse_frontmatter(summary_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+        refs = meta.get("source_refs") if isinstance(meta, dict) else None
+        if not isinstance(refs, list):
+            continue
+        ref_ids = {
+            str(ref)[len("journal:") :]
+            for ref in refs
+            if isinstance(ref, str) and ref.startswith("journal:")
+        }
+        node_path = "." if summary_path.parent == root else str(rel.parent)
+        for event_id in sorted(ref_ids & set(retracted)):
+            resolution = retracted[event_id].get("resolution") or {}
+            superseded_by = resolution.get("superseded_by")
+            if superseded_by and superseded_by in ref_ids:
+                continue
+            findings.append(
+                {
+                    "type": "retracted_ref",
+                    "path": node_path,
+                    "event_id": event_id,
+                    "reason": resolution.get("reason"),
+                    "superseded_by": superseded_by,
+                }
+            )
+    return findings
 
 
 def pending_event_findings(kg_root: Path, max_age_days: int = 7) -> List[Dict[str, Any]]:
@@ -470,7 +598,9 @@ def import_moss_capture(
 
 
 __all__ = [
+    "ALL_OUTCOMES",
     "OUTCOMES",
+    "OUTCOME_RETRACTED",
     "SUSPICIOUS_PATTERNS",
     "suspicious_text_matches",
     "capture_event",
@@ -481,4 +611,6 @@ __all__ = [
     "pending_event_findings",
     "promote_events",
     "resolve_event",
+    "retract_event",
+    "retracted_reference_findings",
 ]

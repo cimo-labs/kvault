@@ -127,6 +127,11 @@ kvault ancestors <path> [--json]
 # Journal
 kvault journal --source TEXT [--date YYYY-MM-DD] [--json] < actions.json
 
+# Capture journal
+kvault capture --source S [--source-ref R] [--tag T] [--allow-suspicious] [--json] < text
+kvault events list [--status pending|resolved|retracted] [--json]
+kvault events retract <id> --reason TEXT [--superseded-by ID] [--json]
+
 # Status & validation
 kvault status [--json]
 kvault tree [--depth N]

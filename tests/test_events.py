@@ -428,3 +428,129 @@ def test_import_record_in_both_files_treated_archived(kb, tmp_path):
     events = ev.list_events(kb)["events"]
     assert len(events) == 1
     assert events[0]["status"] == "resolved"
+
+
+# ---------------------------------------------------------------------------
+# retract (0.14.0)
+# ---------------------------------------------------------------------------
+
+
+def _promote(kb, event_id, path="people/alice", body="# Alice\n\nLives in Larkspur.\n"):
+    # reasoning= auto-journals the write, so check's LOG: hard warning stays quiet.
+    result = ops.write_node(kb, path, body, create=True, event_ids=[event_id], reasoning="test")
+    assert result["success"], result
+    return result
+
+
+def test_retract_pending_and_promoted_events(kb):
+    pending = _capture(kb, body="Pending fact.")["event_id"]
+    promoted = _capture(kb, body="Promoted fact.")["event_id"]
+    _promote(kb, promoted)
+
+    r1 = ev.retract_event(kb, pending, reason="shell-mangled amount")
+    assert r1["success"] and r1["resolution"]["outcome"] == "retracted"
+    assert "previous" not in r1["resolution"]
+    assert ev.get_event(kb, pending)["event"]["status"] == "resolved"
+
+    r2 = ev.retract_event(kb, promoted, reason="shell-mangled amount")
+    assert r2["success"]
+    assert r2["resolution"]["previous"]["outcome"] == "promoted"
+    assert r2["resolution"]["previous"]["target_paths"] == ["people/alice"]
+
+    listed = ev.list_events(kb, status="retracted")["events"]
+    assert {e["id"] for e in listed} == {pending, promoted}
+    assert ev.list_events(kb, status="resolved")["count"] == 0
+    assert ev.list_events(kb, status="pending")["count"] == 0
+
+
+def test_retract_twice_fails_and_superseded_by_must_exist(kb):
+    event_id = _capture(kb, body="Wrong.")["event_id"]
+    assert ev.retract_event(kb, event_id, reason="x")["success"]
+    again = ev.retract_event(kb, event_id, reason="x")
+    assert not again["success"] and again["error_code"] == "workflow_error"
+    other = _capture(kb, body="Another wrong.")["event_id"]
+    missing = ev.retract_event(kb, other, reason="x", superseded_by="evdoesnotexist")
+    assert not missing["success"] and missing["error_code"] == "not_found"
+    self_ref = ev.retract_event(kb, other, reason="x", superseded_by=other)
+    assert not self_ref["success"] and self_ref["error_code"] == "validation_error"
+    no_reason = ev.retract_event(kb, other, reason="  ")
+    assert not no_reason["success"]
+
+
+def test_resolve_rejects_retracted_outcome(kb):
+    event_id = _capture(kb, body="Fact.")["event_id"]
+    result = ev.resolve_event(kb, event_id, outcome="retracted")
+    assert not result["success"]
+    assert "events retract" in result["error"]
+
+
+def test_write_with_retracted_event_fails_fast_and_keeps_resolution(kb):
+    event_id = _capture(kb, body="Wrong amount ,208.25", source="t", allow_suspicious=True)[
+        "event_id"
+    ]
+    retracted = ev.retract_event(kb, event_id, reason="mangled")
+    before = ev.get_event(kb, event_id)["event"]["resolution"]
+    result = ops.write_node(kb, "people/bob", "# Bob\n\nx.\n", create=True, event_ids=[event_id])
+    assert not result["success"] and result["error_code"] == "workflow_error"
+    assert "retracted" in result["error"]
+    assert not (kb / "people" / "bob").exists()  # nothing written
+    assert ev.get_event(kb, event_id)["event"]["resolution"] == before == retracted["resolution"]
+    promote = ev.promote_events(kb, [event_id], "people/bob")
+    assert not promote["success"]
+
+
+def test_check_reports_retracted_refs_and_supersession_clears_them(kb):
+    bad = _capture(kb, body="Gusto debit ,208.25", source="t", allow_suspicious=True)["event_id"]
+    _promote(kb, bad, path="people/self", body="# Self\n\nGusto debit 1208.25.\n")
+    good = _capture(kb, body="Gusto debit $1,208.25", source="t")["event_id"]
+    assert ev.retract_event(kb, bad, reason="shell-mangled amount", superseded_by=good)["success"]
+
+    runner = CliRunner()
+    as_json = runner.invoke(cli, ["--kb-root", str(kb), "check", "--json"])
+    payload = json.loads(as_json.output)
+    assert payload["retracted_ref_count"] == 1
+    assert payload["retracted_refs"][0] == {
+        "type": "retracted_ref",
+        "path": "people/self",
+        "event_id": bad,
+        "reason": "shell-mangled amount",
+        "superseded_by": good,
+    }
+    text = runner.invoke(cli, ["--kb-root", str(kb), "check"])
+    assert text.exit_code == 0  # warn-only
+    assert f"RETRACTED: people/self cites retracted {bad}" in text.output
+    assert f"write --event {good}" in text.output
+
+    # Close-out: rewrite the node with the superseding event -> finding clears.
+    fixed = ops.write_node(
+        kb, "people/self", "# Self\n\nGusto debit $1,208.25.\n", event_ids=[good], reasoning="fix"
+    )
+    assert fixed["success"]
+    after = json.loads(runner.invoke(cli, ["--kb-root", str(kb), "check", "--json"]).output)
+    assert after["retracted_ref_count"] == 0
+
+
+def test_check_retracted_fast_path_without_retractions(kb):
+    _promote(kb, _capture(kb, body="Fine.")["event_id"])
+    assert ev.retracted_reference_findings(kb) == []
+
+
+def test_cli_events_retract_json(kb):
+    event_id = _capture(kb, body="Wrong.")["event_id"]
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["--kb-root", str(kb), "--json", "events", "retract", event_id, "--reason", "mangled"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["success"] and payload["did"] == f"retracted {event_id}"
+    listed = runner.invoke(
+        cli, ["--kb-root", str(kb), "--json", "events", "list", "--status", "retracted"]
+    )
+    assert json.loads(listed.output)["count"] == 1
+    again = runner.invoke(
+        cli, ["--kb-root", str(kb), "--json", "events", "retract", event_id, "--reason", "x"]
+    )
+    assert again.exit_code == 1
+    json.loads(again.output)

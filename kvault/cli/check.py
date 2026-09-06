@@ -20,7 +20,7 @@ from typing import List, Optional
 import click
 
 from kvault.core import operations as ops
-from kvault.core.events import pending_event_findings
+from kvault.core.events import pending_event_findings, retracted_reference_findings
 from kvault.core.frontmatter import parse_frontmatter
 from kvault.core.summary_quality import (
     DEFAULT_MAX_DATED_SECTIONS,
@@ -339,6 +339,7 @@ def check_kb(
         )
     )
     pending_events = pending_event_findings(kb_root, max_age_days=pending_max_age)
+    retracted_refs = retracted_reference_findings(kb_root)
 
     if ctx.obj.get("as_json"):
         click.echo(
@@ -360,6 +361,8 @@ def check_kb(
                     "summary_quality_enabled": not no_summary_quality,
                     "pending_events": pending_events,
                     "pending_event_count": len(pending_events),
+                    "retracted_refs": retracted_refs,
+                    "retracted_ref_count": len(retracted_refs),
                 },
                 indent=2,
                 default=str,
@@ -395,6 +398,18 @@ def check_kb(
         )
     if len(pending_events) > summary_max_warnings:
         click.echo(f"PENDING: (+{len(pending_events) - summary_max_warnings} more)")
+
+    # Warn-only: a node still cites an event whose text was retracted as wrong
+    # evidence — rewrite it, then re-link the corrected capture.
+    for finding in retracted_refs[:summary_max_warnings]:
+        reason = str(finding.get("reason") or "")[:80]
+        follow_up = finding.get("superseded_by") or "<fresh capture id>"
+        click.echo(
+            f"RETRACTED: {finding['path']} cites retracted {finding['event_id']} — {reason} — "
+            f"rewrite the node, then write --event {follow_up}"
+        )
+    if len(retracted_refs) > summary_max_warnings:
+        click.echo(f"RETRACTED: (+{len(retracted_refs) - summary_max_warnings} more)")
 
     if hard_warnings:
         sys.exit(1)

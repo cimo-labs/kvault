@@ -90,9 +90,9 @@ def events_group() -> None:
 @events_group.command("list")
 @click.option(
     "--status",
-    type=click.Choice(["pending", "resolved"]),
+    type=click.Choice(["pending", "resolved", "retracted"]),
     default=None,
-    help="Filter by lifecycle status",
+    help="Filter by lifecycle status (retracted = resolved with outcome retracted)",
 )
 @common_options
 @click.pass_context
@@ -189,6 +189,49 @@ def resolve_event_cmd(
         render_notes(result, get_tier(ctx))
     else:
         raise click.ClickException(result.get("error", "Resolve failed"))
+    finish_op(ctx, result)
+
+
+@events_group.command("retract")
+@click.argument("event_id")
+@click.option("--reason", required=True, help="Why the captured text is wrong evidence")
+@click.option(
+    "--superseded-by",
+    default=None,
+    help="Event id carrying the corrected text (clears the RETRACTED: finding once promoted)",
+)
+@common_options
+@click.pass_context
+def retract_event_cmd(
+    ctx: click.Context,
+    event_id: str,
+    reason: str,
+    superseded_by: Optional[str],
+    kb_root: Optional[Path],
+    as_json: bool,
+) -> None:
+    """Retract an event whose captured text is wrong (works on resolved events too).
+
+    Nodes that still cite the event in `source_refs` show up in `kvault check`
+    as RETRACTED: findings until they are rewritten and re-linked with
+    `kvault write <node> --event <superseding-id>`.
+    """
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
+    kb_root = resolve_kb_root(ctx)
+    started = time.monotonic()
+    result = ev.retract_event(kb_root, event_id, reason=reason, superseded_by=superseded_by)
+    if result.get("success") and "did" not in result:
+        result["did"] = f"retracted {event_id}"
+    record_op(kb_root, "events-retract", result, started)
+    if ctx.obj.get("as_json"):
+        output_json(result)
+        if not result.get("success"):
+            ctx.exit(1)
+    elif result.get("success"):
+        click.echo(f"Retracted {event_id}: {reason}")
+        render_notes(result, get_tier(ctx))
+    else:
+        raise click.ClickException(result.get("error", "Retract failed"))
     finish_op(ctx, result)
 
 

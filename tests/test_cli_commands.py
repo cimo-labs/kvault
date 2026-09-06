@@ -93,6 +93,26 @@ class TestHelp:
         assert "version: " in result.output
         assert "kb.is_kb: True" in result.output
 
+    def test_status_json_omits_root_summary_by_default(self, runner, cli_kb):
+        base = ["--kb-root", str(cli_kb), "status", "--json"]
+        lean = json.loads(runner.invoke(cli, base).output)
+        assert "root_summary" not in lean
+        assert lean["root_summary_chars"] == len((cli_kb / "_summary.md").read_text())
+        full = json.loads(runner.invoke(cli, base + ["--root-summary"]).output)
+        assert full["root_summary"].startswith("# Test KB")
+
+    def test_ancestors_paths_only(self, runner, cli_kb):
+        base = ["--kb-root", str(cli_kb), "--json", "ancestors", "people/friends"]
+        full = json.loads(runner.invoke(cli, base).output)
+        assert full["ancestor_paths"] == ["people", "."]
+        assert all("current_content" in a for a in full["ancestors"])
+        lean = json.loads(runner.invoke(cli, base + ["--paths-only"]).output)
+        assert lean["ancestor_paths"] == ["people", "."]
+        assert lean["ancestors"] == [
+            {"path": "people", "has_meta": False},
+            {"path": ".", "has_meta": False},
+        ]
+
     def test_status_json(self, runner, cli_kb):
         result = runner.invoke(cli, ["--kb-root", str(cli_kb), "--json", "status"])
         assert result.exit_code == 0
@@ -173,8 +193,29 @@ class TestReadCommand:
         )
         assert result.exit_code == 0
         assert "Alice Smith" in result.output
-        assert "Parent summary (people/friends)" in result.output
-        assert "Friends list." in result.output
+        # 0.14.0: parent context is opt-in.
+        assert "Parent summary" not in result.output
+        with_parent = runner.invoke(
+            cli,
+            [
+                "--kb-root",
+                str(cli_kb_with_entity),
+                "read",
+                "people/friends/alice_smith",
+                "--parents",
+                "immediate",
+            ],
+        )
+        assert "Parent summary (people/friends)" in with_parent.output
+        assert "Friends list." in with_parent.output
+
+    def test_read_default_has_no_parent(self, runner, cli_kb_with_entity):
+        result = runner.invoke(
+            cli,
+            ["--kb-root", str(cli_kb_with_entity), "--json", "read", "people/friends/alice_smith"],
+        )
+        data = json.loads(result.output)
+        assert data["parent"] is None and "parents" not in data
 
     def test_read_json(self, runner, cli_kb_with_entity):
         result = runner.invoke(
@@ -185,6 +226,8 @@ class TestReadCommand:
                 "--json",
                 "read",
                 "people/friends/alice_smith",
+                "--parents",
+                "immediate",
             ],
         )
         assert result.exit_code == 0
@@ -193,7 +236,9 @@ class TestReadCommand:
         assert data["parent"]["path"] == "people/friends"
 
     def test_read_category_json(self, runner, cli_kb):
-        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "--json", "read", "people"])
+        result = runner.invoke(
+            cli, ["--kb-root", str(cli_kb), "--json", "read", "people", "--parents", "immediate"]
+        )
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["path"] == "people"

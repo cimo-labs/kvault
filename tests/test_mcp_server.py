@@ -114,6 +114,13 @@ def test_mcp_server_exposes_compatible_tools_and_calls(tmp_path):
     )
     assert read["success"] is True
     assert read["meta"]["source"] == "auto:mcp"
+    assert "parent_summary" not in read  # 0.14.0: parents default to none
+    read_with_parent = _run_tool(
+        server,
+        "kvault_read_entity",
+        {"path": "people/contacts/professional/education/person", "parents": "immediate"},
+    )
+    assert read_with_parent["parent_path"] == "people/contacts/professional/education"
 
     node = _run_tool(
         server,
@@ -121,7 +128,26 @@ def test_mcp_server_exposes_compatible_tools_and_calls(tmp_path):
         {"path": "people/contacts/professional/education/person"},
     )
     assert node["success"] is True
-    assert node["parent"]["path"] == "people/contacts/professional/education"
+    assert node["parent"] is None  # 0.14.0 default
+    node_with_parent = _run_tool(
+        server,
+        "kvault_read_node",
+        {"path": "people/contacts/professional/education/person", "parents": "immediate"},
+    )
+    assert node_with_parent["parent"]["path"] == "people/contacts/professional/education"
+
+    status = _run_tool(server, "kvault_status", {})
+    assert status["success"] is True and status["version"]
+    assert "root_summary" not in status and status["root_summary_chars"] > 0
+    assert "root_summary" in _run_tool(server, "kvault_status", {"include_root_summary": True})
+
+    chain = _run_tool(
+        server,
+        "kvault_get_parent_summaries",
+        {"path": "people/contacts/professional/education/person", "ancestors": "paths"},
+    )
+    assert chain["ancestor_paths"][-1] == "."
+    assert all("current_content" not in a for a in chain["ancestors"])
 
     nodes = _run_tool(server, "kvault_list_nodes", {"path": "people", "recursive": True})
     assert nodes["success"] is True

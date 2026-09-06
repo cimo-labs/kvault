@@ -86,4 +86,24 @@ def test_cli_artifact_daily_json(sample_kb):
     assert data["success"] is True
     assert data["kg_root"] == str(sample_kb.resolve())
     assert data["relative_path"] == ".kvault/artifacts/daily/2026-02-14.md"
-    assert "# Daily Artifact - 2026-02-14" in data["content"]
+    # 0.14.0: the artifact is on disk; echoing it in JSON is opt-in.
+    assert "content" not in data
+    assert data["content_chars"] > 0
+    assert "# Daily Artifact - 2026-02-14" in (sample_kb / data["relative_path"]).read_text()
+
+    with_content = runner.invoke(
+        cli,
+        [
+            "artifact",
+            "daily",
+            "--kb-root",
+            str(sample_kb),
+            "--date",
+            "2026-02-14",
+            "--json",
+            "--stdout",
+        ],
+    )
+    echoed = json.loads(with_content.output)
+    assert "# Daily Artifact - 2026-02-14" in echoed["content"]
+    assert echoed["content_chars"] == len(echoed["content"])

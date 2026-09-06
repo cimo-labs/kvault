@@ -52,12 +52,15 @@ def kb(tmp_path):
 # (autofill on write, created on write-summary, truncation on search).
 JSON_COMMANDS = [
     (["status"], None),
+    (["status", "--root-summary"], None),
     (["doctor"], None),
     (["tree"], None),
     (["list", "."], None),
     (["read", "people"], None),
+    (["read", "people", "--parents", "immediate"], None),
     (["read-summary", "people"], None),
     (["ancestors", "people/contacts"], None),
+    (["ancestors", "people/contacts", "--paths-only"], None),
     (["validate"], None),
     (["search", "people", "--limit", "1"], None),
     (["search", "people", "--no-collapse", "--kind", "category", "--path", "people"], None),
@@ -83,6 +86,7 @@ JSON_COMMANDS = [
     (["log", "summary"], None),
     (["log", "tail"], None),
     (["artifact", "daily"], None),
+    (["artifact", "daily", "--stdout"], None),
 ]
 
 TIERS = [[], ["-q"], ["--explain"], ["--trace"]]

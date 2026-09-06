@@ -131,13 +131,20 @@ def update_summaries(
 
 @click.command("ancestors")
 @click.argument("path")
+@click.option(
+    "--paths-only",
+    is_flag=True,
+    help="Omit current_content (the full chain can exceed 100 KB); same as MCP ancestors='paths'.",
+)
 @common_options
 @click.pass_context
-def ancestors(ctx: click.Context, path: str, kb_root: Optional[Path], as_json: bool) -> None:
-    """Get ancestor summaries for propagation."""
+def ancestors(
+    ctx: click.Context, path: str, paths_only: bool, kb_root: Optional[Path], as_json: bool
+) -> None:
+    """Get ancestor summaries (root included) for propagation."""
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
-    result = ops.get_ancestors(kb_root, path)
+    result = ops.get_ancestors(kb_root, path, include_content=not paths_only)
     if ctx.obj.get("as_json"):
         output_json(result)
     else:

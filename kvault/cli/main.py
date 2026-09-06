@@ -179,13 +179,21 @@ def init_kb(ctx: click.Context, path: Path, name: str) -> None:
 
 
 @cli.command("status")
+@click.option(
+    "--root-summary",
+    "include_root_summary",
+    is_flag=True,
+    help="Include the full root summary text in --json output (off by default; size is reported).",
+)
 @common_options
 @click.pass_context
-def status(ctx: click.Context, kb_root: Optional[Path], as_json: bool) -> None:
-    """Show KB status: root, entity count, hierarchy, health."""
+def status(
+    ctx: click.Context, include_root_summary: bool, kb_root: Optional[Path], as_json: bool
+) -> None:
+    """Show KB status: version, root, entity count, hierarchy, health."""
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
-    info = ops.get_kb_info(kb_root)
+    info = ops.get_kb_info(kb_root, include_root_summary=include_root_summary)
     health = {
         "root_summary_exists": (kb_root / "_summary.md").exists(),
         "kvault_dir_exists": (kb_root / ".kvault").exists(),
@@ -289,7 +297,7 @@ def artifact_group() -> None:
     "--stdout",
     "print_stdout",
     is_flag=True,
-    help="Print generated artifact markdown to stdout.",
+    help="Print the artifact markdown (human mode) / include `content` in --json.",
 )
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 @click.pass_context
@@ -313,17 +321,20 @@ def generate_daily(
     result = generate_daily_artifact(kb_root, artifact_date=parsed_date, force=force)
     rel_path = result.path.relative_to(kb_root)
     if ctx.obj.get("as_json"):
-        output_json(
-            {
-                "success": True,
-                "kg_root": str(kb_root),
-                "artifact_date": result.artifact_date.isoformat(),
-                "path": str(result.path),
-                "relative_path": str(rel_path),
-                "written": result.written,
-                "content": result.content,
-            }
-        )
+        payload: Dict[str, object] = {
+            "success": True,
+            "kg_root": str(kb_root),
+            "artifact_date": result.artifact_date.isoformat(),
+            "path": str(result.path),
+            "relative_path": str(rel_path),
+            "written": result.written,
+            "content_chars": len(result.content),
+        }
+        # The artifact is on disk at `path`; echoing it (78 KB on a mature
+        # KB) is opt-in via --stdout.
+        if print_stdout:
+            payload["content"] = result.content
+        output_json(payload)
         return
 
     status = "Generated" if result.written else "Reused existing"

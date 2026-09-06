@@ -14,9 +14,10 @@ events a day; directories stay tiny).
 """
 
 import hashlib
+import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from kvault.core.frontmatter import (
     FrontmatterError,
@@ -30,6 +31,19 @@ EVENTS_DIR = "events"
 STATUS_PENDING = "pending"
 STATUS_RESOLVED = "resolved"
 OUTCOMES = ("promoted", "journal_only", "duplicate", "no_op", "rejected")
+
+#: Residue a shell leaves when agent-authored text goes through ``echo "…"``
+#: unquoted. zsh expands any ``$<digits>`` run: ``$1,208.25`` -> ``,208.25``,
+#: ``$5.00`` -> ``.00``, and ``$0`` -> the shell's own name (``/bin/zsh``).
+#: This is a tripwire, not a guarantee — a bare ``$250`` vanishes with no
+#: residue at all. The quoted heredoc is the control; this catches the
+#: common mangles before they become provenance.
+SUSPICIOUS_PATTERNS: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
+    ("shell_path", re.compile(r"(?<![\w/])/bin/(?:zsh|bash|sh)\b|(?:^|\s)-(?:zsh|bash)\b")),
+    ("orphan_thousands", re.compile(r"(?<![\w$.,]),\d{3}(?:,\d{3})*(?:\.\d{2})?(?![\w,])")),
+    ("orphan_cents", re.compile(r"(?<![<>=≈~] )(?<=\s)\.\d{2}(?![\w.])")),
+)
+_CONTEXT_CHARS = 24
 
 
 def _events_root(kg_root: Path) -> Path:
@@ -117,6 +131,22 @@ def _public(event: Dict[str, Any], include_body: bool = False) -> Dict[str, Any]
     return {k: v for k, v in view.items() if v is not None}
 
 
+def suspicious_text_matches(body: str) -> List[Dict[str, str]]:
+    """Return shell-mangling signatures found in *body* (empty = looks clean)."""
+    matches: List[Dict[str, str]] = []
+    for label, pattern in SUSPICIOUS_PATTERNS:
+        for found in pattern.finditer(body):
+            start, end = found.span()
+            matches.append(
+                {
+                    "label": label,
+                    "match": found.group(0).strip(),
+                    "context": body[max(0, start - _CONTEXT_CHARS) : end + _CONTEXT_CHARS].strip(),
+                }
+            )
+    return matches
+
+
 # ---------------------------------------------------------------------------
 # Public operations
 # ---------------------------------------------------------------------------
@@ -131,16 +161,37 @@ def capture_event(
     sensitivity: Optional[str] = None,
     tags: Optional[List[str]] = None,
     captured_at: Optional[str] = None,
+    allow_suspicious: bool = False,
 ) -> Dict[str, Any]:
     """Record a memory candidate as a pending event, idempotently.
 
     The same (source, source_ref, body) returns the existing event.  A reused
     source_ref with different content is a conflict, not a new event.
+
+    A body carrying shell-mangling residue (see ``SUSPICIOUS_PATTERNS``) is
+    refused unless ``allow_suspicious`` — capture is evidence, and evidence
+    the shell rewrote before kvault saw it is worse than no capture.
     """
     if not body.strip():
         return error_response(ErrorCode.VALIDATION_ERROR, "Event body must not be empty")
     if not source or not source.strip():
         return error_response(ErrorCode.VALIDATION_ERROR, "Event source is required")
+    if not allow_suspicious:
+        suspicious = suspicious_text_matches(body)
+        if suspicious:
+            first = suspicious[0]
+            return error_response(
+                ErrorCode.VALIDATION_ERROR,
+                f"Body looks shell-mangled: {first['match']!r} ({first['label']}) — a $amount "
+                "or $0 was expanded by the shell before kvault saw the text",
+                details={"matches": suspicious},
+                hint=(
+                    "Pipe the text through a quoted heredoc (<<'EOF' … EOF) or single quotes; "
+                    "re-run with --allow-suspicious to capture as-is (leading-dot decimals "
+                    "like '.45 CoF' trip this too). Tripwire only: a bare $250 vanishes "
+                    "without residue, so the heredoc is the real control."
+                ),
+            )
 
     event_id = _event_id(source, source_ref, body)
     with KBWriteLock(kg_root):
@@ -391,6 +442,8 @@ def import_moss_capture(
             source_ref=f"moss-inbox:{record_id}",
             occurred_at=str(record["ts"]) if record.get("ts") else None,
             tags=[str(t) for t in record.get("tags") or []],
+            # Legacy import must not hard-fail on mangles that already happened.
+            allow_suspicious=True,
         )
         if not result.get("success"):
             counts["conflict"] += 1
@@ -418,6 +471,8 @@ def import_moss_capture(
 
 __all__ = [
     "OUTCOMES",
+    "SUSPICIOUS_PATTERNS",
+    "suspicious_text_matches",
     "capture_event",
     "check_events_promotable",
     "get_event",

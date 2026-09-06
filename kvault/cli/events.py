@@ -28,6 +28,11 @@ from kvault.core import events as ev
     "--sensitivity", default=None, help="Sensitivity classification, per the owning KB's rules"
 )
 @click.option("--tag", "tags", multiple=True, help="Topic tag (repeatable)")
+@click.option(
+    "--allow-suspicious",
+    is_flag=True,
+    help="Capture even if the body carries shell-mangling residue (,208.25 / .00 / /bin/zsh)",
+)
 @common_options
 @click.pass_context
 def capture(
@@ -37,6 +42,7 @@ def capture(
     occurred_at: Optional[str],
     sensitivity: Optional[str],
     tags: Tuple[str, ...],
+    allow_suspicious: bool,
     kb_root: Optional[Path],
     as_json: bool,
 ) -> None:
@@ -57,6 +63,7 @@ def capture(
         occurred_at=occurred_at,
         sensitivity=sensitivity,
         tags=list(tags),
+        allow_suspicious=allow_suspicious,
     )
     if result.get("success") and "did" not in result:
         verb = "captured" if result.get("created") else "already captured"

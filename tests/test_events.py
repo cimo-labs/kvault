@@ -30,6 +30,105 @@ def _capture(kb, body="Alice moved to Larkspur.", source="conversation", **kwarg
 # ---------------------------------------------------------------------------
 
 
+# Residue produced by `echo "…" | kvault capture` under zsh (Moss's shell), where
+# any $<digits> run is expanded: $1,208.25 -> ,208.25 ; $5.00 -> .00 ; $0.00 -> /bin/zsh.00
+MANGLED = [
+    "Gusto AutoPilot payroll will debit ,208.25 from the account.",
+    "a /bin/zsh.00 debit scheduled for Friday",
+    "(including a .00 fee)",
+    "wire of ,000.00 ACH landed",
+    "PATH problem: -zsh reported no such command",
+]
+LEGITIMATE = [
+    "$1,208.25 debit scheduled",  # the quoted-heredoc form: intact
+    "1,208.25 in the ledger",
+    "budget 3,000-4,000 per month",
+    "p < .05 and r = .95 in the pilot",
+    "shipped v2.00 of the tool",
+    "friction coefficient 0.45",
+    "one-off ~ .50 rounding in the spreadsheet",
+]
+# Documented negatives: no residue is left, so nothing can catch these. The
+# quoted heredoc is the control; this table exists so nobody loosens the regex
+# chasing them.
+UNDETECTABLE = [
+    "Paid  for the deposit",  # was "Paid $250 for the deposit"
+    "rate is /hr",  # was "rate is $10/hr"
+]
+
+
+@pytest.mark.parametrize("body", MANGLED)
+def test_capture_rejects_shell_mangled_body(kb, body):
+    result = ev.capture_event(kb, body=body, source="conversation")
+    assert not result["success"], body
+    assert result["error_code"] == "validation_error"
+    assert "shell-mangled" in result["error"]
+    assert result["details"]["matches"]
+    assert "heredoc" in result["hint"]
+    assert ev.list_events(kb)["count"] == 0  # nothing written
+
+
+@pytest.mark.parametrize("body", LEGITIMATE + UNDETECTABLE)
+def test_capture_accepts_legitimate_text(kb, body):
+    result = ev.capture_event(kb, body=body, source="conversation")
+    assert result["success"], (body, result)
+
+
+def test_capture_allow_suspicious_bypasses_the_tripwire(kb):
+    result = ev.capture_event(kb, body=MANGLED[0], source="conversation", allow_suspicious=True)
+    assert result["success"] and result["created"]
+
+
+def test_suspicious_text_matches_labels_and_context():
+    matches = ev.suspicious_text_matches("debit ,208.25 and a /bin/zsh.00 fee and .00 more")
+    labels = [m["label"] for m in matches]
+    assert labels == ["shell_path", "orphan_thousands", "orphan_cents"]
+    assert matches[1]["match"] == ",208.25"
+    assert "debit" in matches[1]["context"]
+
+
+def test_import_moss_capture_tolerates_mangled_records(kb, tmp_path):
+    queue = tmp_path / "inbox.jsonl"
+    queue.write_text(
+        json.dumps(
+            {"id": "r1", "ts": "2026-08-01T00:00:00Z", "source": "telegram", "text": MANGLED[0]}
+        )
+        + "\n"
+    )
+    result = ev.import_moss_capture(kb, input_path=queue)
+    assert result["success"]
+    assert result["counts"]["open"] == 1 and result["counts"]["conflict"] == 0
+    assert ev.list_events(kb)["count"] == 1
+
+
+def test_cli_capture_rejects_mangled_body_with_one_json_document(kb):
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["--kb-root", str(kb), "--json", "capture", "--source", "conversation"],
+        input=MANGLED[0],
+    )
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["error_code"] == "validation_error"
+
+    forced = runner.invoke(
+        cli,
+        [
+            "--kb-root",
+            str(kb),
+            "--json",
+            "capture",
+            "--source",
+            "conversation",
+            "--allow-suspicious",
+        ],
+        input=MANGLED[0],
+    )
+    assert forced.exit_code == 0, forced.output
+    assert json.loads(forced.output)["created"] is True
+
+
 def test_capture_creates_pending_event(kb):
     result = _capture(kb, source_ref="msg:123", tags=["family"])
     assert result["created"] and result["status"] == "pending"

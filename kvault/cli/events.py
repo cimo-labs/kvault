@@ -28,6 +28,11 @@ from kvault.core import events as ev
     "--sensitivity", default=None, help="Sensitivity classification, per the owning KB's rules"
 )
 @click.option("--tag", "tags", multiple=True, help="Topic tag (repeatable)")
+@click.option(
+    "--allow-suspicious",
+    is_flag=True,
+    help="Capture even if the body carries shell-mangling residue (,208.25 / .00 / /bin/zsh)",
+)
 @common_options
 @click.pass_context
 def capture(
@@ -37,6 +42,7 @@ def capture(
     occurred_at: Optional[str],
     sensitivity: Optional[str],
     tags: Tuple[str, ...],
+    allow_suspicious: bool,
     kb_root: Optional[Path],
     as_json: bool,
 ) -> None:
@@ -57,6 +63,7 @@ def capture(
         occurred_at=occurred_at,
         sensitivity=sensitivity,
         tags=list(tags),
+        allow_suspicious=allow_suspicious,
     )
     if result.get("success") and "did" not in result:
         verb = "captured" if result.get("created") else "already captured"
@@ -83,25 +90,39 @@ def events_group() -> None:
 @events_group.command("list")
 @click.option(
     "--status",
-    type=click.Choice(["pending", "resolved"]),
+    type=click.Choice(["pending", "resolved", "retracted"]),
     default=None,
-    help="Filter by lifecycle status",
+    help="pending | resolved (excludes retracted) | retracted",
 )
+@click.option(
+    "--limit",
+    type=click.IntRange(min=0),
+    default=50,
+    show_default=True,
+    help="Newest N events (0 = all). A mature KB's full list exceeds 140 KB.",
+)
+@click.option("--since", default=None, help="Only events captured on/after YYYY-MM-DD")
 @common_options
 @click.pass_context
 def list_events_cmd(
     ctx: click.Context,
     status: Optional[str],
+    limit: int,
+    since: Optional[str],
     kb_root: Optional[Path],
     as_json: bool,
 ) -> None:
-    """List captured events, newest first."""
+    """List captured events, newest first (50 by default; --limit 0 for all)."""
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
-    result = ev.list_events(kb_root, status=status)
+    result = ev.list_events(kb_root, status=status, limit=limit, since=since)
     if ctx.obj.get("as_json"):
         output_json(result)
+        if not result.get("success"):
+            ctx.exit(1)
         return
+    if not result.get("success"):
+        raise click.ClickException(result.get("error", "List failed"))
     if not result["events"]:
         click.echo("No events.")
         return
@@ -110,6 +131,10 @@ def list_events_cmd(
         outcome = (event.get("resolution") or {}).get("outcome", "")
         state = f"{event['status']}{f'/{outcome}' if outcome else ''}"
         click.echo(f"  {event['id']}  {state:<22} {age:>4}  {event.get('snippet', '')}")
+    if result["total_matched"] > result["count"]:
+        click.echo(
+            f"  (showing {result['count']} of {result['total_matched']} — --limit 0 for all)"
+        )
 
 
 @events_group.command("show")
@@ -182,6 +207,51 @@ def resolve_event_cmd(
         render_notes(result, get_tier(ctx))
     else:
         raise click.ClickException(result.get("error", "Resolve failed"))
+    finish_op(ctx, result)
+
+
+@events_group.command("retract")
+@click.argument("event_id")
+@click.option("--reason", required=True, help="Why the captured text is wrong evidence")
+@click.option(
+    "--superseded-by",
+    default=None,
+    help="Event id carrying the corrected text (clears the RETRACTED: finding once promoted)",
+)
+@common_options
+@click.pass_context
+def retract_event_cmd(
+    ctx: click.Context,
+    event_id: str,
+    reason: str,
+    superseded_by: Optional[str],
+    kb_root: Optional[Path],
+    as_json: bool,
+) -> None:
+    """Retract an event whose captured text is wrong (works on resolved events too).
+
+    Nodes that still cite the event in `source_refs` show up in `kvault check`
+    as RETRACTED: findings until they are rewritten and re-linked with
+    `kvault write <node> --event <id-of-the-corrected-capture>`, which drops
+    the retracted ref. Calling retract again with --superseded-by amends the
+    supersession on an existing retraction.
+    """
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
+    kb_root = resolve_kb_root(ctx)
+    started = time.monotonic()
+    result = ev.retract_event(kb_root, event_id, reason=reason, superseded_by=superseded_by)
+    if result.get("success") and "did" not in result:
+        result["did"] = f"retracted {event_id}"
+    record_op(kb_root, "events-retract", result, started)
+    if ctx.obj.get("as_json"):
+        output_json(result)
+        if not result.get("success"):
+            ctx.exit(1)
+    elif result.get("success"):
+        click.echo(f"Retracted {event_id}: {reason}")
+        render_notes(result, get_tier(ctx))
+    else:
+        raise click.ClickException(result.get("error", "Retract failed"))
     finish_op(ctx, result)
 
 

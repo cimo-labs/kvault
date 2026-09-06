@@ -57,6 +57,68 @@ class TestHelp:
         assert result.exit_code == 0
         assert "KB root" in result.output
 
+    def test_version_flag(self, runner):
+        from kvault import __version__
+
+        result = runner.invoke(cli, ["--version"])
+        assert result.exit_code == 0
+        assert result.output.strip() == f"kvault {__version__}"
+
+    def test_status_json_has_version(self, runner, cli_kb):
+        from kvault import __version__
+
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "status", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["version"] == __version__
+        assert list(data)[0] == "version"  # first key: the handshake is read before the payload
+
+    def test_doctor_reports_kb_binding(self, runner, cli_kb):
+        from kvault import __version__
+
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "doctor", "--json"])
+        assert result.exit_code == 0, result.output
+        report = json.loads(result.output)
+        assert report["version"] == __version__
+        assert report["kb"]["resolved_from"] == "explicit"
+        assert report["kb"]["is_kb"] is True
+        assert report["kb"]["events"] == {"pending": 0, "resolved": 0, "retracted": 0}
+        assert report["kb"]["ops_log"]["writable"] is True
+        assert report["python"]["version"]
+        assert report["install"]["location"].endswith("kvault")
+
+    def test_doctor_human_output_is_flat_key_values(self, runner, cli_kb):
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "doctor"])
+        assert result.exit_code == 0
+        assert "version: " in result.output
+        assert "kb.is_kb: True" in result.output
+
+    def test_status_human_leads_with_version(self, runner, cli_kb):
+        from kvault import __version__
+
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "status"])
+        assert result.output.splitlines()[0] == f"kvault {__version__}"
+
+    def test_status_json_omits_root_summary_by_default(self, runner, cli_kb):
+        base = ["--kb-root", str(cli_kb), "status", "--json"]
+        lean = json.loads(runner.invoke(cli, base).output)
+        assert "root_summary" not in lean
+        assert lean["root_summary_chars"] == len((cli_kb / "_summary.md").read_text())
+        full = json.loads(runner.invoke(cli, base + ["--root-summary"]).output)
+        assert full["root_summary"].startswith("# Test KB")
+
+    def test_ancestors_paths_only(self, runner, cli_kb):
+        base = ["--kb-root", str(cli_kb), "--json", "ancestors", "people/friends"]
+        full = json.loads(runner.invoke(cli, base).output)
+        assert full["ancestor_paths"] == ["people", "."]
+        assert all("current_content" in a for a in full["ancestors"])
+        lean = json.loads(runner.invoke(cli, base + ["--paths-only"]).output)
+        assert lean["ancestor_paths"] == ["people", "."]
+        assert lean["ancestors"] == [
+            {"path": "people", "has_meta": False},
+            {"path": ".", "has_meta": False},
+        ]
+
     def test_status_json(self, runner, cli_kb):
         result = runner.invoke(cli, ["--kb-root", str(cli_kb), "--json", "status"])
         assert result.exit_code == 0
@@ -137,8 +199,29 @@ class TestReadCommand:
         )
         assert result.exit_code == 0
         assert "Alice Smith" in result.output
-        assert "Parent summary (people/friends)" in result.output
-        assert "Friends list." in result.output
+        # 0.14.0: parent context is opt-in.
+        assert "Parent summary" not in result.output
+        with_parent = runner.invoke(
+            cli,
+            [
+                "--kb-root",
+                str(cli_kb_with_entity),
+                "read",
+                "people/friends/alice_smith",
+                "--parents",
+                "immediate",
+            ],
+        )
+        assert "Parent summary (people/friends)" in with_parent.output
+        assert "Friends list." in with_parent.output
+
+    def test_read_default_has_no_parent(self, runner, cli_kb_with_entity):
+        result = runner.invoke(
+            cli,
+            ["--kb-root", str(cli_kb_with_entity), "--json", "read", "people/friends/alice_smith"],
+        )
+        data = json.loads(result.output)
+        assert data["parent"] is None and "parents" not in data
 
     def test_read_json(self, runner, cli_kb_with_entity):
         result = runner.invoke(
@@ -149,6 +232,8 @@ class TestReadCommand:
                 "--json",
                 "read",
                 "people/friends/alice_smith",
+                "--parents",
+                "immediate",
             ],
         )
         assert result.exit_code == 0
@@ -157,7 +242,9 @@ class TestReadCommand:
         assert data["parent"]["path"] == "people/friends"
 
     def test_read_category_json(self, runner, cli_kb):
-        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "--json", "read", "people"])
+        result = runner.invoke(
+            cli, ["--kb-root", str(cli_kb), "--json", "read", "people", "--parents", "immediate"]
+        )
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["path"] == "people"
@@ -301,6 +388,39 @@ class TestSearchCommand:
         data = json.loads(result.output)
         assert data["query"] == "alice"
         assert data["results"][0]["path"] == "people/friends/alice_smith"
+
+    def test_search_collapse_flags(self, runner, cli_kb_with_entity):
+        friends = cli_kb_with_entity / "people" / "friends" / "_summary.md"
+        friends.write_text("# Friends\n\nFriends list.\n\n## 2026-01-15 Delta\n\nA friend.\n")
+        base = ["--kb-root", str(cli_kb_with_entity), "search", "A friend", "--json"]
+        collapsed = json.loads(runner.invoke(cli, base).output)
+        assert collapsed["collapsed"] == 1 and collapsed["collapsed_paths"] == ["people/friends"]
+        kept = json.loads(runner.invoke(cli, base + ["--no-collapse"]).output)
+        assert kept["collapsed"] == 0
+        assert any(r["path"] == "people/friends" for r in kept["results"])
+        filtered = json.loads(
+            runner.invoke(cli, base + ["--kind", "category", "--no-collapse"]).output
+        )
+        assert filtered["kinds"] == ["category"]
+        assert {r["kind"] for r in filtered["results"]} <= {"category"}
+        scoped = json.loads(runner.invoke(cli, base + ["--path", "projects"]).output)
+        assert scoped["results"] == [] and scoped["path_prefix"] == "projects"
+        bad = runner.invoke(cli, base + ["--kind", "leaf"])
+        assert bad.exit_code != 0
+
+    def test_search_kind_entity_keeps_deep_context_parents(self, runner, cli_kb):
+        roy = cli_kb / "people" / "friends" / "roy"
+        (roy / "deep_context").mkdir(parents=True)
+        (roy / "_summary.md").write_text("---\nname: Roy\naliases: [Roy]\n---\n# Roy\n\nDad.\n")
+        (roy / "deep_context" / "_summary.md").write_text("# Deep\n\nNotes about Roy.\n")
+        result = json.loads(
+            runner.invoke(
+                cli, ["--kb-root", str(cli_kb), "search", "Roy", "--kind", "entity", "--json"]
+            ).output
+        )
+        paths = [r["path"] for r in result["results"]]
+        assert paths[0] == "people/friends/roy"
+        assert result["results"][0]["kind"] == "entity"
 
     def test_search_plain_text(self, runner, cli_kb_with_entity):
         result = runner.invoke(cli, ["--kb-root", str(cli_kb_with_entity), "search", "friends"])

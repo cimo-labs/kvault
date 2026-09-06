@@ -28,9 +28,9 @@ from kvault.core import operations as ops
 @click.option(
     "--parents",
     type=click.Choice(["none", "immediate", "all"]),
-    default="immediate",
+    default="none",
     show_default=True,
-    help="Parent context to include.",
+    help="Parent context to include (immediate = parent summary for sibling context).",
 )
 @common_options
 @click.pass_context
@@ -41,7 +41,7 @@ def read_entity(
     kb_root: Optional[Path],
     as_json: bool,
 ) -> None:
-    """Read a node and its parent summary."""
+    """Read a node (add --parents immediate for the parent summary)."""
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
     result = ops.read_node(kb_root, path, parents=parents)

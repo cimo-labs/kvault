@@ -1,7 +1,7 @@
 """CLI command for structured node search."""
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import click
 
@@ -18,6 +18,7 @@ from kvault.cli._helpers import (
 from kvault.cli.render import render_notes
 from kvault.core import notes as nt
 from kvault.core import operations as ops
+from kvault.core.search import KINDS
 
 
 @click.command("search")
@@ -42,6 +43,20 @@ from kvault.core import operations as ops
     type=int,
     help="Maximum total content characters across results.",
 )
+@click.option(
+    "--no-collapse",
+    "no_collapse",
+    is_flag=True,
+    help="Keep ancestor hits that only repeat a descendant's match.",
+)
+@click.option(
+    "--kind",
+    "kinds",
+    multiple=True,
+    type=click.Choice(list(KINDS)),
+    help="Only nodes of this kind (repeatable).",
+)
+@click.option("--path", "path_prefix", default=None, help="Only nodes at or under this path.")
 @verbosity_options
 @common_options
 @click.pass_context
@@ -52,6 +67,9 @@ def search_nodes(
     include_content: bool,
     content_max_chars: int,
     max_total_chars: int,
+    no_collapse: bool,
+    kinds: Tuple[str, ...],
+    path_prefix: Optional[str],
     kb_root: Optional[Path],
     as_json: bool,
     quiet: bool,
@@ -70,6 +88,9 @@ def search_nodes(
         include_content=include_content,
         content_max_chars=content_max_chars,
         total_max_chars=max_total_chars,
+        collapse=not no_collapse,
+        kinds=list(kinds) or None,
+        path_prefix=path_prefix,
     )
     if ctx.obj.get("as_json"):
         output_json(result)

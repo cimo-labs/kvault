@@ -37,9 +37,10 @@ and `--json`; command groups and server-launching commands may have command-spec
 - `search.py`: structured lexical node search
 - `summary.py`: read-summary, write-summary, update-summaries, ancestors
 - `journal.py`: journal
-- `events.py`: capture, events list/show/resolve/import (capture journal)
+- `events.py`: capture, events list/show/resolve/retract/import (capture journal)
 - `validate.py`: validate
 - `check.py`: check (propagation staleness and summary-quality warnings)
+- `doctor.py`: doctor (version, python, install location, KB binding, env — never fails)
 - `main.py`: init, status, tree, artifact daily, log tail / log summary
 - `render.py`: human rendering of result notes; verbosity-tier resolution
 - `_helpers.py`: shared option decorators, KB-root resolution, ops-log append
@@ -72,6 +73,9 @@ parent-summary helpers backed by direct-child digests.
 - `observability.py`: legacy phase logs (`logs` table) in `.kvault/logs.db`.
 - `daily_artifacts.py`: deterministic daily artifact generation.
 - `summary_quality.py`: warn-only parent-summary quality audit used by `kvault check`.
+- `conventions.py`: layout conventions shared by more than one rule (`BACKGROUND_CHILD_DIRS`,
+  the `deep_context/` supporting-material child: budgeted as a leaf by the summary audit,
+  never a reason for search to collapse its parent).
 
 ## Storage Model
 
@@ -133,9 +137,12 @@ The canonical MCP parent-summary flow is stricter:
 Strict parent writes use a stateless digest over direct child summaries. The digest excludes mtime
 and changes when a direct child summary body, frontmatter, path, or existence changes.
 
-Parent summaries are expected to be comprehensive rollups of descendants. `kvault check`
-emits warn-only `SUMMARY:` findings when a parent omits immediate child coverage, is too
-short for its subtree, or contains placeholder/redirect language.
+Parent summaries are expected to be comprehensive rollups of descendants that stay the size of
+an index page. `kvault check` emits warn-only `SUMMARY:` findings when a parent omits immediate
+child coverage, is too short for its subtree, contains placeholder/redirect language, exceeds
+the word ceiling (`too_long`), or accretes dated/delta sections (`stale_history`); and warn-only
+`RETRACTED:` findings when a node's `source_refs` cite an event retracted with `kvault events
+retract`.
 
 ## Work Reporting
 
@@ -215,6 +222,10 @@ pytest -q
 
 ## Version Notes
 
+- 0.14.0: bounded outputs — `--version`/`doctor` handshake, `check` ceilings (`too_long`,
+  `stale_history`), capture tripwire for shell-mangled text, `events retract` + `RETRACTED:`,
+  search ancestor collapse + `--kind`/`--path`, defaults flipped (`read --parents none`,
+  `status` without `root_summary`, `events list --limit 50`, MCP `ancestors="paths"`).
 - 0.13.0: work reporting — note vocabulary + verbosity tiers, `did`/`changed`/`notes`
   in results, durable ops log (`kvault log tail`), no-op writes skip the file rewrite;
   `check` human output/exit codes frozen.

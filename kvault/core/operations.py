@@ -19,8 +19,9 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from kvault._version import __version__
 from kvault.core import notes as nt
 from kvault.core.frontmatter import (
     FrontmatterError,
@@ -666,17 +667,26 @@ def _hierarchy_hint(child_count: int) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def get_kb_info(kg_root: Path) -> Dict[str, Any]:
-    """Return hierarchy, entity count, and root summary for *kg_root*."""
+def get_kb_info(kg_root: Path, include_root_summary: bool = False) -> Dict[str, Any]:
+    """Return version, hierarchy, entity count, and (opt-in) root summary.
+
+    ``root_summary`` is opt-in since 0.14.0: on a mature KB it was ~97% of a
+    56 KB status payload that agents read at session start. The size is
+    always reported so a caller can decide whether to fetch it.
+    """
     root_summary_path = kg_root / "_summary.md"
     root_summary = root_summary_path.read_text() if root_summary_path.exists() else ""
     outline = build_outline(kg_root, depth=2)
-    return {
+    info: Dict[str, Any] = {
+        "version": __version__,
         "kg_root": str(kg_root),
-        "root_summary": root_summary,
+        "root_summary_chars": len(root_summary),
         "hierarchy": render_outline_text(outline) if outline else "",
         "entity_count": count_entities(kg_root),
     }
+    if include_root_summary:
+        info["root_summary"] = root_summary
+    return info
 
 
 # ---------------------------------------------------------------------------
@@ -710,9 +720,9 @@ def _read_entity_raw(kg_root: Path, entity_path: str) -> Optional[Dict[str, Any]
     }
 
 
-def read_entity(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
-    """Read entity with parent summary for sibling context."""
-    node = read_node(kg_root, path, parents="immediate")
+def read_entity(kg_root: Path, path: str, parents: str = "immediate") -> Optional[Dict[str, Any]]:
+    """Read entity, with the parent summary for sibling context by default."""
+    node = read_node(kg_root, path, parents=parents)
     if not node:
         return None
     entity_data = {
@@ -972,8 +982,22 @@ def write_node(
                 meta["name"] = first
                 autofilled_name = True
 
+    dropped_retracted: List[str] = []
     if event_ids:
+        from kvault.core.events import retracted_event_ids
+
         refs = list(meta.get("source_refs") or [])
+        # Re-linking a node to a corrected capture is the documented close-out
+        # for a RETRACTED: finding — the retracted ref must not linger.
+        retracted = retracted_event_ids(kg_root)
+        if retracted:
+            keep = []
+            for ref in refs:
+                if isinstance(ref, str) and ref.startswith("journal:") and ref[8:] in retracted:
+                    dropped_retracted.append(ref[8:])
+                else:
+                    keep.append(ref)
+            refs = keep
         for event_id in event_ids:
             ref = f"journal:{event_id}"
             if ref not in refs:
@@ -1113,6 +1137,17 @@ def write_node(
                 )
             )
             del ids
+
+    if dropped_retracted:
+        notes.append(
+            nt.note(
+                "removed",
+                f"dropped {len(dropped_retracted)} retracted provenance ref(s): "
+                + ", ".join(dropped_retracted),
+                detail={"retracted_refs_dropped": dropped_retracted},
+                why="the node now cites the superseding capture; a retracted event is wrong evidence",
+            )
+        )
 
     # Auto-journal if reasoning provided
     journal_logged = False
@@ -1498,6 +1533,9 @@ def search_nodes(
     include_content: bool = False,
     content_max_chars: int = 6000,
     total_max_chars: int = 20000,
+    collapse: bool = True,
+    kinds: Optional[Sequence[str]] = None,
+    path_prefix: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Search visible kvault node summaries."""
     from kvault.core.search import search_nodes as _search_nodes
@@ -1509,6 +1547,9 @@ def search_nodes(
         include_content=include_content,
         content_max_chars=content_max_chars,
         total_max_chars=total_max_chars,
+        collapse=collapse,
+        kinds=kinds,
+        path_prefix=path_prefix,
     )
 
 
@@ -1641,36 +1682,31 @@ def move_entity(kg_root: Path, source_path: str, target_path: str) -> Dict[str, 
 # ---------------------------------------------------------------------------
 
 
-def get_ancestors(kg_root: Path, path: str) -> Dict[str, Any]:
-    """Get all ancestor summaries for propagation."""
+def get_ancestors(kg_root: Path, path: str, include_content: bool = True) -> Dict[str, Any]:
+    """Get all ancestor summaries (root included) for propagation.
+
+    ``include_content=False`` returns ``{path, has_meta}`` per ancestor and
+    is the bounded form (a mature KB's full chain exceeds 100 KB); the
+    ``ancestor_paths`` list is always present.
+    """
     path = normalize_path(path)
     storage = SimpleStorage(kg_root)
     ancestors = storage.get_ancestors(path)
 
     propagation_targets = []
-    for ancestor in ancestors:
+    for ancestor in list(ancestors) + ["."]:
         summary_data = read_summary(kg_root, ancestor)
-        if summary_data:
-            propagation_targets.append(
-                {
-                    "path": ancestor,
-                    "current_content": summary_data.get("content", ""),
-                    "has_meta": bool(summary_data.get("meta")),
-                }
-            )
-
-    root_summary = read_summary(kg_root, ".")
-    if root_summary:
-        propagation_targets.append(
-            {
-                "path": ".",
-                "current_content": root_summary.get("content", ""),
-                "has_meta": bool(root_summary.get("meta")),
-            }
-        )
+        if not summary_data:
+            continue
+        target: Dict[str, Any] = {"path": ancestor}
+        if include_content:
+            target["current_content"] = summary_data.get("content", "")
+        target["has_meta"] = bool(summary_data.get("meta"))
+        propagation_targets.append(target)
 
     return {
         "success": True,
+        "ancestor_paths": [target["path"] for target in propagation_targets],
         "ancestors": propagation_targets,
         "count": len(propagation_targets),
     }

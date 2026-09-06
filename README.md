@@ -185,7 +185,8 @@ aspirational — agents read them off the orientation pass:
 |--------|--------|
 | Branch with >10 children (`[N children, ...]`) | Split into subgroups; `kvault move` entities; re-propagate |
 | Branch `~updated_max` older than ~6 months | Review for stale or dead content |
-| `SUMMARY:` warnings from `kvault check` | Rewrite flagged parents as comprehensive rollups |
+| `SUMMARY:` warnings from `kvault check` | `too_short`/`missing_child_coverage`: rewrite the parent as a comprehensive rollup; `too_long`/`stale_history`: fold dated sections into current state (chronology belongs in `journal/`) |
+| `RETRACTED:` warnings from `kvault check` | The node cites an event retracted with `kvault events retract`; rewrite it and re-link with `write --event <corrected capture>` |
 | Near-duplicate titles or aliases | Verify identifiers, merge, delete the duplicate |
 
 `kvault check` also catches stale propagation, and works as a pre-prompt hook:
@@ -242,9 +243,9 @@ It exposes the same operations as the CLI (`kvault_tree`, `kvault_search`,
 for the ops log), plus a strict parent-summary workflow with stale-write detection. Results
 carry the same `did`/`notes` decision reporting as `--json`, placed before the bulk payload.
 The write tools (`kvault_write_node`, `kvault_write_entity`) accept
-`ancestors="content"|"paths"`: `"paths"` keeps `ancestor_paths` but omits the full
-`ancestors[].current_content` payload, which can exceed 45,000 characters on a mature KB.
-The default stays `"content"` in 0.13.x and flips to `"paths"` in 0.14.0. Set
+`ancestors="content"|"paths"`: `"paths"` (the default since 0.14.0) keeps `ancestor_paths` but
+omits the full `ancestors[].current_content` payload, which can exceed 45,000 characters on a
+mature KB; pass `"content"` to inline it. Set
 `KVAULT_ALLOWED_ROOTS` to pin allowed roots on shared runtimes. Protocol details:
 [ARCHITECTURE.md](https://github.com/cimo-labs/kvault/blob/main/ARCHITECTURE.md).
 

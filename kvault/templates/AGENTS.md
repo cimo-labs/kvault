@@ -69,7 +69,7 @@ kvault tree people --depth 2 --gist        # Zoom into a branch with one-line gi
 kvault status --json                       # Health, entity count, compact hierarchy
 rg -n "search phrase" .                    # Raw filesystem search
 kvault search "search phrase" --json       # Structured node search
-kvault read <path> --json                  # Returns node + parent summary
+kvault read <path> --json                  # The node; add --parents immediate for the parent summary
 kvault list [path] --json                  # List child nodes
 ```
 
@@ -188,7 +188,7 @@ Context and notes here.
 **Compatibility:** `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors`, `kvault delete --confirm`, `kvault move --confirm` (destructive — both require `--confirm`)
 **Journal:** `kvault journal --source TEXT` (stdin JSON)
 **Validation:** `kvault validate`, `kvault check`
-**Status:** `kvault status`, `kvault tree [path] [--depth N] [--max-children N] [--gist]`
+**Status:** `kvault status`, `kvault doctor` (runtime/version/KB binding), `kvault tree [path] [--depth N] [--max-children N] [--gist]`
 
 All agent-facing commands support `--json` for machine-readable output and `--kb-root` to specify
 the KB root (auto-detected from cwd by default). These flags work before or after the subcommand:

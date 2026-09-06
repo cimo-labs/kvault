@@ -24,8 +24,11 @@ import pytest
 from click.testing import CliRunner
 
 from kvault.cli.main import cli
+from kvault.core import events as ev
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SEED_BODY = "A seeded memory candidate.\n"
+SEED_EVENT_ID = ev._event_id("seed", None, SEED_BODY)  # deterministic, so rows can name it
 
 
 @pytest.fixture()
@@ -38,6 +41,10 @@ def kb(tmp_path):
     (root / "people" / "_summary.md").write_text("# People\n\nPeople.\n")
     (root / "people" / "contacts").mkdir()
     (root / "people" / "contacts" / "_summary.md").write_text("# Contacts\n\nContacts.\n")
+    seeded = ev.capture_event(
+        root, body=SEED_BODY, source="seed", captured_at="2026-01-01T00:00:00Z"
+    )
+    assert seeded["event_id"] == SEED_EVENT_ID
     return root
 
 
@@ -45,13 +52,18 @@ def kb(tmp_path):
 # (autofill on write, created on write-summary, truncation on search).
 JSON_COMMANDS = [
     (["status"], None),
+    (["status", "--root-summary"], None),
+    (["doctor"], None),
     (["tree"], None),
     (["list", "."], None),
     (["read", "people"], None),
+    (["read", "people", "--parents", "immediate"], None),
     (["read-summary", "people"], None),
     (["ancestors", "people/contacts"], None),
+    (["ancestors", "people/contacts", "--paths-only"], None),
     (["validate"], None),
     (["search", "people", "--limit", "1"], None),
+    (["search", "people", "--no-collapse", "--kind", "category", "--path", "people"], None),
     (["write", "people/contacts/jane_doe", "--create"], "# Jane Doe\n\nA fact.\n"),
     (["write-summary", "projects"], "# Projects\n\nNew branch.\n"),
     (
@@ -64,9 +76,17 @@ JSON_COMMANDS = [
     ),
     (["capture", "--source", "test"], "A memory candidate.\n"),
     (["events", "list"], None),
+    (["events", "list", "--status", "retracted", "--limit", "5", "--since", "2025-01-01"], None),
+    (["events", "show", SEED_EVENT_ID], None),
+    (["events", "retract", SEED_EVENT_ID, "--reason", "wrong evidence"], None),
+    (
+        ["write", "people/contacts/seeded", "--create", "--event", SEED_EVENT_ID],
+        "# Seeded\n\nFrom the seeded event.\n",
+    ),
     (["log", "summary"], None),
     (["log", "tail"], None),
     (["artifact", "daily"], None),
+    (["artifact", "daily", "--stdout"], None),
 ]
 
 TIERS = [[], ["-q"], ["--explain"], ["--trace"]]
@@ -148,7 +168,7 @@ def test_check_human_output_is_frozen_across_tiers(kb):
         assert result.exit_code == baseline.exit_code
     # And no new line prefixes beyond the historical contract.
     for line in baseline.output.splitlines():
-        assert line.startswith(("[KB]", "SUMMARY:", "PENDING:")), line
+        assert line.startswith(("[KB]", "SUMMARY:", "PENDING:", "RETRACTED:")), line
 
 
 def test_verbosity_env_var_raises_tier(kb, monkeypatch):
@@ -218,3 +238,43 @@ def test_cross_level_flag_conflict_fails_before_the_write(kb):
     )
     assert result.exit_code != 0
     assert not (kb / "people" / "pre_write").exists()
+
+
+def test_doctor_never_fails_without_kb(tmp_path, monkeypatch):
+    """doctor is what you run when things are broken: a missing KB is a finding."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("KVAULT_KB_ROOT", raising=False)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--json", "doctor"])
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["kb"]["root"] is None
+    assert report["kb"]["resolved_from"] == "none"
+    assert report["kb"]["is_kb"] is False
+    assert report["version"]
+
+
+def test_doctor_reports_disallowed_root_without_failing(kb, monkeypatch):
+    monkeypatch.setenv("KVAULT_ALLOWED_ROOTS", str(kb.parent / "elsewhere"))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--json", "doctor", "--kb-root", str(kb)])
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["kb"]["is_kb"] is True
+    assert report["kb"]["allowed_root_error"]
+    assert report["env"]["KVAULT_ALLOWED_ROOTS"]
+
+
+def test_doctor_survives_root_resolution_error(monkeypatch):
+    """The contract is 'never fails' — including when KB-root resolution itself raises."""
+    monkeypatch.delenv("KVAULT_KB_ROOT", raising=False)
+
+    def boom():
+        raise FileNotFoundError("cwd gone")
+
+    monkeypatch.setattr("kvault.cli.doctor.find_kb_root", boom)
+    result = CliRunner().invoke(cli, ["--json", "doctor"])
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["kb"]["resolved_from"] == "error" and report["kb"]["root"] is None
+    assert "cwd gone" in report["kb"]["resolve_error"]

@@ -16,6 +16,7 @@ import click
 
 from kvault.core import notes as nt
 from kvault.core import operations as ops
+from kvault.core.search import KINDS
 from kvault.core.daily_artifacts import generate_daily_artifact, parse_iso_date
 from kvault.core.observability import ObservabilityLogger
 from kvault.core.oplog import OpLog, oplog_disabled, resolve_session_id
@@ -71,8 +72,8 @@ def _tool_root(
     return bound_root, None
 
 
-def _status_payload(root: Path) -> Dict[str, Any]:
-    info = ops.get_kb_info(root)
+def _status_payload(root: Path, include_root_summary: bool = False) -> Dict[str, Any]:
+    info = ops.get_kb_info(root, include_root_summary=include_root_summary)
     info["health"] = {
         "root_summary_exists": (root / "_summary.md").exists(),
         "kvault_dir_exists": (root / ".kvault").exists(),
@@ -160,22 +161,31 @@ def create_server(kb_root: Path | str) -> Any:
         return _status_payload(root)
 
     @server.tool(name="kvault_status")
-    def kvault_status(kg_root: Optional[str] = None) -> Dict[str, Any]:
-        """Show KB status."""
+    def kvault_status(
+        kg_root: Optional[str] = None, include_root_summary: bool = False
+    ) -> Dict[str, Any]:
+        """Show KB status (version, hierarchy, counts). `root_summary` is opt-in."""
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        return _status_payload(root)
+        return _status_payload(root, include_root_summary=include_root_summary)
 
     @server.tool(name="kvault_read_entity")
-    def kvault_read_entity(path: str, kg_root: Optional[str] = None) -> Dict[str, Any]:
-        """Read an entity plus parent summary context."""
+    def kvault_read_entity(
+        path: str, parents: str = "none", kg_root: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Read an entity; parents='immediate' adds the parent summary for sibling context."""
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        result = ops.read_entity(root, path)
+        if parents not in {"none", "immediate", "all"}:
+            return error_response(
+                ErrorCode.VALIDATION_ERROR,
+                "parents must be one of: none, immediate, all",
+            )
+        result = ops.read_entity(root, path, parents=parents)
         if result is None:
             return error_response(ErrorCode.NOT_FOUND, f"Entity not found: {path}")
         return success_response(result)
@@ -183,10 +193,10 @@ def create_server(kb_root: Path | str) -> Any:
     @server.tool(name="kvault_read_node")
     def kvault_read_node(
         path: str,
-        parents: str = "immediate",
+        parents: str = "none",
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Read a node plus parent context."""
+        """Read a node; parents='immediate'|'all' adds parent context (off by default since 0.14)."""
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
@@ -202,11 +212,12 @@ def create_server(kb_root: Path | str) -> Any:
         return success_response(result)
 
     def _strip_ancestors(result: Dict[str, Any], ancestors: str) -> Dict[str, Any]:
-        """ancestors='paths' keeps ancestor_paths and drops the full documents.
+        """ancestors='paths' (the default since 0.14.0) keeps ancestor_paths and
+        drops the full documents.
 
         `ancestors[].current_content` can exceed 45,000 characters on a mature
-        KB — 90% of a write result. The default stays 'content' in 0.13.x and
-        flips to 'paths' in 0.14.0; pass the param explicitly to pin either.
+        KB — 90% of a write result. Pass ancestors='content' to get the
+        documents inline, or fetch them with kvault_get_parent_summaries.
         """
         if ancestors == "paths" and isinstance(result, dict) and result.get("success"):
             result.pop("ancestors", None)
@@ -220,7 +231,7 @@ def create_server(kb_root: Path | str) -> Any:
         create: bool = False,
         reasoning: Optional[str] = None,
         journal_source: Optional[str] = None,
-        ancestors: str = "content",
+        ancestors: str = "paths",
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create or update an entity.
@@ -232,7 +243,8 @@ def create_server(kb_root: Path | str) -> Any:
         A `partial` note means the node was written but a linked step (event
         promotion) FAILED and needs manual repair. Then rewrite the returned
         ancestor summaries (`kvault_update_summaries`). ancestors='paths'
-        omits the bulky `ancestors[].current_content` (see kvault_write_node).
+        (default) omits the bulky `ancestors[].current_content`; pass
+        ancestors='content' to inline it (see kvault_write_node).
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -264,7 +276,7 @@ def create_server(kb_root: Path | str) -> Any:
         create: bool = False,
         reasoning: Optional[str] = None,
         journal_source: Optional[str] = None,
-        ancestors: str = "content",
+        ancestors: str = "paths",
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create or update any node summary.
@@ -274,7 +286,9 @@ def create_server(kb_root: Path | str) -> Any:
         half-failed event promotion, lock contention), `changed`,
         `propagation_required`, and `ancestor_paths` all precede `ancestors`.
         Act on `notes` first — a `partial` note means part of the operation
-        failed even though success=true.
+        failed even though success=true. Since 0.14.0 `ancestors` (the full
+        documents) is omitted by default; pass ancestors='content' to inline
+        it, or read the chain with kvault_get_parent_summaries.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -370,16 +384,23 @@ def create_server(kb_root: Path | str) -> Any:
         limit: int = 10,
         include_content: bool = False,
         parents: str = "none",
+        collapse: bool = True,
+        kind: Optional[str] = None,
+        path_prefix: Optional[str] = None,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Search visible node summaries.
 
         The result reports its own blind spots: `total_matched` vs `count`
         when `limit` cut the list, per-result `content_omitted_reason`
-        (content_max_chars | total_budget_exhausted | empty_node), and
-        `notes` for unreadable files that were skipped. CAUTION: the char
-        budget applies only to `content` — `parents != "none"` attaches full
-        parent documents OUTSIDE any budget and can dwarf the results.
+        (content_max_chars | total_budget_exhausted | empty_node), `collapsed`
+        / `collapsed_paths` for ancestor hits that only repeated a descendant's
+        match (collapse=False keeps them), and `notes` for unreadable files
+        that were skipped. `kind` is a comma-separated subset of
+        root,category,entity; `path_prefix` restricts to a subtree. CAUTION:
+        the char budget applies only to `content` — `parents != "none"`
+        attaches full parent documents OUTSIDE any budget and can dwarf the
+        results.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -390,11 +411,20 @@ def create_server(kb_root: Path | str) -> Any:
                 ErrorCode.VALIDATION_ERROR,
                 "parents must be one of: none, immediate, all",
             )
+        kinds = [k.strip() for k in (kind or "").split(",") if k.strip()] or None
+        if kinds and any(k not in KINDS for k in kinds):
+            return error_response(
+                ErrorCode.VALIDATION_ERROR,
+                "kind must be a comma-separated subset of: " + ", ".join(KINDS),
+            )
         result = ops.search_nodes(
             root,
             query=query,
             limit=limit,
             include_content=include_content,
+            collapse=collapse,
+            kinds=kinds,
+            path_prefix=path_prefix,
         )
         if parents != "none":
             for item in result["results"]:
@@ -526,23 +556,37 @@ def create_server(kb_root: Path | str) -> Any:
         return result
 
     @server.tool(name="kvault_get_parent_summaries")
-    def kvault_get_parent_summaries(path: str, kg_root: Optional[str] = None) -> Dict[str, Any]:
-        """Get ancestor summaries for propagation."""
+    def kvault_get_parent_summaries(
+        path: str, ancestors: str = "content", kg_root: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get ancestor summaries for propagation.
+
+        ancestors='paths' returns `{path, has_meta}` per ancestor and
+        `ancestor_paths` (the full chain's content can exceed 100 KB).
+        """
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        return ops.get_ancestors(root, path)
+        if ancestors not in {"content", "paths"}:
+            return error_response(
+                ErrorCode.VALIDATION_ERROR, "ancestors must be one of: content, paths"
+            )
+        return ops.get_ancestors(root, path, include_content=(ancestors == "content"))
 
     @server.tool(name="kvault_get_ancestors")
-    def kvault_get_ancestors(path: str, kg_root: Optional[str] = None) -> Dict[str, Any]:
+    def kvault_get_ancestors(
+        path: str, ancestors: str = "content", kg_root: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Alias for kvault_get_parent_summaries."""
-        return kvault_get_parent_summaries(path=path, kg_root=kg_root)
+        return kvault_get_parent_summaries(path=path, ancestors=ancestors, kg_root=kg_root)
 
     @server.tool(name="kvault_propagate_all")
-    def kvault_propagate_all(path: str, kg_root: Optional[str] = None) -> Dict[str, Any]:
+    def kvault_propagate_all(
+        path: str, ancestors: str = "content", kg_root: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Compatibility alias returning all summary propagation targets."""
-        return kvault_get_parent_summaries(path=path, kg_root=kg_root)
+        return kvault_get_parent_summaries(path=path, ancestors=ancestors, kg_root=kg_root)
 
     @server.tool(name="kvault_write_journal")
     def kvault_write_journal(

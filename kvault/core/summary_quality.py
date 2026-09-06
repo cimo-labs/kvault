@@ -5,11 +5,22 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from kvault.core.conventions import only_background_children
 from kvault.core.frontmatter import parse_frontmatter
 
 _SUMMARY_NAME = "_summary.md"
+
+#: A heading that dates itself, or calls itself a delta/changelog. More than a
+#: handful of these in a *parent* summary means chronology is accreting where
+#: current state should be — the file has become a changelog masquerading as
+#: an index page.
+_DATED_HEADING_RE = re.compile(
+    r"^[ \t]{0,3}#{2,6}[ \t]+(?=.*(?:\b\d{4}-\d{2}-\d{2}\b|\b(?:delta|changelog|change log|update log)\b)).*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+DEFAULT_MAX_DATED_SECTIONS = 3
 
 _PLACEHOLDER_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
     ("summary pending", re.compile(r"\bsummary\s+pending\b", re.IGNORECASE)),
@@ -41,13 +52,27 @@ class SummaryQualityIssue:
         return f"SUMMARY: {self.path}: {self.message}"
 
 
-def audit_summary_quality(kg_root: Path) -> List[SummaryQualityIssue]:
-    """Audit parent summaries for descendant coverage.
+def audit_summary_quality(
+    kg_root: Path,
+    max_words: Optional[int] = None,
+    max_dated_sections: int = DEFAULT_MAX_DATED_SECTIONS,
+) -> List[SummaryQualityIssue]:
+    """Audit parent summaries for descendant coverage and bounded size.
 
     The audit is intentionally deterministic and dependency-light. It cannot
     prove semantic completeness, but it catches the patterns that make parent
     summaries poor navigation surfaces: missing child mentions, very short
-    rollups, and placeholder/redirect language.
+    rollups, placeholder/redirect language, rollups that have outgrown an
+    index page (``too_long``), and rollups that accrete dated sections
+    instead of stating current state (``stale_history``).
+
+    ``max_words``: ``None`` uses the per-node formula, ``0`` disables the
+    ceiling, any other value is a hard ceiling replacing the formula.
+    ``max_dated_sections``: ``0`` disables the dated-section rule.
+
+    A parent whose only summary-bearing children are background dirs (see
+    ``kvault.core.conventions``) is budgeted as a leaf: the two size rules
+    skip it.
     """
     root = Path(kg_root)
     issues: List[SummaryQualityIssue] = []
@@ -106,6 +131,49 @@ def audit_summary_quality(kg_root: Path) -> List[SummaryQualityIssue]:
                     message="contains placeholder/redirect language: "
                     + ", ".join(placeholder_hits),
                     details={"matches": placeholder_hits},
+                )
+            )
+
+        if only_background_children(children):
+            # An entity that keeps its long-form notes in deep_context/ is a
+            # leaf for budgeting purposes, not an index page.
+            continue
+
+        max_allowed = _resolve_maximum_words(max_words, len(children), descendant_count)
+        if max_allowed is not None and word_count > max_allowed:
+            issues.append(
+                SummaryQualityIssue(
+                    path=relative_path,
+                    code="too_long",
+                    message=(
+                        f"too long for {len(children)} children/{descendant_count} "
+                        f"descendants ({word_count} words > {max_allowed}) — rewrite as a "
+                        "current-state rollup"
+                    ),
+                    details={
+                        "word_count": word_count,
+                        "maximum_words": max_allowed,
+                        "child_count": len(children),
+                        "descendant_count": descendant_count,
+                    },
+                )
+            )
+
+        dated = _dated_headings(body)
+        if max_dated_sections > 0 and len(dated) > max_dated_sections:
+            issues.append(
+                SummaryQualityIssue(
+                    path=relative_path,
+                    code="stale_history",
+                    message=(
+                        f"{len(dated)} dated/delta sections (> {max_dated_sections}) — fold "
+                        "history into current state; e.g. " + ", ".join(dated[:3])
+                    ),
+                    details={
+                        "dated_sections": len(dated),
+                        "maximum": max_dated_sections,
+                        "examples": dated[:3],
+                    },
                 )
             )
 
@@ -171,6 +239,33 @@ def _descendant_summary_count(kg_root: Path, parent_dir: Path) -> int:
 
 def _minimum_word_count(child_count: int, descendant_count: int) -> int:
     return min(500, 40 + 25 * child_count + 5 * descendant_count)
+
+
+def _maximum_word_count(child_count: int, descendant_count: int) -> int:
+    """Ceiling for an index page: ~1.3K tokens base, ~2.7K tokens at most.
+
+    Calibrated on a 191-node KB: flags the seven parents that had accreted
+    2,000–7,300 words of dated deltas, passes every healthy parent (largest
+    963 words against a 1,055 cap).
+    """
+    return min(2000, 1000 + 50 * child_count + 5 * descendant_count)
+
+
+def _resolve_maximum_words(
+    max_words: Optional[int], child_count: int, descendant_count: int
+) -> Optional[int]:
+    if max_words is None:
+        return _maximum_word_count(child_count, descendant_count)
+    if max_words <= 0:
+        return None
+    return max_words
+
+
+def _dated_headings(markdown: str) -> List[str]:
+    return [
+        re.sub(r"^\s*#+\s*", "", match.group(0)).strip()
+        for match in _DATED_HEADING_RE.finditer(markdown)
+    ]
 
 
 def _word_count(markdown: str) -> int:
@@ -242,6 +337,7 @@ def _placeholder_hits(markdown: str) -> List[str]:
 
 
 __all__ = [
+    "DEFAULT_MAX_DATED_SECTIONS",
     "SummaryQualityIssue",
     "audit_summary_quality",
     "format_summary_quality_warnings",

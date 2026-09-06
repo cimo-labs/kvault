@@ -20,9 +20,13 @@ from typing import List, Optional
 import click
 
 from kvault.core import operations as ops
-from kvault.core.events import pending_event_findings
+from kvault.core.events import pending_event_findings, retracted_reference_findings
 from kvault.core.frontmatter import parse_frontmatter
-from kvault.core.summary_quality import audit_summary_quality, format_summary_quality_warnings
+from kvault.core.summary_quality import (
+    DEFAULT_MAX_DATED_SECTIONS,
+    audit_summary_quality,
+    format_summary_quality_warnings,
+)
 
 DEFAULT_THRESHOLD_MINUTES = 5
 
@@ -250,6 +254,22 @@ def check_directory_size(kb_root: Path, max_children: int = 10) -> List[str]:
     help="Maximum summary-quality warnings to print.",
 )
 @click.option(
+    "--summary-max-words",
+    type=int,
+    default=None,
+    help=(
+        "Word ceiling for a parent summary (SUMMARY: too_long). Default: per-node "
+        "formula min(2000, 1000 + 50*children + 5*descendants); 0 disables."
+    ),
+)
+@click.option(
+    "--summary-max-dated-sections",
+    type=int,
+    default=DEFAULT_MAX_DATED_SECTIONS,
+    show_default=True,
+    help="Dated/delta headings a parent summary may carry (SUMMARY: stale_history); 0 disables.",
+)
+@click.option(
     "--pending-max-age",
     type=int,
     default=7,
@@ -264,6 +284,8 @@ def check_kb(
     threshold: int,
     no_summary_quality: bool,
     summary_max_warnings: int,
+    summary_max_words: Optional[int],
+    summary_max_dated_sections: int,
     pending_max_age: int,
 ) -> None:
     """Check KB integrity (propagation, journal, index, frontmatter, branching)."""
@@ -307,8 +329,17 @@ def check_kb(
     hard_warnings.extend(check_frontmatter(kb_root))
     hard_warnings.extend(check_directory_size(kb_root))
 
-    summary_issues = [] if no_summary_quality else audit_summary_quality(kb_root)
+    summary_issues = (
+        []
+        if no_summary_quality
+        else audit_summary_quality(
+            kb_root,
+            max_words=summary_max_words,
+            max_dated_sections=summary_max_dated_sections,
+        )
+    )
     pending_events = pending_event_findings(kb_root, max_age_days=pending_max_age)
+    retracted_refs = retracted_reference_findings(kb_root)
 
     if ctx.obj.get("as_json"):
         click.echo(
@@ -330,6 +361,8 @@ def check_kb(
                     "summary_quality_enabled": not no_summary_quality,
                     "pending_events": pending_events,
                     "pending_event_count": len(pending_events),
+                    "retracted_refs": retracted_refs,
+                    "retracted_ref_count": len(retracted_refs),
                 },
                 indent=2,
                 default=str,
@@ -365,6 +398,18 @@ def check_kb(
         )
     if len(pending_events) > summary_max_warnings:
         click.echo(f"PENDING: (+{len(pending_events) - summary_max_warnings} more)")
+
+    # Warn-only: a node still cites an event whose text was retracted as wrong
+    # evidence — rewrite it, then re-link the corrected capture.
+    for finding in retracted_refs[:summary_max_warnings]:
+        reason = str(finding.get("reason") or "")[:80]
+        follow_up = finding.get("superseded_by") or "<id of the corrected capture>"
+        click.echo(
+            f"RETRACTED: {finding['path']} cites retracted {finding['event_id']} — {reason} — "
+            f"rewrite the node, then write --event {follow_up} (drops the retracted ref)"
+        )
+    if len(retracted_refs) > summary_max_warnings:
+        click.echo(f"RETRACTED: (+{len(retracted_refs) - summary_max_warnings} more)")
 
     if hard_warnings:
         sys.exit(1)

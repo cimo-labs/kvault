@@ -38,6 +38,8 @@ MANGLED = [
     "(including a .00 fee)",
     "wire of ,000.00 ACH landed",
     "PATH problem: -zsh reported no such command",
+    "a zsh.00 debit scheduled",  # `$0.00` under `zsh -c` (argv[0] is bare)
+    "a bash.00 debit",
 ]
 LEGITIMATE = [
     "$1,208.25 debit scheduled",  # the quoted-heredoc form: intact
@@ -47,6 +49,7 @@ LEGITIMATE = [
     "shipped v2.00 of the tool",
     "friction coefficient 0.45",
     "one-off ~ .50 rounding in the spreadsheet",
+    "upgrade to zsh 5.9 and bash 5.2; see zsh.org",
 ]
 # Documented negatives: no residue is left, so nothing can catch these. The
 # quoted heredoc is the control; this table exists so nobody loosens the regex
@@ -80,11 +83,13 @@ def test_capture_allow_suspicious_bypasses_the_tripwire(kb):
 
 
 def test_suspicious_text_matches_labels_and_context():
-    matches = ev.suspicious_text_matches("debit ,208.25 and a /bin/zsh.00 fee and .00 more")
+    matches = ev.suspicious_text_matches(
+        "debit ,208.25 and a /bin/zsh.00 fee and .00 more and a zsh.00 charge"
+    )
     labels = [m["label"] for m in matches]
-    assert labels == ["shell_path", "orphan_thousands", "orphan_cents"]
-    assert matches[1]["match"] == ",208.25"
-    assert "debit" in matches[1]["context"]
+    assert labels == ["shell_path", "shell_name_cents", "orphan_thousands", "orphan_cents"]
+    assert matches[2]["match"] == ",208.25"
+    assert "debit" in matches[2]["context"]
 
 
 def test_import_moss_capture_tolerates_mangled_records(kb, tmp_path):
@@ -463,11 +468,17 @@ def test_retract_pending_and_promoted_events(kb):
     assert ev.list_events(kb, status="pending")["count"] == 0
 
 
-def test_retract_twice_fails_and_superseded_by_must_exist(kb):
+def test_retract_twice_fails_unless_amending_supersession(kb):
     event_id = _capture(kb, body="Wrong.")["event_id"]
-    assert ev.retract_event(kb, event_id, reason="x")["success"]
+    first = ev.retract_event(kb, event_id, reason="x")
+    assert first["success"]
     again = ev.retract_event(kb, event_id, reason="x")
     assert not again["success"] and again["error_code"] == "workflow_error"
+    fixed = _capture(kb, body="Right.")["event_id"]
+    amended = ev.retract_event(kb, event_id, reason="x (corrected)", superseded_by=fixed)
+    assert amended["success"]
+    assert amended["resolution"]["superseded_by"] == fixed
+    assert amended["resolution"]["retracted_at"] == first["resolution"]["retracted_at"]
     other = _capture(kb, body="Another wrong.")["event_id"]
     missing = ev.retract_event(kb, other, reason="x", superseded_by="evdoesnotexist")
     assert not missing["success"] and missing["error_code"] == "not_found"
@@ -530,6 +541,46 @@ def test_check_reports_retracted_refs_and_supersession_clears_them(kb):
     assert after["retracted_ref_count"] == 0
 
 
+def test_retracted_finding_clears_via_fresh_capture_without_superseded_by(kb):
+    """The printed close-out ('rewrite, then write --event <corrected capture>') must work
+    even when the retraction did not name a successor: re-linking drops the retracted ref."""
+    bad = _capture(kb, body="Wrong amount.", source="t")["event_id"]
+    _promote(kb, bad, path="people/self", body="# Self\n\nWrong amount.\n")
+    assert ev.retract_event(kb, bad, reason="mangled")["success"]
+    runner = CliRunner()
+    assert (
+        json.loads(runner.invoke(cli, ["--kb-root", str(kb), "check", "--json"]).output)[
+            "retracted_ref_count"
+        ]
+        == 1
+    )
+
+    good = _capture(kb, body="Right amount.", source="t")["event_id"]
+    fixed = ops.write_node(
+        kb, "people/self", "# Self\n\nRight amount.\n", event_ids=[good], reasoning="fix"
+    )
+    assert fixed["success"]
+    removed = next(n for n in fixed["notes"] if n["code"] == "removed")
+    assert removed["detail"]["retracted_refs_dropped"] == [bad]
+    refs = ops.read_node(kb, "people/self", parents="none")["meta"]["source_refs"]
+    assert refs == [f"journal:{good}"]
+    assert (
+        json.loads(runner.invoke(cli, ["--kb-root", str(kb), "check", "--json"]).output)[
+            "retracted_ref_count"
+        ]
+        == 0
+    )
+
+    # And the human RETRACTED: line is tier-invariant like every other check line.
+    other = _capture(kb, body="Also wrong.", source="t")["event_id"]
+    _promote(kb, other, path="people/other", body="# Other\n\nx.\n")
+    ev.retract_event(kb, other, reason="mangled too")
+    baseline = runner.invoke(cli, ["--kb-root", str(kb), "check"])
+    assert "RETRACTED: people/other" in baseline.output
+    for tier in (["-q"], ["--explain"], ["--trace"]):
+        assert runner.invoke(cli, ["--kb-root", str(kb), *tier, "check"]).output == baseline.output
+
+
 def test_check_retracted_fast_path_without_retractions(kb):
     _promote(kb, _capture(kb, body="Fine.")["event_id"])
     assert ev.retracted_reference_findings(kb) == []
@@ -585,6 +636,8 @@ def test_events_list_limit_and_since(kb):
 
     bad = ev.list_events(kb, since="yesterday")
     assert not bad["success"] and bad["error_code"] == "validation_error"
+    neg = ev.list_events(kb, limit=-1)
+    assert not neg["success"] and "limit must be >= 0" in neg["error"]
 
     # check sees every pending event regardless of any default page size.
     assert len(ev.pending_event_findings(kb, max_age_days=0)) == 7

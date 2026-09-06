@@ -263,3 +263,18 @@ def test_doctor_reports_disallowed_root_without_failing(kb, monkeypatch):
     assert report["kb"]["is_kb"] is True
     assert report["kb"]["allowed_root_error"]
     assert report["env"]["KVAULT_ALLOWED_ROOTS"]
+
+
+def test_doctor_survives_root_resolution_error(monkeypatch):
+    """The contract is 'never fails' — including when KB-root resolution itself raises."""
+    monkeypatch.delenv("KVAULT_KB_ROOT", raising=False)
+
+    def boom():
+        raise FileNotFoundError("cwd gone")
+
+    monkeypatch.setattr("kvault.cli.doctor.find_kb_root", boom)
+    result = CliRunner().invoke(cli, ["--json", "doctor"])
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["kb"]["resolved_from"] == "error" and report["kb"]["root"] is None
+    assert "cwd gone" in report["kb"]["resolve_error"]

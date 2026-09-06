@@ -37,7 +37,7 @@ and `--json`; command groups and server-launching commands may have command-spec
 - `search.py`: structured lexical node search
 - `summary.py`: read-summary, write-summary, update-summaries, ancestors
 - `journal.py`: journal
-- `events.py`: capture, events list/show/resolve/import (capture journal)
+- `events.py`: capture, events list/show/resolve/retract/import (capture journal)
 - `validate.py`: validate
 - `check.py`: check (propagation staleness and summary-quality warnings)
 - `doctor.py`: doctor (version, python, install location, KB binding, env — never fails)
@@ -137,9 +137,12 @@ The canonical MCP parent-summary flow is stricter:
 Strict parent writes use a stateless digest over direct child summaries. The digest excludes mtime
 and changes when a direct child summary body, frontmatter, path, or existence changes.
 
-Parent summaries are expected to be comprehensive rollups of descendants. `kvault check`
-emits warn-only `SUMMARY:` findings when a parent omits immediate child coverage, is too
-short for its subtree, or contains placeholder/redirect language.
+Parent summaries are expected to be comprehensive rollups of descendants that stay the size of
+an index page. `kvault check` emits warn-only `SUMMARY:` findings when a parent omits immediate
+child coverage, is too short for its subtree, contains placeholder/redirect language, exceeds
+the word ceiling (`too_long`), or accretes dated/delta sections (`stale_history`); and warn-only
+`RETRACTED:` findings when a node's `source_refs` cite an event retracted with `kvault events
+retract`.
 
 ## Work Reporting
 

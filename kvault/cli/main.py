@@ -202,6 +202,7 @@ def status(
     if ctx.obj.get("as_json"):
         output_json(info)
     else:
+        click.echo(f"kvault {info['version']}")
         click.echo(f"KB root: {info['kg_root']}")
         click.echo(f"Entities: {info['entity_count']}")
         click.echo(f"Root summary: {'✓' if health['root_summary_exists'] else '✗'}")

@@ -282,3 +282,17 @@ def test_check_reports_ceilings_warn_only(tmp_path):
     )
     assert quiet.exit_code == 0
     assert "too long" not in quiet.output and "dated/delta" not in quiet.output
+
+
+def test_too_long_boundary_is_exact(tmp_path):
+    # 1 child / 1 descendant -> cap 1055 words: 1055 passes, 1056 fails.
+    kb = _basic_kb(tmp_path)
+    _write_summary(kb, "alpha", "# Alpha\n\nAlpha content.")
+
+    def body(n):  # "Root" + "alpha" + n filler words == n + 2 words
+        return "# Root\n\nalpha " + " ".join(f"w{i}" for i in range(n))
+
+    _write_summary(kb, ".", body(1053))
+    assert "too_long" not in _codes(audit_summary_quality(kb, max_dated_sections=0))
+    _write_summary(kb, ".", body(1054))
+    assert "too_long" in _codes(audit_summary_quality(kb, max_dated_sections=0))

@@ -92,11 +92,11 @@ def events_group() -> None:
     "--status",
     type=click.Choice(["pending", "resolved", "retracted"]),
     default=None,
-    help="Filter by lifecycle status (retracted = resolved with outcome retracted)",
+    help="pending | resolved (excludes retracted) | retracted",
 )
 @click.option(
     "--limit",
-    type=int,
+    type=click.IntRange(min=0),
     default=50,
     show_default=True,
     help="Newest N events (0 = all). A mature KB's full list exceeds 140 KB.",
@@ -232,7 +232,9 @@ def retract_event_cmd(
 
     Nodes that still cite the event in `source_refs` show up in `kvault check`
     as RETRACTED: findings until they are rewritten and re-linked with
-    `kvault write <node> --event <superseding-id>`.
+    `kvault write <node> --event <id-of-the-corrected-capture>`, which drops
+    the retracted ref. Calling retract again with --superseded-by amends the
+    supersession on an existing retraction.
     """
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)

@@ -123,14 +123,21 @@ def _kb_block(root: Optional[Path], resolved_from: str) -> Dict[str, Any]:
 
 def doctor_report(ctx: click.Context, kb_root: Optional[Path]) -> Dict[str, Any]:
     """Build the full report. Never raises."""
-    root, resolved_from = _safe(lambda: _resolve_root(ctx, kb_root)) or (None, "error")
-    if isinstance(root, dict):  # _resolve_root itself failed
+    resolved = _safe(lambda: _resolve_root(ctx, kb_root))
+    resolve_error: Optional[str] = None
+    if isinstance(resolved, dict):  # _resolve_root itself failed (e.g. cwd deleted)
         root, resolved_from = None, "error"
+        resolve_error = str(resolved.get("error"))
+    else:
+        root, resolved_from = resolved
+    kb_block = _safe(lambda: _kb_block(root, resolved_from))
+    if resolve_error and isinstance(kb_block, dict):
+        kb_block["resolve_error"] = resolve_error
     return {
         "version": __version__,
         "python": _safe(_python_block),
         "install": _safe(_install_block),
-        "kb": _safe(lambda: _kb_block(root, resolved_from)),
+        "kb": kb_block,
         "env": {key: os.environ.get(key) for key in ENV_KEYS},
     }
 

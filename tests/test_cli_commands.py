@@ -93,6 +93,12 @@ class TestHelp:
         assert "version: " in result.output
         assert "kb.is_kb: True" in result.output
 
+    def test_status_human_leads_with_version(self, runner, cli_kb):
+        from kvault import __version__
+
+        result = runner.invoke(cli, ["--kb-root", str(cli_kb), "status"])
+        assert result.output.splitlines()[0] == f"kvault {__version__}"
+
     def test_status_json_omits_root_summary_by_default(self, runner, cli_kb):
         base = ["--kb-root", str(cli_kb), "status", "--json"]
         lean = json.loads(runner.invoke(cli, base).output)
@@ -401,6 +407,20 @@ class TestSearchCommand:
         assert scoped["results"] == [] and scoped["path_prefix"] == "projects"
         bad = runner.invoke(cli, base + ["--kind", "leaf"])
         assert bad.exit_code != 0
+
+    def test_search_kind_entity_keeps_deep_context_parents(self, runner, cli_kb):
+        roy = cli_kb / "people" / "friends" / "roy"
+        (roy / "deep_context").mkdir(parents=True)
+        (roy / "_summary.md").write_text("---\nname: Roy\naliases: [Roy]\n---\n# Roy\n\nDad.\n")
+        (roy / "deep_context" / "_summary.md").write_text("# Deep\n\nNotes about Roy.\n")
+        result = json.loads(
+            runner.invoke(
+                cli, ["--kb-root", str(cli_kb), "search", "Roy", "--kind", "entity", "--json"]
+            ).output
+        )
+        paths = [r["path"] for r in result["results"]]
+        assert paths[0] == "people/friends/roy"
+        assert result["results"][0]["kind"] == "entity"
 
     def test_search_plain_text(self, runner, cli_kb_with_entity):
         result = runner.invoke(cli, ["--kb-root", str(cli_kb_with_entity), "search", "friends"])

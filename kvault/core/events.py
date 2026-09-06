@@ -17,7 +17,7 @@ import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from kvault.core import notes as nt
 from kvault.core.frontmatter import (
@@ -40,11 +40,15 @@ ALL_OUTCOMES = OUTCOMES + (OUTCOME_RETRACTED,)
 #: Residue a shell leaves when agent-authored text goes through ``echo "…"``
 #: unquoted. zsh expands any ``$<digits>`` run: ``$1,208.25`` -> ``,208.25``,
 #: ``$5.00`` -> ``.00``, and ``$0`` -> the shell's own name (``/bin/zsh``).
-#: This is a tripwire, not a guarantee — a bare ``$250`` vanishes with no
-#: residue at all. The quoted heredoc is the control; this catches the
+#: Under ``zsh -c`` (no absolute path) ``$0`` is just ``zsh``, so ``$0.00``
+#: leaves ``zsh.00``. This is a tripwire, not a guarantee — a bare ``$250``
+#: vanishes with no residue at all. The quoted heredoc is the control; this catches the
 #: common mangles before they become provenance.
 SUSPICIOUS_PATTERNS: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
     ("shell_path", re.compile(r"(?<![\w/])/bin/(?:zsh|bash|sh)\b|(?:^|\s)-(?:zsh|bash)\b")),
+    # `$0` is argv[0]: `/bin/zsh` under `/bin/zsh -c`, but bare `zsh`/`bash`/`sh`
+    # under `zsh -c` — so `$0.00` also leaves `zsh.00`.
+    ("shell_name_cents", re.compile(r"(?<![\w/.-])(?:zsh|bash|sh)\.\d{2}(?![\w.])")),
     ("orphan_thousands", re.compile(r"(?<![\w$.,]),\d{3}(?:,\d{3})*(?:\.\d{2})?(?![\w,])")),
     ("orphan_cents", re.compile(r"(?<![<>=≈~] )(?<=\s)\.\d{2}(?![\w.])")),
 )
@@ -267,6 +271,10 @@ def list_events(
     (``None``/``0`` = all) applies after sorting newest-first;
     ``total_matched`` and a ``truncated`` note say when it cut the list.
     """
+    if limit is not None and limit < 0:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR, f"limit must be >= 0 (0 = all), got {limit}"
+        )
     if since is not None:
         try:
             datetime.strptime(since, "%Y-%m-%d")
@@ -436,11 +444,13 @@ def retract_event(
         event = _find_event(kg_root, event_id)
         if event is None:
             return error_response(ErrorCode.NOT_FOUND, f"Event not found: {event_id}")
-        if _outcome(event) == OUTCOME_RETRACTED:
+        already = _outcome(event) == OUTCOME_RETRACTED
+        if already and superseded_by is None:
             return error_response(
                 ErrorCode.WORKFLOW_ERROR,
                 f"Event {event_id} is already retracted",
                 details={"resolution": event.get("resolution")},
+                hint="pass --superseded-by <id> to record the corrected capture",
             )
         if superseded_by is not None:
             if superseded_by == event_id:
@@ -451,20 +461,36 @@ def retract_event(
                 return error_response(
                     ErrorCode.NOT_FOUND, f"Superseding event not found: {superseded_by}"
                 )
-        resolution: Dict[str, Any] = {
-            "outcome": OUTCOME_RETRACTED,
-            "reason": reason.strip(),
-            "retracted_at": _now_iso(),
-        }
-        if superseded_by:
+        if already:
+            # Amend the supersession on an existing retraction; keep the record.
+            resolution = dict(event.get("resolution") or {})
             resolution["superseded_by"] = superseded_by
-        previous = event.get("resolution")
-        if previous:
-            resolution["previous"] = previous
+            resolution["reason"] = reason.strip()
+        else:
+            resolution = {
+                "outcome": OUTCOME_RETRACTED,
+                "reason": reason.strip(),
+                "retracted_at": _now_iso(),
+            }
+            if superseded_by:
+                resolution["superseded_by"] = superseded_by
+            previous = event.get("resolution")
+            if previous:
+                resolution["previous"] = previous
         event["status"] = STATUS_RESOLVED
         event["resolution"] = resolution
         _write_event(kg_root, event)
     return {"success": True, "event_id": event_id, "resolution": resolution}
+
+
+def retracted_event_ids(kg_root: Path) -> Set[str]:
+    """Ids of every retracted event (empty set is the common, cheap case)."""
+    ids: Set[str] = set()
+    for path in _iter_event_files(kg_root):
+        event = _load_event_file(path)
+        if event is not None and _outcome(event) == OUTCOME_RETRACTED:
+            ids.add(str(event["id"]))
+    return ids
 
 
 def retracted_reference_findings(kg_root: Path) -> List[Dict[str, Any]]:
@@ -651,5 +677,6 @@ __all__ = [
     "promote_events",
     "resolve_event",
     "retract_event",
+    "retracted_event_ids",
     "retracted_reference_findings",
 ]

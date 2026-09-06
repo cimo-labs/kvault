@@ -13,8 +13,9 @@ way for an agent to notice.
 
 ### Added
 
-- **`kvault --version`**, a `version` key leading `status --json` and MCP
-  `kvault_status`, and **`kvault doctor [--json]`**: version, python, install
+- **`kvault --version`**, a `version` key first in `status --json` (first
+  after `success` in MCP `kvault_status`; also the first human line), and
+  **`kvault doctor [--json]`**: version, python, install
   location, MCP extra, KB root and how it was resolved, root-summary size,
   event counts, ops-log writability, allowed-root error, `KVAULT_*` env. A
   missing KB is a finding; the exit code is always 0. In the J1 matrix.
@@ -28,19 +29,26 @@ way for an agent to notice.
   passes every healthy one.
 - **`capture` refuses shell-mangled bodies.** The residues left when
   agent-authored text goes through `echo "…"` under zsh (`,208.25`, `.00`,
-  `/bin/zsh`) return a `validation_error` naming the match and the
-  quoted-heredoc fix; `--allow-suspicious` bypasses. A tripwire, not a
+  `/bin/zsh.00` or `zsh.00` depending on how the shell was invoked) return a
+  `validation_error` naming the match and the quoted-heredoc fix;
+  `--allow-suspicious` bypasses. A tripwire, not a
   guarantee — a bare `$250` vanishes without residue. Legacy import is
   tolerant.
 - **`events retract <id> --reason TEXT [--superseded-by ID]`** (outcome
   `retracted`, allowed on pending and resolved events, prior resolution kept
-  under `previous`) and **`RETRACTED:`** findings in `check` for nodes whose
-  `source_refs` cite a retracted event — cleared once the superseding event
-  is promoted into the same node. `events list --status retracted`.
+  under `previous`; calling it again with `--superseded-by` amends the
+  supersession) and **`RETRACTED:`** findings in `check` for nodes whose
+  `source_refs` cite a retracted event — cleared by rewriting the node with
+  `write --event <corrected capture>`, which now drops retracted refs (a
+  `removed` note says which). `events list --status retracted`
+  (`--status resolved` excludes retracted events).
 - **Search filters and reporting**: `--kind {root,category,entity}`
-  (repeatable), `--path PREFIX`, `--no-collapse`; `collapsed` /
-  `collapsed_paths` in the result and a `truncated` note naming what was
-  collapsed. MCP `kvault_search(collapse, kind, path_prefix)`.
+  (repeatable), `--path PREFIX`, `--no-collapse`; `collapsed`,
+  `collapsed_paths` and `collapsed_by` (ancestor → the descendant that
+  justified dropping it) in the result and a `truncated` note naming what
+  was collapsed. MCP `kvault_search(collapse, kind, path_prefix)`. A node
+  whose only child is a background dir is `kind: entity`, so `--kind entity`
+  keeps it.
 - `status --root-summary` / MCP `include_root_summary`; `root_summary_chars`
   always. `ancestors --paths-only` and an `ancestor_paths` list always; MCP
   `kvault_get_parent_summaries(ancestors="paths"|"content")` and aliases.
@@ -55,7 +63,9 @@ way for an agent to notice.
 
 - **Search collapses propagated copies.** A root/category hit whose matched
   fields are only body/headings is dropped when a kept strict descendant
-  (never a background child) scores at least half as much; anchored matches
+  (never a background child) scores at least half as much AND lands inside
+  the returned page — evicting a rollup for a node the caller never sees
+  would lose the fact, so such ancestors are reinstated; anchored matches
   (path/title/aliases) never collapse. Equal scores now prefer the deeper
   node (root is depth 0). Before: the tie-break sorted shallowest-first, so
   root outranked the canonical leaf for every propagated fact.
@@ -64,7 +74,8 @@ way for an agent to notice.
   summary). Python `read_node`/`read_entity` defaults are unchanged.
 - **`status --json` omits `root_summary`** unless requested.
 - **`artifact daily --json` omits `content`** unless `--stdout`.
-- **`events list` shows the newest 50 by default.**
+- **`events list` shows the newest 50 by default** (`--limit` must be ≥ 0;
+  `0` = all).
 - **MCP write tools default `ancestors="paths"`** (announced in 0.13.0).
 - `check_events_promotable` judges by outcome, not status: any outcome other
   than `promoted` blocks `write --event`, so a retracted id fails fast without

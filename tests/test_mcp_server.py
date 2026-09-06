@@ -138,6 +138,7 @@ def test_mcp_server_exposes_compatible_tools_and_calls(tmp_path):
 
     status = _run_tool(server, "kvault_status", {})
     assert status["success"] is True and status["version"]
+    assert list(status)[:2] == ["success", "version"]
     assert "root_summary" not in status and status["root_summary_chars"] > 0
     assert "root_summary" in _run_tool(server, "kvault_status", {"include_root_summary": True})
 

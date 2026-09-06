@@ -131,9 +131,10 @@ def search_nodes(
     if prefix is not None:
         scored = [item for item in scored if _under_prefix(item[1].path, prefix)]
 
-    collapsed_paths: List[str] = []
+    collapsed_by: Dict[str, str] = {}
     if collapse:
-        scored, collapsed_paths = _collapse_ancestors(scored)
+        scored, collapsed_by = _collapse_ancestors(scored, page_size=limit)
+    collapsed_paths = sorted(collapsed_by, key=_depth)
 
     # Deeper (more specific) first on equal score; root is depth 0.
     scored.sort(key=lambda item: (-item[0], -_depth(item[1].path), item[1].path))
@@ -212,7 +213,11 @@ def search_nodes(
                 "truncated",
                 f"collapsed {len(collapsed_paths)} ancestor hit(s) that only repeat a "
                 f"descendant's match: {shown}{more}",
-                detail={"collapsed": len(collapsed_paths), "collapsed_paths": collapsed_paths[:10]},
+                detail={
+                    "collapsed": len(collapsed_paths),
+                    "collapsed_paths": collapsed_paths[:10],
+                    "collapsed_by": {p: collapsed_by[p] for p in collapsed_paths[:10]},
+                },
                 why="a propagated fact appears in every ancestor summary; the deepest node is canonical",
                 next_step=f'kvault search "{query}" --no-collapse',
             )
@@ -228,6 +233,7 @@ def search_nodes(
     }
     if collapsed_paths:
         out["collapsed_paths"] = collapsed_paths[:10]
+        out["collapsed_by"] = {p: collapsed_by[p] for p in collapsed_paths[:10]}
     if wanted_kinds:
         out["kinds"] = sorted(wanted_kinds)
     if prefix is not None:
@@ -269,30 +275,62 @@ def _is_strict_descendant(candidate: str, ancestor: str) -> bool:
     return ancestor == "." or candidate.startswith(ancestor + "/")
 
 
+_Scored = Tuple[float, SearchDocument, Set[str]]
+
+
+def _sort_key(item: _Scored) -> Tuple[float, int, str]:
+    return (-item[0], -_depth(item[1].path), item[1].path)
+
+
+def _justifier(item: _Scored, pool: List[_Scored]) -> Optional[str]:
+    """Path of the best kept strict descendant that justifies collapsing *item*."""
+    score, doc, matched = item
+    if doc.kind not in ("root", "category") or not matched or not matched <= _PROPAGATED_FIELDS:
+        return None
+    candidates = [
+        (other_score, other.path)
+        for other_score, other, _ in pool
+        if _is_strict_descendant(other.path, doc.path)
+        and not is_background_child(other.path.rsplit("/", 1)[-1])
+        and other_score >= _COLLAPSE_SCORE_RATIO * score
+    ]
+    if not candidates:
+        return None
+    return max(candidates)[1]
+
+
 def _collapse_ancestors(
-    scored: List[Tuple[float, SearchDocument, Set[str]]],
-) -> Tuple[List[Tuple[float, SearchDocument, Set[str]]], List[str]]:
+    scored: List[_Scored], page_size: int = 0
+) -> Tuple[List[_Scored], Dict[str, str]]:
     """Drop ancestor hits that only echo a kept descendant's match.
 
     Processed deepest-first so a descendant's own fate is settled before it
-    is allowed to justify collapsing an ancestor.
+    is allowed to justify collapsing an ancestor. When ``page_size`` > 0 the
+    justifying descendant must itself land inside the returned page:
+    evicting a rollup for a node the caller never sees would lose the fact
+    from the result entirely, so such ancestors are reinstated (iterated to
+    a fixed point; the reinstated set only grows, so this terminates).
     """
-    kept: List[Tuple[float, SearchDocument, Set[str]]] = []
-    collapsed: List[str] = []
+    kept: List[_Scored] = []
+    collapsed: Dict[str, str] = {}
     for item in sorted(scored, key=lambda it: -_depth(it[1].path)):
-        score, doc, matched = item
-        if doc.kind in ("root", "category") and matched and matched <= _PROPAGATED_FIELDS:
-            justified = any(
-                _is_strict_descendant(other.path, doc.path)
-                and not is_background_child(other.path.rsplit("/", 1)[-1])
-                and other_score >= _COLLAPSE_SCORE_RATIO * score
-                for other_score, other, _ in kept
-            )
-            if justified:
-                collapsed.append(doc.path)
-                continue
+        justifier = _justifier(item, kept)
+        if justifier is not None:
+            collapsed[item[1].path] = justifier
+            continue
         kept.append(item)
-    return kept, sorted(collapsed, key=_depth)
+    if page_size > 0:
+        by_path = {it[1].path: it for it in scored}
+        while True:
+            page = {it[1].path for it in sorted(kept, key=_sort_key)[:page_size]}
+            page_pool = [it for it in kept if it[1].path in page]
+            reinstate = [path for path in collapsed if _justifier(by_path[path], page_pool) is None]
+            if not reinstate:
+                break
+            for path in reinstate:
+                kept.append(by_path[path])
+                del collapsed[path]
+    return kept, collapsed
 
 
 def scan_search_documents(kg_root: Path) -> List[SearchDocument]:
@@ -491,8 +529,13 @@ def _kind(kg_root: Path, path: str) -> str:
         return "root"
     parts = Path(path).parts
     node_dir = kg_root / path
+    # A background child (deep_context/) is supporting material, not a node
+    # of its own: an entity that keeps one is still an entity.
     has_child_nodes = any(
-        child.is_dir() and not child.name.startswith(".") and (child / "_summary.md").exists()
+        child.is_dir()
+        and not child.name.startswith(".")
+        and not is_background_child(child.name)
+        and (child / "_summary.md").exists()
         for child in _safe_iterdir(node_dir)
     )
     if len(parts) < 2 or has_child_nodes:

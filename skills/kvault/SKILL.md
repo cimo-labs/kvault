@@ -31,7 +31,7 @@ KVEOF
 ```
 
 **Never `echo "…" | kvault capture`.** An unquoted `$1,208` reaches kvault as `,208`,
-`$0.00` as `/bin/zsh.00`, and a bare `$250` vanishes with no trace. kvault ≥0.14 refuses the
+`$0.00` as `zsh.00` or `/bin/zsh.00` (depending on how the shell was invoked), and a bare `$250` vanishes with no trace. kvault ≥0.14 refuses the
 residues it can see (`validation_error`, bypass with `--allow-suspicious` for legitimate
 leading-dot decimals such as `.45 CoF`); the quoted heredoc is the real control. A capture
 that was wrong evidence is withdrawn with `kvault events retract <id> --reason "…"

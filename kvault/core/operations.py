@@ -982,8 +982,22 @@ def write_node(
                 meta["name"] = first
                 autofilled_name = True
 
+    dropped_retracted: List[str] = []
     if event_ids:
+        from kvault.core.events import retracted_event_ids
+
         refs = list(meta.get("source_refs") or [])
+        # Re-linking a node to a corrected capture is the documented close-out
+        # for a RETRACTED: finding — the retracted ref must not linger.
+        retracted = retracted_event_ids(kg_root)
+        if retracted:
+            keep = []
+            for ref in refs:
+                if isinstance(ref, str) and ref.startswith("journal:") and ref[8:] in retracted:
+                    dropped_retracted.append(ref[8:])
+                else:
+                    keep.append(ref)
+            refs = keep
         for event_id in event_ids:
             ref = f"journal:{event_id}"
             if ref not in refs:
@@ -1123,6 +1137,17 @@ def write_node(
                 )
             )
             del ids
+
+    if dropped_retracted:
+        notes.append(
+            nt.note(
+                "removed",
+                f"dropped {len(dropped_retracted)} retracted provenance ref(s): "
+                + ", ".join(dropped_retracted),
+                detail={"retracted_refs_dropped": dropped_retracted},
+                why="the node now cites the superseding capture; a retracted event is wrong evidence",
+            )
+        )
 
     # Auto-journal if reasoning provided
     journal_logged = False

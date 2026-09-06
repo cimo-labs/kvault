@@ -185,7 +185,8 @@ aspirational — agents read them off the orientation pass:
 |--------|--------|
 | Branch with >10 children (`[N children, ...]`) | Split into subgroups; `kvault move` entities; re-propagate |
 | Branch `~updated_max` older than ~6 months | Review for stale or dead content |
-| `SUMMARY:` warnings from `kvault check` | Rewrite flagged parents as comprehensive rollups |
+| `SUMMARY:` warnings from `kvault check` | `too_short`/`missing_child_coverage`: rewrite the parent as a comprehensive rollup; `too_long`/`stale_history`: fold dated sections into current state (chronology belongs in `journal/`) |
+| `RETRACTED:` warnings from `kvault check` | The node cites an event retracted with `kvault events retract`; rewrite it and re-link with `write --event <corrected capture>` |
 | Near-duplicate titles or aliases | Verify identifiers, merge, delete the duplicate |
 
 `kvault check` also catches stale propagation, and works as a pre-prompt hook:

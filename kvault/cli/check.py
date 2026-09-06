@@ -403,10 +403,10 @@ def check_kb(
     # evidence — rewrite it, then re-link the corrected capture.
     for finding in retracted_refs[:summary_max_warnings]:
         reason = str(finding.get("reason") or "")[:80]
-        follow_up = finding.get("superseded_by") or "<fresh capture id>"
+        follow_up = finding.get("superseded_by") or "<id of the corrected capture>"
         click.echo(
             f"RETRACTED: {finding['path']} cites retracted {finding['event_id']} — {reason} — "
-            f"rewrite the node, then write --event {follow_up}"
+            f"rewrite the node, then write --event {follow_up} (drops the retracted ref)"
         )
     if len(retracted_refs) > summary_max_warnings:
         click.echo(f"RETRACTED: (+{len(retracted_refs) - summary_max_warnings} more)")

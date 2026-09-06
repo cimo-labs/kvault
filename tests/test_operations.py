@@ -730,6 +730,25 @@ class TestSearchNodes:
         assert under["path_prefix"] == "people/friends"
         assert ops.search_nodes(ops_kb, "Gusto", limit=10, path_prefix="projects")["results"] == []
 
+    def test_collapse_reports_justifier_and_respects_the_page(self, ops_kb):
+        self._propagated(ops_kb)
+        result = ops.search_nodes(ops_kb, "Gusto AutoPilot payroll", limit=10)
+        assert result["collapsed_by"] == {
+            "people": "people/friends/payroll_note",
+            "people/friends": "people/friends/payroll_note",
+        }
+        # With a page too small to show the justifying leaf, an ancestor that would
+        # otherwise be evicted is reinstated so the fact is not lost from the result.
+        strong = ops_kb / "projects" / "strong"
+        strong.mkdir()
+        (strong / "_summary.md").write_text(
+            "# Gusto AutoPilot payroll\n\n" + " ".join(["Gusto AutoPilot payroll"] * 40) + "\n"
+        )
+        paged = ops.search_nodes(ops_kb, "Gusto AutoPilot payroll", limit=1)
+        assert paged["results"][0]["path"] == "projects/strong"
+        assert "people/friends" not in paged.get("collapsed_paths", [])  # leaf off the page
+        assert paged["collapsed"] == 0
+
     def test_tiebreak_prefers_deeper_node_on_equal_score(self, ops_kb):
         text = "# Node\n\nzebra crossing.\n"
         (ops_kb / "_summary.md").write_text(text)

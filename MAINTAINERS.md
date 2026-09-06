@@ -32,8 +32,11 @@ kvault/
 5. If `KVAULT_ALLOWED_ROOTS` is configured, CLI and MCP boundaries must reject non-allowed roots.
 6. CLI uses `default_source="auto:cli"`.
 7. MCP uses `default_source="auto:mcp"` and is bound to one KB root per process.
-8. Parent summaries should be comprehensive rollups of all descendants; `kvault check`
-   emits warn-only `SUMMARY:` findings for weak rollups.
+8. Parent summaries should be comprehensive rollups of all descendants that stay the size of
+   an index page; `kvault check` emits warn-only `SUMMARY:` findings for rollups that are too
+   short, too long, missing child coverage, placeholder-shaped, or changelog-shaped
+   (`stale_history`). A parent whose only children are background dirs (`deep_context/`,
+   see `core/conventions.py`) is budgeted as a leaf.
 9. MCP parent-summary writes should use strict prepare/write tools so direct child summaries are
    read before a parent rollup is rewritten.
 10. **J1**: in `--json` mode kvault emits exactly one JSON document and writes nothing to
@@ -128,7 +131,8 @@ kvault journal --source TEXT [--date YYYY-MM-DD] [--json] < actions.json
 kvault status [--json]
 kvault tree [--depth N]
 kvault validate [--json]
-kvault check [--kb-root PATH] [--json] [--no-summary-quality] [--summary-max-warnings N]
+kvault check [--kb-root PATH] [--json] [--no-summary-quality] [--summary-max-warnings N] \
+             [--summary-max-words N|0] [--summary-max-dated-sections N|0] [--pending-max-age D]
 kvault doctor [--kb-root PATH] [--json]   # runtime/env/KB-binding report; exit 0 always
 
 # Init & artifacts

@@ -22,7 +22,11 @@ import click
 from kvault.core import operations as ops
 from kvault.core.events import pending_event_findings
 from kvault.core.frontmatter import parse_frontmatter
-from kvault.core.summary_quality import audit_summary_quality, format_summary_quality_warnings
+from kvault.core.summary_quality import (
+    DEFAULT_MAX_DATED_SECTIONS,
+    audit_summary_quality,
+    format_summary_quality_warnings,
+)
 
 DEFAULT_THRESHOLD_MINUTES = 5
 
@@ -250,6 +254,22 @@ def check_directory_size(kb_root: Path, max_children: int = 10) -> List[str]:
     help="Maximum summary-quality warnings to print.",
 )
 @click.option(
+    "--summary-max-words",
+    type=int,
+    default=None,
+    help=(
+        "Word ceiling for a parent summary (SUMMARY: too_long). Default: per-node "
+        "formula min(2000, 1000 + 50*children + 5*descendants); 0 disables."
+    ),
+)
+@click.option(
+    "--summary-max-dated-sections",
+    type=int,
+    default=DEFAULT_MAX_DATED_SECTIONS,
+    show_default=True,
+    help="Dated/delta headings a parent summary may carry (SUMMARY: stale_history); 0 disables.",
+)
+@click.option(
     "--pending-max-age",
     type=int,
     default=7,
@@ -264,6 +284,8 @@ def check_kb(
     threshold: int,
     no_summary_quality: bool,
     summary_max_warnings: int,
+    summary_max_words: Optional[int],
+    summary_max_dated_sections: int,
     pending_max_age: int,
 ) -> None:
     """Check KB integrity (propagation, journal, index, frontmatter, branching)."""
@@ -307,7 +329,15 @@ def check_kb(
     hard_warnings.extend(check_frontmatter(kb_root))
     hard_warnings.extend(check_directory_size(kb_root))
 
-    summary_issues = [] if no_summary_quality else audit_summary_quality(kb_root)
+    summary_issues = (
+        []
+        if no_summary_quality
+        else audit_summary_quality(
+            kb_root,
+            max_words=summary_max_words,
+            max_dated_sections=summary_max_dated_sections,
+        )
+    )
     pending_events = pending_event_findings(kb_root, max_age_days=pending_max_age)
 
     if ctx.obj.get("as_json"):

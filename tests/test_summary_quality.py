@@ -7,6 +7,8 @@ from click.testing import CliRunner
 from kvault.cli.main import cli
 from kvault.core.summary_quality import audit_summary_quality
 
+import json
+
 
 def _write_summary(root: Path, rel_path: str, body: str, frontmatter: str = "") -> None:
     directory = root if rel_path in {"", "."} else root / rel_path
@@ -146,3 +148,137 @@ def test_fresh_init_has_no_summary_quality_warnings(tmp_path):
     assert init_result.exit_code == 0
 
     assert audit_summary_quality(kb) == []
+
+
+# ---------------------------------------------------------------------------
+# Ceilings: too_long and stale_history (0.14.0)
+# ---------------------------------------------------------------------------
+
+
+def _bloated_body(sections: int = 10, words_per: int = 120, dated: bool = True) -> str:
+    """A parent summary that has accreted dated delta sections."""
+    parts = ["# Root", "", "Alpha and Beta are the two branches, covered below."]
+    for i in range(sections):
+        heading = f"## 2026-08-{i + 1:02d} Nightly Delta" if dated else f"## Section {i + 1}"
+        parts.append("")
+        parts.append(heading)
+        parts.append(" ".join(f"word{j}" for j in range(words_per)))
+    return "\n".join(parts) + "\n"
+
+
+def _codes(issues):
+    return sorted(issue.code for issue in issues)
+
+
+def _two_child_kb(tmp_path, root_body: str):
+    kb = _basic_kb(tmp_path)
+    _write_summary(kb, ".", root_body)
+    _write_summary(kb, "alpha", "# Alpha\n\nAlpha content.")
+    _write_summary(kb, "beta", "# Beta\n\nBeta content.")
+    return kb
+
+
+def test_too_long_flags_rollup_over_budget(tmp_path):
+    # 2 children / 2 descendants -> cap 1000 + 100 + 10 = 1110 words
+    kb = _two_child_kb(tmp_path, _bloated_body(sections=10, words_per=120, dated=False))
+    issues = audit_summary_quality(kb, max_dated_sections=0)
+    too_long = [i for i in issues if i.code == "too_long"]
+    assert len(too_long) == 1
+    assert too_long[0].details["maximum_words"] == 1110
+    assert too_long[0].details["word_count"] > 1110
+    assert "rewrite as a current-state rollup" in too_long[0].message
+
+
+def test_too_long_budget_scales_with_children(tmp_path):
+    # 1 child / 1 descendant -> cap 1055: 950 words pass, 1100 fail.
+    kb = _basic_kb(tmp_path)
+    _write_summary(kb, "alpha", "# Alpha\n\nAlpha content.")
+    _write_summary(kb, ".", _bloated_body(sections=1, words_per=940, dated=False))
+    assert "too_long" not in _codes(audit_summary_quality(kb, max_dated_sections=0))
+    _write_summary(kb, ".", _bloated_body(sections=1, words_per=1090, dated=False))
+    assert "too_long" in _codes(audit_summary_quality(kb, max_dated_sections=0))
+
+
+def test_too_long_cap_never_exceeds_2000(tmp_path):
+    kb = _basic_kb(tmp_path)
+    for i in range(6):
+        _write_summary(kb, f"cat{i}", f"# Cat{i}\n\nCat {i} content.")
+        for j in range(30):
+            _write_summary(kb, f"cat{i}/leaf{j}", f"# Leaf {j}\n\nleaf.")
+    _write_summary(kb, ".", _bloated_body(sections=1, words_per=2100, dated=False))
+    too_long = [i for i in audit_summary_quality(kb, max_dated_sections=0) if i.code == "too_long"]
+    assert [i.path for i in too_long] == ["_summary.md"]
+    assert too_long[0].details["maximum_words"] == 2000
+
+
+def test_stale_history_counts_dated_and_delta_headings(tmp_path):
+    kb = _two_child_kb(tmp_path, _bloated_body(sections=3, words_per=30))
+    assert "stale_history" not in _codes(audit_summary_quality(kb))
+    _write_summary(kb, ".", _bloated_body(sections=4, words_per=30))
+    stale = [i for i in audit_summary_quality(kb) if i.code == "stale_history"]
+    assert len(stale) == 1
+    assert stale[0].details["dated_sections"] == 4
+    assert stale[0].details["examples"][0].startswith("2026-08-01")
+
+
+def test_stale_history_ignores_h1_and_counts_undated_delta(tmp_path):
+    body = (
+        "# 2026-08-01 Root title with a date\n\nAlpha and Beta.\n\n"
+        "## Delta\n\nx\n\n## Change log\n\ny\n\n## Update log\n\nz\n\n## 2026-09-01\n\nw\n"
+    )
+    kb = _two_child_kb(tmp_path, body)
+    stale = [i for i in audit_summary_quality(kb, max_words=0) if i.code == "stale_history"]
+    assert stale and stale[0].details["dated_sections"] == 4  # the H1 is not counted
+
+
+def test_ceilings_skip_parents_with_only_background_children(tmp_path):
+    kb = _basic_kb(tmp_path)
+    _write_summary(kb, "people", "# People\n\n" + " ".join(["Sven Schmit is covered."] * 40))
+    _write_summary(
+        kb, "people/sven", _bloated_body(sections=6, words_per=300).replace("# Root", "# Sven")
+    )
+    _write_summary(kb, "people/sven/deep_context", "# Deep context\n\nLong notes.")
+    codes = {(i.path, i.code) for i in audit_summary_quality(kb)}
+    assert ("people/sven/_summary.md", "too_long") not in codes
+    assert ("people/sven/_summary.md", "stale_history") not in codes
+
+
+def test_max_words_semantics_none_zero_and_hard_ceiling(tmp_path):
+    kb = _two_child_kb(
+        tmp_path, _bloated_body(sections=2, words_per=100, dated=False)
+    )  # ~215 words
+    assert "too_long" not in _codes(audit_summary_quality(kb))  # None -> formula (1110)
+    assert "too_long" not in _codes(audit_summary_quality(kb, max_words=0))  # 0 -> off
+    assert "too_long" in _codes(audit_summary_quality(kb, max_words=100))  # N -> hard ceiling
+    assert "too_long" not in _codes(audit_summary_quality(kb, max_words=5000))
+
+
+def test_check_reports_ceilings_warn_only(tmp_path):
+    kb = _two_child_kb(tmp_path, _bloated_body(sections=12, words_per=120))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["check", "--kb-root", str(kb), "--summary-max-warnings", "10"])
+    assert result.exit_code == 0, result.output
+    assert "SUMMARY: _summary.md: too long" in result.output
+    assert "SUMMARY: _summary.md: 12 dated/delta sections" in result.output
+    for line in result.output.splitlines():
+        assert line.startswith(("[KB]", "SUMMARY:", "PENDING:")), line
+
+    as_json = runner.invoke(cli, ["check", "--kb-root", str(kb), "--json"])
+    payload = json.loads(as_json.output)
+    assert {w["code"] for w in payload["summary_warnings"]} >= {"too_long", "stale_history"}
+    assert payload["success"] is True
+
+    quiet = runner.invoke(
+        cli,
+        [
+            "check",
+            "--kb-root",
+            str(kb),
+            "--summary-max-words",
+            "0",
+            "--summary-max-dated-sections",
+            "0",
+        ],
+    )
+    assert quiet.exit_code == 0
+    assert "too long" not in quiet.output and "dated/delta" not in quiet.output

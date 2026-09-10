@@ -159,7 +159,7 @@ counts, descendant totals, and most-recent activity (`~date`) per branch. Act on
 |--------|--------|
 | Branch with >10 children (`[N children, ...]`, `BRANCH:` from `kvault check`) | `kvault plan <path>` → run the `cluster` item's `kvault move --batch --confirm` payload → rewrite the new hub, then the chain (`kvault update-summaries`) → `kvault validate` |
 | `[+K ghost]` in the tree, `GHOST:` from `kvault check` | A directory with no summary — write one (`kvault write <path> --create`) or list it in `.kvaultignore` if it is tooling |
-| `SERIES:` / `SIBLINGS:` / `LOOSE:` / `JOURNAL:` from `kvault check` | Fold dated nodes into one current-state node (timeline to `journal/`); merge or nest the twins; adopt legacy node files as nodes and move supporting files into `<node>/deep_context/`; fold stray journal files into `journal/YYYY-MM/log.md` |
+| `SERIES:` / `SIBLINGS:` / `LOOSE:` / `JOURNAL:` from `kvault check` | Fold dated nodes with the `series` item from `kvault plan` (they become one current-state node's `deep_context/`; new timeline entries go to `journal/`); merge or nest the twins; adopt legacy node files as nodes and move supporting files into `<node>/deep_context/`; fold stray journal files into `journal/YYYY-MM/log.md` |
 | Branch `~updated_max` older than ~6 months | Review for stale or dead content; update, merge, or prune |
 | `SUMMARY:` warnings from `kvault check` | Rewrite the flagged parent summaries as comprehensive rollups — this is real maintenance work even though the command exits 0. `too_long`/`stale_history`: fold, never split into sub-files |
 | Near-duplicate titles or aliases | Verify identifiers exactly (email/phone) → merge into the canonical entity → delete the duplicate |

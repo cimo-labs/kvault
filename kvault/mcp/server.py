@@ -18,6 +18,7 @@ from kvault.core import notes as nt
 from kvault.core import operations as ops
 from kvault.core.check import DEFAULT_MAX_CHILDREN, DEFAULT_MAX_FINDINGS, run_checks
 from kvault.core.plan import DEFAULT_LIMIT, build_plan
+from kvault.core.summary_quality import DEFAULT_MAX_DATED_SECTIONS
 from kvault.core.search import KINDS
 from kvault.core.daily_artifacts import generate_daily_artifact, parse_iso_date
 from kvault.core.observability import ObservabilityLogger
@@ -684,6 +685,8 @@ def create_server(kb_root: Path | str) -> Any:
         pending_max_age: int = 7,
         max_children: int = DEFAULT_MAX_CHILDREN,
         max_findings: int = DEFAULT_MAX_FINDINGS,
+        summary_max_words: Optional[int] = None,
+        summary_max_dated_sections: int = DEFAULT_MAX_DATED_SECTIONS,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the maintenance checks (the CLI's `kvault check`, one document).
@@ -706,6 +709,8 @@ def create_server(kb_root: Path | str) -> Any:
             pending_max_age=pending_max_age,
             max_children=max_children,
             max_findings=max_findings,
+            max_words=summary_max_words,
+            max_dated_sections=summary_max_dated_sections,
         )
 
     @server.tool(name="kvault_plan")
@@ -718,8 +723,9 @@ def create_server(kb_root: Path | str) -> Any:
         """Maintenance worklist in leverage order, with commands and moves.
 
         Cluster items carry a `moves` list you can pass straight to
-        `kvault_move_entities`; `questions` are the judgment calls that need
-        a person. Never applies anything.
+        `kvault_move_entities`; `questions` are the judgment calls to answer
+        from the summaries (defer only when the evidence is not there). Never
+        applies anything.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:

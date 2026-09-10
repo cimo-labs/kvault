@@ -250,7 +250,13 @@ def load_ignore(kg_root: Path) -> List[str]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        patterns.append(line.strip("/"))
+        pattern = line.strip("/")
+        # A catch-all ("*", "**") would hide every root category and
+        # disarm the root guard; there is no honest reading of it.
+        if pattern and set(pattern) <= set("*/"):
+            continue
+        if pattern:
+            patterns.append(pattern)
     return patterns
 
 

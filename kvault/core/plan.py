@@ -100,7 +100,10 @@ def build_plan(
     ignore = st.load_ignore(root)
     scope = None
     if path is not None:
-        scope = path.strip("/") or "."
+        scope = path.strip("/")
+        while scope.startswith("./"):
+            scope = scope[2:]
+        scope = scope or "."
         if scope != "." and not (root / scope).is_dir():
             return {
                 "success": False,
@@ -128,10 +131,26 @@ def build_plan(
             groups, leftovers = st.cluster_by_leading_token(names, min_cluster)
             count = finding["detail"].get("child_count", len(names))
             for token, members in groups:
-                hub = _join(fpath, token)
-                hub_exists = token in members
+                if st.is_reserved_name(token):
+                    questions.append(
+                        f"{fpath}: {len(members)} children share the reserved word "
+                        f"'{token}'; name a hub for them by hand"
+                    )
+                    continue
+                non_members = [n for n in names if n not in members]
+                twin = next(
+                    (
+                        c.name
+                        for c in st.sibling_collisions(non_members, token)
+                        if c.kind == "same_words"
+                    ),
+                    None,
+                )
+                hub_name = twin or token
+                hub = _join(fpath, hub_name)
+                hub_exists = hub_name in members or twin is not None
                 moves = [
-                    {"from": _join(fpath, m), "to": f"{hub}/{m}"} for m in members if m != token
+                    {"from": _join(fpath, m), "to": f"{hub}/{m}"} for m in members if m != hub_name
                 ]
                 if not moves:
                     continue
@@ -206,40 +225,76 @@ def build_plan(
             parent_dir = root if fpath == "." else root / fpath
             names = [x.name for x in st.child_dirs(parent_dir, root, ignore)]
             members = next((m for k, m in st.date_series(names) if k == key), d.get("members", []))
-            hub = _join(fpath, key)
+            if not members:
+                continue
+            parent_leaf = fpath.rsplit("/", 1)[-1] if fpath != "." else "."
+            if not key:
+                # Children named by date alone: they are the chronology of the
+                # parent itself; the parent is the current-state node.
+                questions.append(
+                    f"{fpath}: {len(members)} children are named by date alone "
+                    f"({members[0]}, …) — they are the timeline of {fpath} itself; fold "
+                    f"them into {fpath}/deep_context/ by hand and keep {fpath} as the "
+                    "current state"
+                )
+                continue
+            if st.is_reserved_name(key):
+                questions.append(
+                    f"{fpath}: the series key '{key}' is a reserved name; pick a hub name "
+                    "and fold by hand"
+                )
+                continue
+            existing = [n for n in names if n not in members]
+            if fpath != "." and (parent_leaf == key or st.series_key(parent_leaf)[0] == key):
+                # The parent is already the current-state node for this series.
+                hub, hub_exists = fpath, True
+            else:
+                twin = next(
+                    (
+                        c.name
+                        for c in st.sibling_collisions(existing, key)
+                        if c.kind == "same_words"
+                    ),
+                    None,
+                )
+                hub_name = twin or key
+                hub, hub_exists = _join(fpath, hub_name), hub_name in existing
             # The fold that worked on a real KB: the dated nodes become
             # background material of one current-state node. Nothing is
-            # deleted, search still reaches every card, and the hub is a
+            # deleted, search still reaches every card, and a new hub is a
             # stub until the agent writes the current state from them.
             moves = [{"from": _join(fpath, m), "to": f"{hub}/deep_context/{m}"} for m in members]
-            items.append(
-                {
-                    "kind": "series",
-                    "priority": PRIORITY["series"],
-                    "path": fpath,
-                    "why": finding["message"],
-                    "new_parent": hub,
-                    "moves": moves,
-                    "members": members[:MAX_MEMBER_GISTS],
-                    "members_total": len(members),
-                    "commands": [
-                        _batch_command(root, moves),
-                        f"kvault write {hub} --kb-root {q} <<'EOF' … (the current state, "
-                        "written from deep_context/) EOF",
-                        f"kvault update-summaries --kb-root {q}  # then {fpath}, then up",
-                    ],
-                    "then": (
-                        f"{hub} is a stub after the batch; write it as the current state of "
-                        f"'{key}' from the {len(members)} dated nodes now under its deep_context/"
-                    ),
-                }
+            then = (
+                f"{hub} already exists; update it to reflect the {len(members)} dated nodes "
+                "now under its deep_context/ (do not recreate it)"
+                if hub_exists
+                else f"{hub} is a stub after the batch; write it as the current state of "
+                f"'{key}' from the {len(members)} dated nodes now under its deep_context/"
             )
-            parent_name = fpath.rsplit("/", 1)[-1]
-            if fpath != "." and st.series_key(parent_name)[1]:
-                questions.append(
+            item: Dict[str, Any] = {
+                "kind": "series",
+                "priority": PRIORITY["series"],
+                "path": fpath,
+                "why": finding["message"],
+                "new_parent": hub,
+                "new_parent_exists": hub_exists,
+                "moves": moves,
+                "members": members[:MAX_MEMBER_GISTS],
+                "members_total": len(members),
+                "commands": [
+                    _batch_command(root, moves, new_root=(fpath == "." and not hub_exists)),
+                    f"kvault write {shlex.quote(hub)} --kb-root {q} <<'EOF' … (the current "
+                    "state, written from deep_context/) EOF",
+                    f"kvault update-summaries --kb-root {q}  # then {fpath}, then up",
+                ],
+                "then": then,
+            }
+            if fpath != "." and st.series_key(parent_leaf)[1] and hub != fpath:
+                item["_question"] = (
                     f"{fpath} is itself a dated name; is the whole subtree one chronology "
                     "that should fold one level up?"
                 )
+            items.append(item)
             continue
         if code == "SIBLINGS" and finding["detail"].get("kind") not in (
             "same_name_elsewhere",
@@ -330,21 +385,30 @@ def build_plan(
                 }
             )
 
-    # Nested chronologies (month buckets that each hold day cards) produce a
-    # series item at every level. Moving the outer members moves the inner
-    # ones, so only the outermost fold is emitted; the rest would fail with
+    # A plan is one snapshot, and any batch changes the tree the next item
+    # was computed from. Nested chronologies produce a series item per
+    # level, and a cluster can move the parent of a series. Only the
+    # outermost structural item survives; the rest would fail with
     # "source doesn't exist" once the outer batch ran (seen on a real KB).
-    outer_member_paths = [
-        m["from"] for i in items if i["kind"] == "series" for m in i.get("moves", [])
-    ]
+    structural = [i for i in items if i["kind"] in ("cluster", "series")]
+
+    def _under_another_batch(item: Dict[str, Any]) -> bool:
+        for other in structural:
+            if other is item:
+                continue
+            for mv in other.get("moves", []):
+                src = mv["from"]
+                if item["path"] == src or item["path"].startswith(src + "/"):
+                    return True
+        return False
+
     items = [
-        i
-        for i in items
-        if not (
-            i["kind"] == "series"
-            and any(i["path"] == p or i["path"].startswith(p + "/") for p in outer_member_paths)
-        )
+        i for i in items if not (i["kind"] in ("cluster", "series") and _under_another_batch(i))
     ]
+    for item in items:
+        question = item.pop("_question", None)
+        if question:
+            questions.append(question)
 
     for parent, group in sibling_groups.items():
         top = group[0]["detail"]
@@ -385,9 +449,10 @@ def build_plan(
         # none of that (and left WRITE: findings behind on a real KB).
         for g in legacy[:MAX_ADOPT_COMMANDS]:
             node = g["path"][: -len(".md")]
+            file_q = shlex.quote(str(root / g["path"]))
             commands.append(
-                f"kvault write {node} --create --kb-root {q} < {q}/{g['path']} "
-                f"&& {rm} {q}/{g['path']}"
+                f"kvault write {shlex.quote(node)} --create --kb-root {q} < {file_q} "
+                f"&& {rm} {file_q}"
             )
         if len(legacy) > MAX_ADOPT_COMMANDS:
             commands.append(
@@ -400,10 +465,11 @@ def build_plan(
         others = [g for g in group if g["detail"].get("kind") != "legacy_node_file"]
         if others:
             mv = "git mv" if (root / ".git").exists() else "mv"
+            home_q = shlex.quote(str(root / home))
             commands.append(
-                f"mkdir -p {q}/{home} && {mv} "
-                + " ".join(f"{q}/{g['path']}" for g in others[:6])
-                + f" {q}/{home}/"
+                f"mkdir -p {home_q} && {mv} "
+                + " ".join(shlex.quote(str(root / g["path"])) for g in others[:6])
+                + f" {home_q}/"
             )
             if len(others) > 6:
                 commands.append(f"# … +{len(others) - 6} more files under {parent}")
@@ -432,7 +498,7 @@ def build_plan(
                 "truncated",
                 f"showing {len(shown)} of {total} items",
                 detail={"shown": len(shown), "total": total},
-                next_step=f"kvault plan --limit {total}",
+                next_step=f"kvault plan {scope or '.'} --limit {total} --kb-root {q}",
             )
         )
     return {

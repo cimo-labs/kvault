@@ -201,9 +201,9 @@ tree with the same rules, so the two never disagree.
 | `BRANCH:` (hard) | A parent — the root included — has more than 10 children | `kvault plan <path>` |
 | `SUMMARY:` | A parent rollup is too short, misses children, has placeholder text, is too long, or accretes dated sections | Rewrite as a rollup; `too_long`/`stale_history` means **fold**, never split — chronology belongs in `journal/`, detail in `deep_context/` |
 | `GHOST:` | A directory with no `_summary.md` — invisible to `tree`, `search`, and `check` | Write a summary, or list it in `.kvaultignore` if it is tooling |
-| `SERIES:` | A parent whose children differ only by date or time words: a chronology written as nodes | Fold into one current-state node; the timeline goes to `journal/` |
+| `SERIES:` | A parent whose children differ only by date or time words: a chronology written as nodes | `kvault plan` folds them: the dated nodes become `deep_context/` material of one current-state node you then write; new timeline entries go to `journal/` |
 | `SIBLINGS:` | Two sibling names share their words, or one basename lives at two depths (buckets like `a_m` and tier × segment facets are exempt) | Merge, or nest one with `kvault move` |
-| `LOOSE:` | A file outside the node convention: a legacy node file (Markdown with frontmatter, invisible to search), a supporting doc, or an artifact | Adopt it as a node (`plan` emits the `git mv`), move it into `<node>/deep_context/`, or ignore it |
+| `LOOSE:` | A file outside the node convention: a legacy node file (Markdown with frontmatter, invisible to search), a supporting doc, or an artifact | Adopt it as a node (`plan` emits `kvault write <node> --create < file && git rm file`), move it into `<node>/deep_context/`, or ignore it |
 | `JOURNAL:` | Files off `journal/YYYY-MM/log.md`, or a second history | Fold into the canonical log |
 | `PENDING:` / `RETRACTED:` | Captured events never promoted; nodes citing retracted events | Promote or resolve; rewrite and re-link |
 
@@ -234,7 +234,7 @@ Plan for .: 9 items (showing 2; --limit 0 for all)
 2. ghost    infra
      no _summary.md — invisible to tree, search, and check
      …
-Questions for a person:
+Questions (answer from evidence; defer only when the evidence is not there):
   - projects: are any of these groups one initiative? aio, shopping, ai, pdp, concord, …
 ```
 

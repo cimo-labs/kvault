@@ -38,7 +38,8 @@ from kvault.core.summary_quality import DEFAULT_MAX_DATED_SECTIONS
 
 _STRUCTURE_FIX_LINE = {
     "GHOST": "write a summary (kvault write <path> --create) or list it in .kvaultignore",
-    "SERIES": "chronology as nodes → fold into one current-state node + journal/",
+    "SERIES": "chronology as nodes → kvault plan folds them under one current-state node's "
+    "deep_context/; new entries go to journal/",
     "SIBLINGS": "same thing → merge; subtopic → kvault move; kvault plan lists the moves",
     "LOOSE": "move into <node>/deep_context/, make it a node, or list it in .kvaultignore",
     "JOURNAL": "one history: journal/YYYY-MM/log.md via kvault journal",

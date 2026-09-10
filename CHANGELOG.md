@@ -54,7 +54,7 @@ over MCP. Reproduced on a synthetic fixture before any of this was written.
 - **`LOOSE:` knows what it found.** Markdown with frontmatter is a
   `legacy_node_file` (knowledge in the pre-directory layout, invisible to
   search and tree; the fix is to adopt it as a node and `plan` emits the
-  `git mv`); plain Markdown is a `supporting_doc`; anything else an
+  `kvault write … < file && git rm file`); plain Markdown is a `supporting_doc`; anything else an
   `artifact`. Files named `_*` are the KB's own internals and are skipped.
   On a real KB 61 of 70 loose files were legacy node files.
 - **`.kvaultignore`** at the KB root: one fnmatch pattern per line
@@ -70,6 +70,21 @@ over MCP. Reproduced on a synthetic fixture before any of this was written.
   items with commands. Judgment calls come back as `questions`. Never
   applies anything. On the audit fixture it turns 119 flat children into
   12 groups.
+- **Reserved directories stay put.** `move` refuses `journal` (or anything
+  under it) and a bare `deep_context/` as a source, and refuses a target
+  named `journal`/`deep_context` or placed under `journal/`; folding INTO
+  `<node>/deep_context/` is the documented exception. A batch also rejects
+  a target that lies inside another move's source (it would be recreated
+  as a ghost root), and `move` re-checks its target inside the write lock.
+  A stub is never written for a reserved component, so a fold leaves
+  `deep_context/` invisible as a node while search still reaches every
+  moved card.
+- **`plan` series items are safe to run**: a root-level series passes
+  `--new-root`; an existing hub (or a same-words twin sibling) is updated,
+  not recreated; a parent named like the series folds into its own
+  `deep_context/`; children named by date alone and reserved keys become
+  questions; a series under a cluster's moves is not emitted; every file
+  path in a command is shell-quoted; `plan ./path` works.
 - **Root categories can be moved** (`move` and `move --batch` validate node
   paths, so a one-component source or target is fine; only `.` is refused).
   Consolidating 23 roots into hubs is the case the batch exists for, and

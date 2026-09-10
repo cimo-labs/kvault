@@ -213,3 +213,127 @@ def test_plan_quotes_the_root_and_flags_root_clusters(tmp_path):
     # and the emitted batch actually runs
     result = ops.move_entities(kb, clusters[0]["moves"], new_root=True)
     assert result["success"] and result["count"] == 3
+
+
+# ── second review round (2026-09-10) ───────────────────────────────────
+
+
+def _series(kb, parent, key, days=("15", "16", "17")):
+    for d in days:
+        r = ops.write_node(
+            kb,
+            f"{parent}/{key}_2026_06_{d}" if parent != "." else f"{key}_2026_06_{d}",
+            BODY,
+            META,
+            create=True,
+            new_root=True,
+        )
+        assert r["success"], r
+
+
+def test_root_level_series_batch_carries_new_root(tmp_path):
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / ".kvault").mkdir()
+    (kb / "_summary.md").write_text("# Root\n\nRoot.\n")
+    _series(kb, ".", "standup")
+    item = [i for i in build_plan(kb, limit=0)["items"] if i["kind"] == "series"][0]
+    assert "--new-root" in item["commands"][0]
+    result = ops.move_entities(kb, item["moves"], new_root=True)
+    assert result["success"] and result["count"] == 3
+
+
+def test_series_with_empty_key_becomes_a_question(empty_kb):
+    for d in ("2026_01", "2026_02", "2026_03"):
+        assert ops.write_node(empty_kb, f"projects/{d}", BODY, META, create=True)["success"]
+    plan = build_plan(empty_kb, limit=0)
+    assert not [i for i in plan["items"] if i["kind"] == "series"]
+    assert any("named by date alone" in q for q in plan["questions"])
+
+
+def test_series_hub_that_exists_is_updated_not_recreated(empty_kb):
+    assert ops.write_node(empty_kb, "projects/standup", BODY, META, create=True)["success"]
+    _series(empty_kb, "projects", "standup")
+    item = [i for i in build_plan(empty_kb, limit=0)["items"] if i["kind"] == "series"][0]
+    assert item["new_parent"] == "projects/standup" and item["new_parent_exists"] is True
+    assert "do not recreate" in item["then"]
+    result = ops.move_entities(empty_kb, item["moves"])
+    assert result["success"]
+    text = (empty_kb / "projects" / "standup" / "_summary.md").read_text()
+    assert "A node with enough words" in text and "Placeholder" not in text
+
+
+def test_series_under_a_parent_named_like_the_key_folds_into_the_parent(empty_kb):
+    assert ops.write_node(empty_kb, "projects/standup", BODY, META, create=True)["success"]
+    _series(empty_kb, "projects/standup", "standup")
+    item = [i for i in build_plan(empty_kb, limit=0)["items"] if i["kind"] == "series"][0]
+    assert item["new_parent"] == "projects/standup"
+    assert all(m["to"].startswith("projects/standup/deep_context/") for m in item["moves"])
+    result = ops.move_entities(empty_kb, item["moves"])
+    assert result["success"]
+    assert not (empty_kb / "projects" / "standup" / "standup").exists()
+
+
+def test_series_twin_sibling_becomes_the_hub(empty_kb):
+    assert ops.write_node(empty_kb, "projects/standups", BODY, META, create=True)["success"]
+    _series(empty_kb, "projects", "standup")
+    item = [i for i in build_plan(empty_kb, limit=0)["items"] if i["kind"] == "series"][0]
+    assert item["new_parent"] == "projects/standups" and item["new_parent_exists"]
+
+
+def test_reserved_series_key_is_a_question(empty_kb):
+    _series(empty_kb, "projects", "journal")
+    plan = build_plan(empty_kb, limit=0)
+    assert not [i for i in plan["items"] if i["kind"] == "series"]
+    assert any("reserved name" in q for q in plan["questions"])
+
+
+def test_cluster_batch_drops_series_items_under_its_sources(empty_kb):
+    for name in (
+        "aio_a",
+        "aio_b",
+        "aio_c",
+        "orchid",
+        "quartz",
+        "tundra",
+        "velvet",
+        "willow",
+        "xenon",
+        "yarrow",
+        "zephyr",
+    ):
+        assert ops.write_node(empty_kb, f"projects/{name}", BODY, META, create=True)["success"]
+    _series(empty_kb, "projects/aio_a", "standup")
+    plan = build_plan(empty_kb, limit=0)
+    kinds = [(i["kind"], i["path"]) for i in plan["items"] if i["kind"] in ("cluster", "series")]
+    assert ("cluster", "projects") in kinds
+    assert ("series", "projects/aio_a") not in kinds  # the cluster moves projects/aio_a
+
+
+def test_dated_parent_question_only_for_surviving_series(empty_kb):
+    for month in ("june", "july", "august"):
+        _series(empty_kb, f"projects/{month}_2026_boundaries", "card")
+    plan = build_plan(empty_kb, limit=0)
+    assert [i["path"] for i in plan["items"] if i["kind"] == "series"] == ["projects"]
+    assert not any("is itself a dated name" in q for q in plan["questions"])
+
+
+def test_loose_commands_quote_every_path(tmp_path):
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / ".kvault").mkdir()
+    (kb / "_summary.md").write_text("# Root\n\nRoot.\n")
+    assert ops.write_node(kb, "projects/x", BODY, META, create=True, new_root=True)["success"]
+    (kb / "projects" / "x y.pdf").write_bytes(b"x")
+    (kb / "projects" / "it's.md").write_text("---\nsource: manual\n---\n# It\n")
+    loose = [i for i in build_plan(kb, limit=0)["items"] if i["kind"] == "loose"][0]
+    joined = "\n".join(loose["commands"])
+    assert "x y.pdf'" in joined and "it'\"'\"'s" in joined
+    assert " x y.pdf" not in joined  # never a bare space-separated path
+
+
+def test_plan_scope_accepts_dot_slash(empty_kb):
+    assert ops.write_node(empty_kb, "projects/a", BODY, META, create=True)["success"]
+    (empty_kb / "projects" / "ghostly").mkdir()
+    plan = build_plan(empty_kb, path="./projects", limit=0)
+    assert plan["path"] == "projects" and plan["total"] >= 1

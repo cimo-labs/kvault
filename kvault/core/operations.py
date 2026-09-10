@@ -709,10 +709,15 @@ def _stub_body(path: str, trigger: str) -> str:
 
 def _missing_ancestor_summaries(kg_root: Path, path: str) -> List[str]:
     """Ancestors of *path* (root excluded) with no ``_summary.md``, shallowest first."""
+    # deep_context/ and journal/ are reserved: background material and the
+    # log. Stubbing a summary there turns them into phantom nodes (seen on a
+    # real KB after a series fold), so they are never stubbed.
     missing = [
         a
         for a in _ancestor_node_paths(path)
-        if a != "." and not _summary_path_for_node(kg_root, a).exists()
+        if a != "."
+        and not st.is_reserved_name(a.rsplit("/", 1)[-1])
+        and not _summary_path_for_node(kg_root, a).exists()
     ]
     return sorted(missing, key=lambda a: a.count("/"))
 
@@ -1911,6 +1916,20 @@ def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:
     }
 
 
+def _reserved_move_problem(source: str, target: str) -> Optional[str]:
+    """journal/ is the log and deep_context/ is background material; neither
+    is a thing to move on its own, and nothing is moved into the log."""
+    if source == "journal" or source.startswith("journal/"):
+        return "the journal cannot be moved"
+    if source.rsplit("/", 1)[-1] in st.RESERVED_DIRS:
+        return "a reserved directory (deep_context/) cannot be moved on its own"
+    if target == "journal" or target.startswith("journal/"):
+        return "nothing can be moved into journal/"
+    if target.rsplit("/", 1)[-1] in st.RESERVED_DIRS:
+        return "a target cannot be named journal or deep_context"
+    return None
+
+
 def move_entity(
     kg_root: Path, source_path: str, target_path: str, new_root: bool = False
 ) -> Dict[str, Any]:
@@ -1938,6 +1957,9 @@ def move_entity(
         )
     if target_path == source_path or target_path.startswith(source_path + "/"):
         return error_response(ErrorCode.VALIDATION_ERROR, "Cannot move a node into its own subtree")
+    reserved = _reserved_move_problem(source_path, target_path)
+    if reserved:
+        return error_response(ErrorCode.VALIDATION_ERROR, reserved)
     try:
         source_full = resolve_node_path(kg_root, source_path, reject_symlinks=True)
         target_full = resolve_node_path(kg_root, target_path, reject_symlinks=True)
@@ -1958,6 +1980,12 @@ def move_entity(
         nodes_moved = sum(1 for _ in source_full.rglob("_summary.md"))
         target_full.parent.mkdir(parents=True, exist_ok=True)
         stubs_written = _write_stub_summaries(kg_root, stub_paths, trigger=target_path)
+        if target_full.exists():
+            # Another process (or a stub) produced the target while we
+            # waited for the lock; shutil.move would nest the source inside.
+            return error_response(
+                ErrorCode.ALREADY_EXISTS, f"Target appeared before the move ran: {target_path}"
+            )
         shutil.move(str(source_full), str(target_full))
 
     # BOTH ancestor chains are stale after a move: the source chain still
@@ -2066,6 +2094,14 @@ def move_entities(
             # A target that is an ancestor of another target would be stubbed
             # first, and shutil.move would then nest the source inside it.
             problem = "target overlaps another move's target in this batch"
+        elif any(tgt.startswith(other + "/") for other in sources_seen) or any(
+            other.startswith(src + "/") for other in targets_seen
+        ):
+            # A target under another move's source: once that source moves,
+            # mkdir(parents=True) silently recreates it as a ghost root.
+            problem = "target lies inside another move's source in this batch"
+        elif _reserved_move_problem(src, tgt):
+            problem = _reserved_move_problem(src, tgt) or ""
         if problem is None:
             try:
                 resolve_node_path(kg_root, src, reject_symlinks=True)

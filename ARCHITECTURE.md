@@ -163,7 +163,7 @@ pipeline has three stages with a hard boundary between them:
 
 1. **Vocabulary** (`kvault/core/notes.py`): a closed set of 11 note codes
    (`autofilled`, `unchanged`, `partial`, `created`, `removed`, `truncated`,
-   `skipped`, `waited`, `guessed`, `propagate`), each with a one-sentence
+   `skipped`, `waited`, `guessed`, `propagate`, `structure`), each with a one-sentence
    contract. An unknown code raises at build time.
 2. **Result dicts** (`kvault/core/operations.py` and friends): notes ride
    inside the result as `{code, text, level, detail?, why?, next?}`. Batch

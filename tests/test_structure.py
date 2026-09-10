@@ -243,3 +243,8 @@ def test_load_ignore_survives_bad_bytes(tmp_path):
     (tmp_path / st.IGNORE_FILE).write_bytes(b"scripts\n\xff\xfe garbage\nsources\n")
     patterns = st.load_ignore(tmp_path)
     assert "scripts" in patterns and "sources" in patterns
+
+
+def test_load_ignore_drops_catch_all_patterns(tmp_path):
+    (tmp_path / st.IGNORE_FILE).write_text("*\n**\nscripts\n*/*\n")
+    assert st.load_ignore(tmp_path) == ["scripts"]

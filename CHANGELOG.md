@@ -2,7 +2,7 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
-## 0.15.2 - Unreleased
+## 0.15.2 - 2026-09-10
 
 First contact with the KB that motivated 0.15: the work agent ran the
 migration across ~1,000 nodes and reported back. Two defects and one

@@ -198,3 +198,89 @@ def test_cli_check_prints_structure_groups_and_json_document(tmp_path):
     assert as_json.exit_code == 1
     assert {"findings", "structure_warnings", "truncated", "version", "did"} <= set(doc)
     assert doc["warnings"] and isinstance(doc["warnings"][0], str)
+
+
+# ── calibration on real KBs (2026-09-09) ───────────────────────────────
+
+
+def test_series_finding_and_pairs_exclude_series(tmp_path):
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "_summary.md").write_text("# Root\n\nRoot.\n")
+    _node(kb, "intelligence")
+    for day, name in ((15, "monday"), (16, "tuesday"), (17, "wednesday"), (18, "thursday")):
+        _node(kb, f"intelligence/critical_priority_june{day}_{name}_source_boundary_2026_06_{day}")
+    doc = run_checks(kb)
+    series = [f for f in doc["findings"] if f["code"] == "SERIES"]
+    assert len(series) == 1 and series[0]["path"] == "intelligence"
+    assert series[0]["detail"]["count"] == 4
+    assert series[0]["detail"]["key"] == "critical_priority_source_boundary"
+    assert not [f for f in doc["findings"] if f["code"] == "SIBLINGS"]
+
+
+def test_same_name_elsewhere_exempts_buckets_and_facets(tmp_path):
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "_summary.md").write_text("# Root\n\nRoot.\n")
+    for rel in (
+        "customers",
+        "customers/key",
+        "customers/key/industrial_oem",
+        "customers/standard",
+        "customers/standard/industrial_oem",
+        "people",
+        "people/friends",
+        "people/friends/a_m",
+        "people/contacts",
+        "people/contacts/a_m",
+        "strategic",
+        "customers/strategic",
+    ):
+        _node(kb, rel, f"# {rel.split('/')[-1].title()}\n\nNode.\n")
+    same = [
+        f
+        for f in run_checks(kb)["findings"]
+        if f["code"] == "SIBLINGS" and f["detail"].get("kind") == "same_name_elsewhere"
+    ]
+    assert [f["path"] for f in same] == ["strategic"]
+    assert "«" in same[0]["message"]  # titles ride along so an agent can dismiss quickly
+
+
+def test_loose_kinds(tmp_path):
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "_summary.md").write_text("# Root\n\nRoot.\n")
+    _node(kb, "intelligence")
+    (kb / "intelligence" / "competitive_landscape.md").write_text(
+        "---\nsource: manual\ntopic: Competitive Landscape\n---\n# Competitive Landscape\n"
+    )
+    (kb / "intelligence" / "notes.md").write_text("# Notes\n")
+    (kb / "intelligence" / "chart.xlsx").write_bytes(b"x")
+    (kb / "_index.md").write_text("internal")
+    kinds = {
+        f["path"]: f["detail"]["kind"] for f in run_checks(kb)["findings"] if f["code"] == "LOOSE"
+    }
+    assert kinds == {
+        "intelligence/competitive_landscape.md": "legacy_node_file",
+        "intelligence/notes.md": "supporting_doc",
+        "intelligence/chart.xlsx": "artifact",
+    }
+    legacy = [
+        f
+        for f in run_checks(kb)["findings"]
+        if f["path"] == "intelligence/competitive_landscape.md"
+    ][0]
+    assert "git mv" in legacy["fix"] and "_summary.md" in legacy["fix"]
+
+
+def test_tree_does_not_count_journal_months_as_ghosts(tmp_path):
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "_summary.md").write_text("# Root\n\nRoot.\n")
+    _node(kb, "journal", "# Journal\n\nLog.\n")
+    (kb / "journal" / "2026-09").mkdir()
+    (kb / "journal" / "2026-09" / "log.md").write_text("# log\n")
+    outline = ops.build_outline(kb)
+    journal = [c for c in outline["children"] if c["slug"] == "journal"][0]
+    assert journal["ghost_count"] == 0
+    assert "ghost" not in ops.render_outline_text(outline)

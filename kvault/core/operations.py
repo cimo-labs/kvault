@@ -202,10 +202,16 @@ def _walk_outline(
             children.append(child)
     # Directories with no summary are invisible to every other surface; the
     # outline at least counts them so an agent knows the shape it cannot see.
-    ghost_count = sum(
-        1
-        for d in st.child_dirs(kg_root if path == "." else kg_root / path, kg_root, ignore)
-        if st.is_ghost(d)
+    # journal/ months are the canonical layout, not ghosts: a reserved parent
+    # never counts its children.
+    ghost_count = (
+        0
+        if path != "." and st.is_reserved_name(slug)
+        else sum(
+            1
+            for d in st.child_dirs(kg_root if path == "." else kg_root / path, kg_root, ignore)
+            if st.is_ghost(d)
+        )
     )
 
     descendants = sum(1 + c["descendants_count"] for c in children)

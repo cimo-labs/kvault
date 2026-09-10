@@ -46,8 +46,8 @@ DEFAULT_PENDING_MAX_AGE = 7
 MAX_SIBLING_PAIRS_PER_PARENT = 5
 
 HARD_CODES = ("PROPAGATE", "LOG", "WRITE", "BRANCH")
-WARN_CODES = ("SUMMARY", "PENDING", "RETRACTED", "GHOST", "SIBLINGS", "LOOSE", "JOURNAL")
-STRUCTURE_CODES = ("GHOST", "SIBLINGS", "LOOSE", "JOURNAL")
+WARN_CODES = ("SUMMARY", "PENDING", "RETRACTED", "GHOST", "SERIES", "SIBLINGS", "LOOSE", "JOURNAL")
+STRUCTURE_CODES = ("GHOST", "SERIES", "SIBLINGS", "LOOSE", "JOURNAL")
 
 _SUMMARY_FIX = {
     "too_short": "rewrite the parent as a comprehensive rollup of its children",
@@ -340,22 +340,86 @@ def ghost_findings(kb_root: Path, ignore: Sequence[str]) -> List[Finding]:
     ]
 
 
+LOOSE_KINDS = ("legacy_node_file", "supporting_doc", "artifact")
+
+
+def _loose_kind(kb_root: Path, path: str) -> str:
+    if not path.endswith(".md"):
+        return "artifact"
+    try:
+        meta, _ = parse_frontmatter((kb_root / path).read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return "supporting_doc"
+    return "legacy_node_file" if meta else "supporting_doc"
+
+
 def loose_findings(kb_root: Path, ignore: Sequence[str]) -> List[Finding]:
-    """Files outside the node convention (not a summary, not under deep_context/)."""
+    """Files outside the node convention, classified by what they are.
+
+    On a real 564-node KB, 61 of 70 loose files were Markdown *with
+    frontmatter*: knowledge written in the pre-directory layout, invisible
+    to search and tree. Those are ``legacy_node_file`` and the fix is to
+    adopt them as nodes. Plain Markdown is a ``supporting_doc``
+    (deep_context/ material); anything else is an ``artifact``. Files whose
+    name starts with ``_`` are the KB's own internals and are skipped.
+    """
     out: List[Finding] = []
     for path in st.loose_files(kb_root, ignore):
+        name = path.rsplit("/", 1)[-1]
+        if name.startswith("_"):
+            continue
         parent = path.rsplit("/", 1)[0] if "/" in path else "."
         home = "deep_context/" if parent == "." else f"{parent}/deep_context/"
+        kind = _loose_kind(kb_root, path)
+        if kind == "legacy_node_file":
+            node = path[: -len(".md")]
+            message = "legacy node file (Markdown with frontmatter) — invisible to search and tree"
+            fix = f"adopt it: mkdir -p {node} && git mv {path} {node}/_summary.md, then propagate"
+        elif kind == "supporting_doc":
+            message = "supporting document outside any node"
+            fix = f"move it into {home}, or fold it into the parent summary"
+        else:
+            message = "artifact outside the node convention"
+            fix = f"move it into {home}, or list it in {st.IGNORE_FILE}"
         out.append(
             Finding(
                 code="LOOSE",
                 path=path,
-                message="file outside the node convention",
+                message=message,
                 level="warn",
-                detail={"parent": parent},
-                fix=f"move it into {home}, make it a node, or list it in {st.IGNORE_FILE}",
+                detail={"kind": kind, "parent": parent},
+                fix=fix,
             )
         )
+    return out
+
+
+def series_findings(kb_root: Path, ignore: Sequence[str], min_size: int = 3) -> List[Finding]:
+    """Parents whose children differ only by date/time words: a chronology
+    written as nodes. Chronology belongs in journal/ or in one node's
+    current state; a real KB had 40 daily cards under one parent."""
+    out: List[Finding] = []
+    for node_dir in _node_dirs(kb_root, ignore):
+        names = [d.name for d in st.child_dirs(node_dir, kb_root, ignore)]
+        parent = st.rel(kb_root, node_dir)
+        for key, members in st.date_series(names, min_size=min_size):
+            out.append(
+                Finding(
+                    code="SERIES",
+                    path=parent,
+                    message=(
+                        f"{len(members)} children differ only by date/time words "
+                        f"('{key}'), e.g. {members[0]}"
+                    ),
+                    level="warn",
+                    detail={"key": key, "count": len(members), "members": members[:10]},
+                    fix=(
+                        "fold the dated nodes into one current-state node under this parent "
+                        "and put the timeline in journal/; if they must stay, name them by "
+                        "topic, not date"
+                    ),
+                )
+            )
     return out
 
 
@@ -370,7 +434,10 @@ def sibling_findings(
         names = [d.name for d in st.child_dirs(node_dir, kb_root, ignore)]
         if len(names) < 2:
             continue
-        pairs = st.sibling_pairs(names)
+        # Members of one date series are a chronology, not near-duplicates;
+        # SERIES: reports them once. Without this the daily cards on a real
+        # KB produced 60 colliding pairs.
+        pairs = [(a, c) for a, c in st.sibling_pairs(names) if not st.same_series(a, c.name)]
         parent = st.rel(kb_root, node_dir)
         for a, c in pairs[:pairs_per_parent]:
             score = "" if c.kind == "same_words" else f" {c.score}"
@@ -400,18 +467,43 @@ def sibling_findings(
                 )
             )
     for name, paths in sorted(st.basename_duplicates(kb_root, ignore).items()):
+        # a_m/n_z buckets under two branches, and one basename under sibling
+        # parents (customers/{key,standard}/oem), are layouts, not twins.
+        if st.is_bucket_name(name) or st.is_facet_layout(paths):
+            continue
+        titled = [f"{p} «{_node_title(kb_root, p)}»" for p in paths[:4]]
         out.append(
             Finding(
                 code="SIBLINGS",
                 path=name,
-                message=f"'{name}' exists at {len(paths)} places: {', '.join(paths[:6])}"
-                + (" …" if len(paths) > 6 else ""),
+                message=f"'{name}' exists at {len(paths)} places: {', '.join(titled)}"
+                + (" …" if len(paths) > 4 else ""),
                 level="warn",
-                detail={"kind": "same_name_elsewhere", "paths": paths},
-                fix="merge them, or rename one so each topic has one home",
+                detail={
+                    "kind": "same_name_elsewhere",
+                    "paths": paths,
+                    "titles": [_node_title(kb_root, p) for p in paths],
+                },
+                fix="same thing: merge; different things: rename one so the name is not ambiguous",
             )
         )
     return out
+
+
+def _node_title(kb_root: Path, rel_path: str) -> str:
+    summary = kb_root / rel_path / st.SUMMARY_NAME
+    try:
+        meta, body = parse_frontmatter(summary.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return ""
+    for key in ("name", "title", "topic"):
+        value = (meta or {}).get(key)
+        if value:
+            return str(value)[:40]
+    for line in body.splitlines():
+        if line.startswith("#"):
+            return line.lstrip("# ").strip()[:40]
+    return ""
 
 
 def journal_layout_findings(kb_root: Path) -> List[Finding]:
@@ -501,6 +593,7 @@ def run_checks(
         ("PENDING", pending_findings(pending)),
         ("RETRACTED", retracted_findings(retracted)),
         ("GHOST", ghost_findings(root, ignore)),
+        ("SERIES", series_findings(root, ignore)),
         ("SIBLINGS", sibling_findings(root, ignore)),
         ("LOOSE", loose_findings(root, ignore)),
         ("JOURNAL", journal_layout_findings(root)),
@@ -564,6 +657,7 @@ __all__ = [
     "branching_findings",
     "summary_findings",
     "ghost_findings",
+    "series_findings",
     "loose_findings",
     "sibling_findings",
     "journal_layout_findings",

@@ -27,8 +27,9 @@ are on the `[KB]` line; everything else is warn-only maintenance work.
 | `[KB]` PROPAGATE / LOG / WRITE / BRANCH | Stale parent, missing journal entry, missing frontmatter, parent over the child ceiling | Fix before other work; BRANCH → `kvault plan <path>` |
 | `SUMMARY:` | A parent rollup is too short, misses children, has placeholder text, is too long, or accretes dated sections | `too_short`/`missing_child_coverage`/`placeholder_language`: rewrite as a rollup. `too_long`/`stale_history`: **fold, never split** — chronology goes to `journal/`, detail to `<node>/deep_context/` |
 | `GHOST:` | A directory with no `_summary.md`: invisible to tree, search, and check | Write a summary (`kvault write <path> --create`) or list it in `.kvaultignore` if it is tooling |
+| `SERIES:` | A parent whose children differ only by date/time words — a chronology written as nodes (daily cards) | Fold into one current-state node under that parent; the timeline goes to `journal/`. Never add another dated node to a series |
 | `SIBLINGS:` | Two names under one parent share their words, or one basename lives at two depths | Same thing → merge and delete one. Subtopic → `kvault move`. Undecidable → leave it for the monthly review |
-| `LOOSE:` | A file outside the node convention | Move into `<node>/deep_context/`, make it a node, or ignore it |
+| `LOOSE:` | A file outside the node convention. `legacy_node_file` = Markdown with frontmatter that search cannot see; `supporting_doc`; `artifact` | Adopt legacy node files as nodes (`plan` emits the `git mv`); supporting docs into `<node>/deep_context/`; artifacts ignored |
 | `JOURNAL:` | Files off the `journal/YYYY-MM/log.md` layout, or a second history | Fold into the canonical log with `kvault journal`, then remove |
 | `PENDING:` / `RETRACTED:` | Captured events never promoted; nodes citing retracted events | Promote or resolve; rewrite and re-link |
 
@@ -54,6 +55,8 @@ kvault check -q --kb-root "$KB"
   update it. Pass `--allow-similar` only when you have read both and they
   are different things.
 - Never write into `journal/` by hand; use `kvault journal` or `--reasoning`.
+- Never create a node with a file tool. `kvault write --create` is the only path that runs
+  the guards and lands in the ops log; on a real KB 56 of 59 new nodes in a month bypassed it.
 - Rewrite any stub in `ancestor_paths` in the same session (call 2 of the
   2-call workflow covers it).
 

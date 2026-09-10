@@ -46,6 +46,17 @@ over MCP. Reproduced on a synthetic fixture before any of this was written.
   `findings` list (`{code, path, message, level, detail, fix}`, hard
   first), `structure_warnings`, `truncated` (hidden count per code), and
   `ignore_patterns`; every warn-class list is capped at 50 per code.
+- **`SERIES:`** (warn-only): a parent whose children differ only by
+  date/time words — a chronology written as nodes. Calibrated on a real
+  KB with 40 daily "source boundary" cards under one parent; those cards
+  are one `SERIES:` line now instead of 60 `SIBLINGS:` pairs, and members
+  of one series never collide with each other.
+- **`LOOSE:` knows what it found.** Markdown with frontmatter is a
+  `legacy_node_file` (knowledge in the pre-directory layout, invisible to
+  search and tree; the fix is to adopt it as a node and `plan` emits the
+  `git mv`); plain Markdown is a `supporting_doc`; anything else an
+  `artifact`. Files named `_*` are the KB's own internals and are skipped.
+  On a real KB 61 of 70 loose files were legacy node files.
 - **`.kvaultignore`** at the KB root: one fnmatch pattern per line
   against the KB-relative path; a directory pattern covers its subtree.
   Tooling directories and files (`scripts/`, `sources/`,
@@ -79,6 +90,17 @@ over MCP. Reproduced on a synthetic fixture before any of this was written.
 
 ### Changed
 
+- **Same-basename findings skip layouts that are not twins**: `a_m`/`n_z`
+  alphabetical buckets under two branches, and one basename under sibling
+  parents at the same depth (`customers/{key,standard}/industrial_oem`, a
+  tier × segment facet). What remains carries each node's title so an
+  agent can dismiss a false twin in one read (`people/family «Family»` vs
+  `people/friends/family «Family Friends»`).
+- **`plan` collapses**: one `siblings` item per parent (with the top pairs)
+  and one `loose` item per directory (with adopt commands for legacy node
+  files). The uncollapsed form on a real 564-node KB was 131 items.
+- **`tree`** never counts a reserved parent's children as ghosts
+  (`journal/` months are the canonical layout).
 - **`prepare_summary_update` is bounded.** `children="auto"` (default)
   returns full child bodies up to `MAX_DIRECT_CHILDREN` and
   `{path, kind, title, gist, updated}` above it, with a `truncated` note
@@ -101,7 +123,7 @@ over MCP. Reproduced on a synthetic fixture before any of this was written.
 
 - `check` human output stays tier-invariant and `--json` one document. The
   line-prefix vocabulary is now `[KB]`, `SUMMARY:`, `PENDING:`,
-  `RETRACTED:`, `GHOST:`, `SIBLINGS:`, `LOOSE:`, `JOURNAL:`.
+  `RETRACTED:`, `GHOST:`, `SERIES:`, `SIBLINGS:`, `LOOSE:`, `JOURNAL:`.
 
 ## 0.14.0 - 2026-09-06
 

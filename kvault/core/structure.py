@@ -58,6 +58,27 @@ _JOURNAL_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 COLLISION_KINDS: Tuple[str, ...] = ("same_words", "prefix", "overlap")
 _KIND_RANK = {kind: i for i, kind in enumerate(COLLISION_KINDS)}
 
+# Tokens that carry a date or a time of day rather than a topic. Stripping
+# them from a name gives its *series key*: the 40 daily "source boundary"
+# cards on a real KB all collapse to one key, which is how a chronology that
+# has been written as nodes gets recognised (and kept out of the sibling
+# collision rules, where it produced 60 false pairs).
+_MONTHS = (
+    "january|february|march|april|may|june|july|august|september|october|november|december|"
+    "jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec"
+)
+_DAYS = "monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun"
+_TIME = (
+    "morning|midday|noon|afternoon|earlyafternoon|evening|night|late|early|am|pm|weekday|weekend"
+)
+_DATE_TOKEN_RE = re.compile(
+    rf"^(?:\d{{1,4}}|(?:{_MONTHS})\d{{0,2}}|(?:{_DAYS})|(?:{_TIME})|q[1-4]|w\d{{1,2}}|h[12])$"
+)
+#: Alphabetical bucket names (``a_m``, ``n_z``) that AGENTS.md itself recommends
+#: for splitting a fat parent; the same bucket name under two branches is the
+#: convention working, not a duplicate.
+_BUCKET_RE = re.compile(r"^[a-z]_[a-z]$")
+
 
 # -- names -------------------------------------------------------------------
 
@@ -165,6 +186,49 @@ def cluster_by_leading_token(
             leftovers.extend(members)
     groups.sort(key=lambda g: (-len(g[1]), g[0]))
     return groups, sorted(leftovers)
+
+
+def is_date_token(token: str) -> bool:
+    return bool(_DATE_TOKEN_RE.match(token))
+
+
+def series_key(name: str) -> Tuple[str, bool]:
+    """``(name with date/time tokens removed, whether any were removed)``."""
+    tokens = name_tokens(name)
+    kept = [t for t in tokens if not is_date_token(t)]
+    return "_".join(kept), len(kept) < len(tokens)
+
+
+def same_series(a: str, b: str) -> bool:
+    """True when two names differ only by date/time tokens."""
+    ka, da = series_key(a)
+    kb, db = series_key(b)
+    return da and db and ka == kb
+
+
+def date_series(names: Iterable[str], min_size: int = 3) -> List[Tuple[str, List[str]]]:
+    """Groups of names that differ only by date/time tokens, largest first."""
+    groups: Dict[str, List[str]] = {}
+    for name in names:
+        key, dated = series_key(name)
+        if dated:
+            groups.setdefault(key, []).append(name)
+    out = [(k, sorted(v)) for k, v in groups.items() if len(v) >= min_size]
+    out.sort(key=lambda g: (-len(g[1]), g[0]))
+    return out
+
+
+def is_bucket_name(name: str) -> bool:
+    return bool(_BUCKET_RE.match(name))
+
+
+def is_facet_layout(paths: Sequence[str]) -> bool:
+    """Same basename at one depth under sibling parents (``customers/{key,standard}/oem``)."""
+    if len(paths) < 2:
+        return False
+    depths = {p.count("/") for p in paths}
+    grandparents = {"/".join(p.split("/")[:-2]) for p in paths}
+    return len(depths) == 1 and len(grandparents) == 1
 
 
 # -- ignore file -------------------------------------------------------------
@@ -372,6 +436,12 @@ __all__ = [
     "sibling_collisions",
     "sibling_pairs",
     "cluster_by_leading_token",
+    "is_date_token",
+    "series_key",
+    "same_series",
+    "date_series",
+    "is_bucket_name",
+    "is_facet_layout",
     "load_ignore",
     "is_ignored",
     "is_reserved_name",

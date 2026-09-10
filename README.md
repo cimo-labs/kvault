@@ -201,13 +201,19 @@ tree with the same rules, so the two never disagree.
 | `BRANCH:` (hard) | A parent — the root included — has more than 10 children | `kvault plan <path>` |
 | `SUMMARY:` | A parent rollup is too short, misses children, has placeholder text, is too long, or accretes dated sections | Rewrite as a rollup; `too_long`/`stale_history` means **fold**, never split — chronology belongs in `journal/`, detail in `deep_context/` |
 | `GHOST:` | A directory with no `_summary.md` — invisible to `tree`, `search`, and `check` | Write a summary, or list it in `.kvaultignore` if it is tooling |
-| `SIBLINGS:` | Two sibling names share their words, or one basename lives at two depths | Merge, or nest one with `kvault move` |
-| `LOOSE:` | A file outside the node convention | Move into `<node>/deep_context/`, or ignore it |
+| `SERIES:` | A parent whose children differ only by date or time words: a chronology written as nodes | Fold into one current-state node; the timeline goes to `journal/` |
+| `SIBLINGS:` | Two sibling names share their words, or one basename lives at two depths (buckets like `a_m` and tier × segment facets are exempt) | Merge, or nest one with `kvault move` |
+| `LOOSE:` | A file outside the node convention: a legacy node file (Markdown with frontmatter, invisible to search), a supporting doc, or an artifact | Adopt it as a node (`plan` emits the `git mv`), move it into `<node>/deep_context/`, or ignore it |
 | `JOURNAL:` | Files off `journal/YYYY-MM/log.md`, or a second history | Fold into the canonical log |
 | `PENDING:` / `RETRACTED:` | Captured events never promoted; nodes citing retracted events | Promote or resolve; rewrite and re-link |
 
 `.kvaultignore` at the KB root (one fnmatch pattern per line; a directory pattern covers
 its subtree) declares the tooling directories and files that are not nodes and are fine.
+
+**One path in.** The guards run only on `kvault write` and the MCP write tools. A node
+written with a file tool or a shell redirect skips them and never reaches the ops log; on a
+real KB, 56 of the 59 nodes created in a month arrived that way. Agents and pipelines create
+nodes through kvault, and `check` is the backstop for the ones that did not.
 
 **The engine**: `kvault plan` turns findings into an ordered worklist with the exact commands —
 parents over the ceiling are clustered by leading word into new parents, each with a ready

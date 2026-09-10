@@ -100,3 +100,19 @@ def test_cli_plan_human_and_json(empty_kb):
     assert doc["count"] == 1 and doc["items"][0]["kind"] == "cluster"
     clean = runner.invoke(cli, ["plan", "people", "--kb-root", str(empty_kb)])
     assert "nothing to do" in clean.output
+
+
+def test_plan_collapses_loose_files_per_directory_and_siblings_per_parent(empty_kb):
+    (empty_kb / "projects" / "a.md").write_text("---\nsource: x\n---\n# A\n")
+    (empty_kb / "projects" / "b.md").write_text("---\nsource: x\n---\n# B\n")
+    (empty_kb / "projects" / "c.xlsx").write_bytes(b"x")
+    for name in ("code_reviews", "reviews", "infra", "infrastructure"):
+        ops.write_node(empty_kb, f"people/{name}", BODY, META, create=True)
+    plan = build_plan(empty_kb, limit=0)
+    loose = [i for i in plan["items"] if i["kind"] == "loose"]
+    assert len(loose) == 1 and loose[0]["path"] == "projects"
+    assert "2 legacy node file(s)" in loose[0]["why"]
+    assert sum("git mv" in c and "_summary.md" in c for c in loose[0]["commands"]) == 2
+    siblings = [i for i in plan["items"] if i["kind"] == "siblings"]
+    assert len(siblings) == 1 and siblings[0]["path"] == "people"
+    assert len(siblings[0]["pairs"]) == 2

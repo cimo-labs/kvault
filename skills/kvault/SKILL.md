@@ -175,7 +175,7 @@ Act on what the orientation pass shows:
 | Signal | Action |
 |--------|--------|
 | Branch with >10 children (`[N children, ...]`, `BRANCH:`) | `kvault plan <path>` → run the `cluster` item's `kvault move --batch --confirm` payload → rewrite the new hub, then the chain → `kvault validate`. The cadence (session / nightly / weekly / monthly) is the `kvault-maintenance` skill |
-| `[+K ghost]` in the tree, `GHOST:` / `SIBLINGS:` / `LOOSE:` / `JOURNAL:` from `kvault check` | Ghost: write the summary or list the path in `.kvaultignore`. Siblings: merge or nest. Loose: move into `<node>/deep_context/`. Journal: fold into `journal/YYYY-MM/log.md` |
+| `[+K ghost]` in the tree, `GHOST:` / `SERIES:` / `SIBLINGS:` / `LOOSE:` / `JOURNAL:` from `kvault check` | Ghost: write the summary or list the path in `.kvaultignore`. Series: dated nodes are a chronology — fold into one current-state node, timeline to `journal/`. Siblings: merge or nest. Loose: adopt a legacy node file as a node, move supporting docs into `<node>/deep_context/`. Journal: fold into `journal/YYYY-MM/log.md` |
 | Branch `~updated_max` older than ~6 months | Review for stale or dead content; update, merge, or prune |
 | `SUMMARY:` warnings from `kvault check` | `too_short`/`missing_child_coverage`: rewrite the parent as a comprehensive rollup. `too_long`/`stale_history`: the parent has become a changelog — fold dated sections into current state (chronology belongs in `journal/`), never append another dated section. Real work despite exit code 0 |
 | `PENDING:` warnings from `kvault check` | Promote each stale event (`kvault write --event <id>`) or resolve it with an explicit outcome |
@@ -187,6 +187,8 @@ maintenance pass to see what has already been touched.
 
 ## Hard rules
 
+- Create nodes only with `kvault write --create` (or the MCP write tools). A `_summary.md`
+  written with a file tool skips the structure guards and never reaches the ops log.
 - Never fabricate facts into the KB; record only what's known, with a `source`.
 - Never merge entities without an exact identifier match (email/phone).
 - Required frontmatter: `source`, `aliases` (kvault stamps `created`/`updated`, and

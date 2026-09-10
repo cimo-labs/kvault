@@ -181,3 +181,48 @@ def test_journal_layout_findings(tmp_path):
     assert "archive/journal" in paths
     assert "journal/2026-09" not in paths
     assert "journal/2026-09/log.md" not in paths
+
+
+# ── calibration on real KBs (2026-09-09) ───────────────────────────────
+
+
+def test_series_key_strips_date_and_time_tokens():
+    key, dated = st.series_key("critical_priority_june15_monday_source_boundary_2026_06_15")
+    assert key == "critical_priority_source_boundary" and dated
+    key2, dated2 = st.series_key("graph_mailbox_review_2026_07_03")
+    assert key2 == "graph_mailbox_review" and dated2
+    assert st.series_key("competitive_landscape") == ("competitive_landscape", False)
+    # a product code is not a date
+    assert st.series_key("tf1424") == ("tf1424", False)
+
+
+def test_same_series_and_date_series_groups():
+    names = [
+        "critical_priority_june15_monday_source_boundary_2026_06_15",
+        "critical_priority_june16_tuesday_source_boundary_2026_06_16",
+        "critical_priority_june17_wednesday_source_boundary_2026_06_17",
+        "hl_mando_reconciliation_ledger_2026_03_11",
+        "graph_mailbox_review_2026_07_02",
+        "graph_mailbox_review_2026_07_03",
+    ]
+    assert st.same_series(names[0], names[1])
+    assert not st.same_series(names[0], names[3])
+    groups = st.date_series(names, min_size=3)
+    assert [(k, len(m)) for k, m in groups] == [("critical_priority_source_boundary", 3)]
+    assert st.date_series(names, min_size=2)[1][0] == "graph_mailbox_review"
+
+
+def test_bucket_and_facet_exemptions():
+    assert st.is_bucket_name("a_m") and st.is_bucket_name("n_z")
+    assert not st.is_bucket_name("ai") and not st.is_bucket_name("a_m_x")
+    # same depth, sibling parents: a tier × segment matrix, not a duplicate
+    assert st.is_facet_layout(
+        [
+            "customers/key/industrial_oem",
+            "customers/prospects/industrial_oem",
+            "customers/standard/industrial_oem",
+        ]
+    )
+    # different depths: a split-brain candidate
+    assert not st.is_facet_layout(["people", "org/people"])
+    assert not st.is_facet_layout(["customers/strategic", "strategic"])

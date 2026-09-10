@@ -33,10 +33,11 @@ DEFAULT_MIN_CLUSTER = 3
 PRIORITY = {
     "cluster": 1,
     "ghost": 2,
-    "siblings": 3,
-    "loose": 4,
-    "journal": 5,
-    "summary": 6,
+    "series": 3,
+    "siblings": 4,
+    "loose": 5,
+    "journal": 6,
+    "summary": 7,
 }
 
 
@@ -78,6 +79,11 @@ def build_plan(
 
     items: List[Dict[str, Any]] = []
     questions: List[str] = []
+    # Collapsed groups: one item per parent for sibling pairs, one per
+    # directory for loose files. On a real KB the uncollapsed form was 131
+    # items, which is a wall, not a worklist.
+    sibling_groups: Dict[str, List[Dict[str, Any]]] = {}
+    loose_groups: Dict[str, List[Dict[str, Any]]] = {}
 
     for finding in doc["findings"]:
         fpath = finding["path"]
@@ -133,14 +139,45 @@ def build_plan(
                 )
             continue
 
-        if code not in ("GHOST", "SIBLINGS", "LOOSE", "JOURNAL", "SUMMARY"):
+        if code not in ("GHOST", "SERIES", "SIBLINGS", "LOOSE", "JOURNAL", "SUMMARY"):
             continue
         anchor = fpath
         if code == "SUMMARY":
             anchor = fpath[: -len("/_summary.md")] if fpath.endswith("/_summary.md") else "."
         if code == "SIBLINGS" and finding["detail"].get("kind") == "same_name_elsewhere":
             anchor = finding["detail"]["paths"][0]
+        if code == "LOOSE":
+            anchor = finding["detail"].get("parent", ".")
         if not _in_scope(anchor, scope):
+            continue
+
+        if code == "SERIES":
+            d = finding["detail"]
+            items.append(
+                {
+                    "kind": "series",
+                    "priority": PRIORITY["series"],
+                    "path": fpath,
+                    "why": finding["message"],
+                    "commands": [
+                        f"kvault tree {fpath} --gist --kb-root {root}",
+                        f"# write one current-state node: kvault write {fpath}/{d['key']} "
+                        "--create <<'EOF' … EOF",
+                        "# move the timeline into journal/ (kvault journal), then delete the "
+                        "dated nodes (kvault delete --confirm)",
+                    ],
+                    "members": d.get("members", []),
+                }
+            )
+            continue
+        if code == "SIBLINGS" and finding["detail"].get("kind") not in (
+            "same_name_elsewhere",
+            "more_pairs",
+        ):
+            sibling_groups.setdefault(fpath, []).append(finding)
+            continue
+        if code == "LOOSE":
+            loose_groups.setdefault(anchor, []).append(finding)
             continue
 
         if code == "GHOST":
@@ -195,21 +232,6 @@ def build_plan(
                         ],
                     }
                 )
-        elif code == "LOOSE":
-            parent = finding["detail"].get("parent", ".")
-            home = "deep_context" if parent == "." else f"{parent}/deep_context"
-            items.append(
-                {
-                    "kind": "loose",
-                    "priority": PRIORITY["loose"],
-                    "path": fpath,
-                    "why": finding["message"],
-                    "commands": [
-                        f"mkdir -p {root}/{home} && git mv {root}/{fpath} {root}/{home}/",
-                        f"# or: echo '{fpath}' >> {root}/{st.IGNORE_FILE}",
-                    ],
-                }
-            )
         elif code == "JOURNAL":
             items.append(
                 {
@@ -238,6 +260,74 @@ def build_plan(
                     ],
                 }
             )
+
+    for parent, group in sibling_groups.items():
+        top = group[0]["detail"]
+        items.append(
+            {
+                "kind": "siblings",
+                "priority": PRIORITY["siblings"],
+                "path": parent,
+                "why": f"{len(group)} colliding sibling pair(s), e.g. {group[0]['message']}",
+                "pairs": [
+                    {
+                        "a": g["detail"].get("a"),
+                        "b": g["detail"].get("b"),
+                        "kind": g["detail"].get("kind"),
+                    }
+                    for g in group[:8]
+                ],
+                "commands": [
+                    f"kvault read {_join(parent, top.get('a'))} --kb-root {root}",
+                    f"kvault read {_join(parent, top.get('b'))} --kb-root {root}",
+                    "# same thing → merge and delete one; subtopic → "
+                    f"kvault move --confirm {_join(parent, top.get('b'))} "
+                    f"{_join(parent, top.get('a'))}/{top.get('b')}",
+                ],
+            }
+        )
+    for parent, group in loose_groups.items():
+        kinds = {
+            k: sum(1 for g in group if g["detail"].get("kind") == k)
+            for k in ("legacy_node_file", "supporting_doc", "artifact")
+        }
+        legacy = [g for g in group if g["detail"].get("kind") == "legacy_node_file"]
+        home = "deep_context" if parent == "." else f"{parent}/deep_context"
+        commands: List[str] = []
+        for g in legacy[:8]:
+            node = g["path"][: -len(".md")]
+            commands.append(
+                f"mkdir -p {root}/{node} && git mv {root}/{g['path']} {root}/{node}/_summary.md"
+            )
+        if len(legacy) > 8:
+            commands.append(f"# … +{len(legacy) - 8} more legacy node files under {parent}")
+        if legacy:
+            commands.append(
+                f"kvault update-summaries --kb-root {root}  # rewrite {parent} to cover the adopted nodes"
+            )
+        others = [g for g in group if g["detail"].get("kind") != "legacy_node_file"]
+        if others:
+            commands.append(
+                f"mkdir -p {root}/{home} && git mv "
+                + " ".join(f"{root}/{g['path']}" for g in others[:6])
+                + f" {root}/{home}/"
+            )
+            if len(others) > 6:
+                commands.append(f"# … +{len(others) - 6} more files under {parent}")
+            commands.append(f"# or list tooling/generated files in {root}/{st.IGNORE_FILE}")
+        items.append(
+            {
+                "kind": "loose",
+                "priority": PRIORITY["loose"],
+                "path": parent,
+                "why": (
+                    f"{len(group)} loose file(s): {kinds['legacy_node_file']} legacy node "
+                    f"file(s), {kinds['supporting_doc']} supporting doc(s), {kinds['artifact']} artifact(s)"
+                ),
+                "files": [g["path"] for g in group[:12]],
+                "commands": commands,
+            }
+        )
 
     items.sort(key=lambda i: (i["priority"], i["path"]))
     total = len(items)

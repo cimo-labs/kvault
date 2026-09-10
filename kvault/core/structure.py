@@ -162,7 +162,7 @@ def sibling_pairs(names: Sequence[str], limit: Optional[int] = None) -> List[Tup
 
 
 def cluster_by_leading_token(
-    names: Iterable[str], min_size: int = 3
+    names: Iterable[str], min_size: int = 3, skip_tokens: Optional[Iterable[str]] = None
 ) -> Tuple[List[Tuple[str, List[str]]], List[str]]:
     """Group names by their first token.
 
@@ -174,10 +174,14 @@ def cluster_by_leading_token(
     """
     buckets: Dict[str, List[str]] = {}
     leftovers: List[str] = []
+    skip = {stem(t) for t in (skip_tokens or ())}
     for name in names:
         # A date is never a topic: six meeting notes named 2026_02_13_* are
-        # a chronology, not a cluster called "2026".
-        tokens = [t for t in name_tokens(name) if not is_date_token(t)]
+        # a chronology, not a cluster called "2026". And the parent's own
+        # words are not a cluster either: twelve aio_* nodes under
+        # projects/aio/ are that hub's contents, not a hub called aio/aio
+        # (seen on a real KB after its first consolidation).
+        tokens = [t for t in name_tokens(name) if not is_date_token(t) and stem(t) not in skip]
         if not tokens:
             leftovers.append(name)
             continue

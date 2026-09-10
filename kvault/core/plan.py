@@ -128,7 +128,10 @@ def build_plan(
                 continue
             parent_dir = root if fpath == "." else root / fpath
             names = [d.name for d in st.child_dirs(parent_dir, root, ignore)]
-            groups, leftovers = st.cluster_by_leading_token(names, min_cluster)
+            parent_words = st.name_tokens(fpath.rsplit("/", 1)[-1]) if fpath != "." else []
+            groups, leftovers = st.cluster_by_leading_token(
+                names, min_cluster, skip_tokens=parent_words
+            )
             count = finding["detail"].get("child_count", len(names))
             for token, members in groups:
                 if st.is_reserved_name(token):

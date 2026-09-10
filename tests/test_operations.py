@@ -372,7 +372,15 @@ class TestStrictSummaryUpdates:
         )
 
         assert result["success"] is True
-        assert (empty_ops_kb / "people" / "_summary.md").read_text() == (
+        # 0.15.2: a rewritten summary carries today's `updated` so check's
+        # PROPAGATE comparison sees the rewrite; the body is untouched.
+        text = (empty_ops_kb / "people" / "_summary.md").read_text()
+        assert (
+            text.startswith("---\nupdated: '")
+            and text.endswith("---\n\n# People\n\nUpdated from direct child summaries.\n")
+            or text.endswith("---\n# People\n\nUpdated from direct child summaries.\n")
+        )
+        assert ops.read_node(empty_ops_kb, "people")["content"].lstrip("\n") == (
             "# People\n\nUpdated from direct child summaries.\n"
         )
 
@@ -408,7 +416,10 @@ class TestStrictSummaryUpdates:
 
         assert result["success"] is True
         node = ops.read_node(empty_ops_kb, "people")
-        assert node["meta"] == {"source": "manual", "aliases": ["Contacts"]}
+        assert node["meta"]["source"] == "manual" and node["meta"]["aliases"] == ["Contacts"]
+        from datetime import datetime
+
+        assert node["meta"]["updated"] == datetime.now().strftime("%Y-%m-%d")  # stamped (0.15.2)
 
     def test_write_parent_summary_rejects_stale_digest(self, empty_ops_kb):
         prepared = ops.prepare_summary_update(empty_ops_kb, "people")

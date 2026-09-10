@@ -2,6 +2,36 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.15.2 - 2026-09-10
+
+First contact with the KB that motivated 0.15: the work agent ran the
+migration across ~1,000 nodes and reported back. Two defects and one
+guidance gap, all from that report.
+
+### Fixed
+
+- **`write-summary` / `update-summaries` stamp `updated`.** The 2-call
+  workflow's second call rewrote the parent but kept its old `updated`
+  date, so `check` reported `PROPAGATE` for that parent indefinitely. A
+  rewritten summary now carries today's date (and `created` is preserved
+  or set); an identical rewrite is a detected no-op (`unchanged` note,
+  dates untouched), like `write`. Results carry `changed` and `updated`.
+- **`plan` never clusters a hub by its own name.** Twelve `aio_*` nodes
+  under `projects/aio/` proposed a hub `projects/aio/aio`. The clusterer
+  now skips the parent's own words when choosing a leading token, so those
+  nodes group by their next word (or stay put).
+
+### Changed
+
+- The maintenance skill and the MCP `kvault_update_summaries` docstring say
+  to send at most 10 ancestors per `update-summaries` call: each entry is a
+  full rollup body, and a 40-entry payload stressed a remote MCP bridge.
+
+### Known
+
+- The `[mcp]` extra stays pinned below 2.x. Migrating the server to the
+  mcp 2.x API (`MCPServer`) is a separate change.
+
 ## 0.15.1 - 2026-09-10
 
 Corrections that stick, and nothing that waits on a person. 0.15.0's

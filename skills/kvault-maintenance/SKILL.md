@@ -100,7 +100,10 @@ kvault plan --json --limit 5 --kb-root "$KB" > "$LOG/plan.json"
 
    One batch per item; the result's `ancestor_paths` is the full list of
    summaries to rewrite. Rewrite the new hub first (it is a parent now),
-   then its parent, then the root.
+   then its parent, then the root. Send `update-summaries` in chunks of at
+   most 10 ancestors per call: each entry carries a full rollup body, and a
+   40-entry payload has stressed a remote MCP bridge. kvault stamps
+   `updated` on every rewritten summary, so a rewrite clears PROPAGATE.
 2. `ghost` items: read what is inside, then either write the summary or add
    the path to `.kvaultignore`. Tooling directories (`scripts/`,
    `sources/`) are ignore entries, not nodes.

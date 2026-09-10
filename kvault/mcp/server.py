@@ -619,6 +619,9 @@ def create_server(kb_root: Path | str) -> Any:
         _record("write-parent-summary", result, started)
         return result
 
+    # Each entry carries a full rollup body; keep a call to <= 10 entries over
+    # a remote bridge (a 40-entry payload has stressed one). kvault stamps
+    # `updated` on every rewritten summary (0.15.2).
     @server.tool(name="kvault_update_summaries")
     def kvault_update_summaries(
         updates: List[Dict[str, Any]], kg_root: Optional[str] = None

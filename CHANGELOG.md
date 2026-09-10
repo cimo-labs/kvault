@@ -156,6 +156,14 @@ over MCP. Reproduced on a synthetic fixture before any of this was written.
   `check_directory_size`, `_get_updated_date` for existing importers.
 - `kvault move`'s positional arguments are optional when `--batch` is given.
 
+### Fixed
+
+- **The `[mcp]` extra is pinned to `mcp<2`.** mcp 2.x renamed `FastMCP` and
+  changed the tool API; a fresh install of the extra produced a
+  `kvault-mcp` that reported "MCP dependencies not installed". The MCP
+  test modules skip when the import fails, so this had been invisible to
+  a local run; CI's pinned environments never hit it.
+
 ### Frozen
 
 - `check` human output stays tier-invariant and `--json` one document. The

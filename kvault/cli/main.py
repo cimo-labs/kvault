@@ -12,7 +12,14 @@ from kvault.cli._helpers import apply_common_options, common_options, output_jso
 from kvault.cli.check import check_kb
 from kvault.cli.plan import plan
 from kvault.cli.doctor import doctor
-from kvault.cli.entity import read_entity, write_entity, list_entities, delete_entity, move_entity
+from kvault.cli.entity import (
+    read_entity,
+    write_entity,
+    list_entities,
+    delete_entity,
+    move_entity,
+    mark_node,
+)
 from kvault.cli.events import capture, events_group
 from kvault.cli.journal import write_journal
 from kvault.cli.search import search_nodes
@@ -87,6 +94,7 @@ cli.add_command(list_entities, "list")
 cli.add_command(search_nodes)
 cli.add_command(delete_entity, "delete")
 cli.add_command(move_entity, "move")
+cli.add_command(mark_node, "mark")
 cli.add_command(read_summary)
 cli.add_command(write_summary)
 cli.add_command(update_summaries)

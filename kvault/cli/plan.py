@@ -86,6 +86,8 @@ def plan(
     for index, item in enumerate(result["items"], 1):
         _echo_item(index, item)
     if result.get("questions"):
-        click.echo("Questions (answer from evidence; defer only when the evidence is not there):")
+        click.echo(
+            "Decisions (each has a default; act on it, record it with kvault mark if it should stick):"
+        )
         for question in result["questions"]:
             click.echo(f"  - {question}")

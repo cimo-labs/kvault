@@ -13,6 +13,7 @@ from kvault._version import __version__
 from kvault.core.frontmatter import parse_frontmatter, build_frontmatter, merge_frontmatter
 from kvault.core.daily_artifacts import DailyArtifactResult, generate_daily_artifact, parse_iso_date
 from kvault.core.check import Finding, run_checks
+from kvault.core.decisions import read_decisions
 from kvault.core.notes import NOTE_CODES, collapse, note
 from kvault.core.plan import build_plan
 from kvault.core.observability import ObservabilityLogger
@@ -52,6 +53,7 @@ __all__ = [
     "NOTE_CODES",
     "Finding",
     "run_checks",
+    "read_decisions",
     "build_plan",
     "note",
     "collapse",

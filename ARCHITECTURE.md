@@ -33,7 +33,7 @@ AI Tool Runtime
 Primary interface. Agent-facing KB commands support `--kb-root` (auto-detected from cwd)
 and `--json`; command groups and server-launching commands may have command-specific flags.
 
-- `entity.py`: node-first read, write (`--new-root`, `--allow-similar`), list; compatibility delete/move (`--batch`)
+- `entity.py`: node-first read, write (`--new-root`, `--allow-similar`), list, mark; compatibility delete/move (`--batch`)
 - `search.py`: structured lexical node search
 - `summary.py`: read-summary, write-summary, update-summaries, ancestors
 - `journal.py`: journal
@@ -84,6 +84,9 @@ parent-summary helpers backed by direct-child digests.
   and MCP `kvault_check`.
 - `plan.py`: `build_plan` — findings → ordered worklist with exact commands and `moves`
   payloads; never applies anything.
+- `decisions.py`: structure decisions recorded in node frontmatter (`distinct_from`,
+  `max_children`, `series_ok`) and honored by the guards, `check`, `plan`, and the strict
+  path. The home for a correction, so it is not re-proposed.
 - `conventions.py`: layout conventions shared by more than one rule (`BACKGROUND_CHILD_DIRS`,
   the `deep_context/` supporting-material child: budgeted as a leaf by the summary audit,
   never a reason for search to collapse its parent).

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from kvault._version import __version__
+from kvault.core import decisions as dc
 from kvault.core import structure as st
 from kvault.core.events import pending_event_findings, retracted_reference_findings
 from kvault.core.frontmatter import parse_frontmatter
@@ -262,17 +263,18 @@ def branching_findings(
     findings: List[Finding] = []
     for node_dir in _node_dirs(kb_root, patterns):
         count = len(st.child_dirs(node_dir, kb_root, patterns))
-        if count > max_children:
-            rel_path = st.rel(kb_root, node_dir)
+        rel_path = st.rel(kb_root, node_dir)
+        ceiling = dc.child_ceiling(kb_root, rel_path, max_children)
+        if count > ceiling:
             findings.append(
                 Finding(
                     code="BRANCH",
                     path=rel_path,
-                    message=f"has {count} children (>{max_children})",
+                    message=f"has {count} children (>{ceiling})",
                     level="hard",
-                    detail={"child_count": count, "max_children": max_children},
+                    detail={"child_count": count, "max_children": ceiling},
                     fix=f"kvault plan {rel_path} (clusters the children into new parents)",
-                    text=f"BRANCH: {rel_path} has {count} children (>{max_children})",
+                    text=f"BRANCH: {rel_path} has {count} children (>{ceiling})",
                 )
             )
     return findings
@@ -405,6 +407,8 @@ def series_findings(kb_root: Path, ignore: Sequence[str], min_size: int = 3) -> 
     for node_dir in _node_dirs(kb_root, ignore):
         names = [d.name for d in st.child_dirs(node_dir, kb_root, ignore)]
         parent = st.rel(kb_root, node_dir)
+        if dc.series_allowed(kb_root, parent):
+            continue
         for key, members in st.date_series(names, min_size=min_size):
             out.append(
                 Finding(
@@ -440,8 +444,13 @@ def sibling_findings(
         # Members of one date series are a chronology, not near-duplicates;
         # SERIES: reports them once. Without this the daily cards on a real
         # KB produced 60 colliding pairs.
-        pairs = [(a, c) for a, c in st.sibling_pairs(names) if not st.same_series(a, c.name)]
         parent = st.rel(kb_root, node_dir)
+        pairs = [
+            (a, c)
+            for a, c in st.sibling_pairs(names)
+            if not st.same_series(a, c.name)
+            and not dc.are_distinct(kb_root, _child(parent, a), _child(parent, c.name))
+        ]
         for a, c in pairs[:pairs_per_parent]:
             score = "" if c.kind == "same_words" else f" {c.score}"
             out.append(
@@ -474,6 +483,12 @@ def sibling_findings(
         # parents (customers/{key,standard}/oem), are layouts, not twins.
         if st.is_bucket_name(name) or st.is_facet_layout(paths):
             continue
+        # a recorded `distinct_from` between any two of them settles it
+        paths = [
+            p for p in paths if not any(dc.are_distinct(kb_root, p, o) for o in paths if o != p)
+        ]
+        if len(paths) < 2:
+            continue
         titled = [f"{p} «{_node_title(kb_root, p)}»" for p in paths[:4]]
         out.append(
             Finding(
@@ -491,6 +506,10 @@ def sibling_findings(
             )
         )
     return out
+
+
+def _child(parent: str, name: str) -> str:
+    return name if parent == "." else f"{parent}/{name}"
 
 
 def _node_title(kb_root: Path, rel_path: str) -> str:

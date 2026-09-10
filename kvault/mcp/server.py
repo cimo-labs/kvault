@@ -551,6 +551,38 @@ def create_server(kb_root: Path | str) -> Any:
         _record("write-summary", result, started)
         return result
 
+    @server.tool(name="kvault_mark")
+    def kvault_mark(
+        path: str,
+        distinct_from: Optional[List[str]] = None,
+        max_children: Optional[int] = None,
+        series_ok: Optional[bool] = None,
+        clear: bool = False,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Record a structure decision on a node so check, plan, and the guards honor it.
+
+        Use it when a person corrects you: `distinct_from` (these are different
+        things; the SIBLINGS finding and the create guard stop for that pair),
+        `max_children` (this parent's own ceiling), `series_ok` (a deliberate
+        chronology). Written through the normal write path, so it is logged.
+        """
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        started = time.monotonic()
+        result = ops.mark_node(
+            root,
+            path,
+            distinct_from=distinct_from,
+            max_children=max_children,
+            series_ok=series_ok,
+            clear=clear,
+        )
+        _record("mark", result, started)
+        return result
+
     @server.tool(name="kvault_prepare_summary_update")
     def kvault_prepare_summary_update(
         path: str,

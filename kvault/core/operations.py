@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from kvault._version import __version__
+from kvault.core import decisions as dc
 from kvault.core import notes as nt
 from kvault.core import structure as st
 from kvault.core.frontmatter import (
@@ -670,8 +671,10 @@ def _children_digest(
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-def _hierarchy_hint(child_count: int) -> Optional[Dict[str, Any]]:
-    if child_count <= MAX_DIRECT_CHILDREN:
+def _hierarchy_hint(
+    child_count: int, ceiling: int = MAX_DIRECT_CHILDREN
+) -> Optional[Dict[str, Any]]:
+    if child_count <= ceiling:
         return None
     return {
         "code": "too_many_direct_children",
@@ -680,7 +683,7 @@ def _hierarchy_hint(child_count: int) -> Optional[Dict[str, Any]]:
             "intermediate branch nodes."
         ),
         "child_count": child_count,
-        "max_direct_children": MAX_DIRECT_CHILDREN,
+        "max_direct_children": ceiling,
     }
 
 
@@ -806,7 +809,13 @@ def _root_guard(
     return None, [note]
 
 
-def _create_guard(kg_root: Path, path: str, new_root: bool, allow_similar: bool) -> Dict[str, Any]:
+def _create_guard(
+    kg_root: Path,
+    path: str,
+    new_root: bool,
+    allow_similar: bool,
+    incoming_meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Run the structural checks for a create. Returns an error response or
     ``{"success": True, "notes": [...], "stubs": [...]}``."""
     ignore = st.load_ignore(kg_root)
@@ -825,7 +834,18 @@ def _create_guard(kg_root: Path, path: str, new_root: bool, allow_similar: bool)
         else []
     )
 
-    collisions = st.sibling_collisions(siblings, leaf)
+    # A recorded decision beats a name comparison: `distinct_from` on the
+    # incoming node or on the existing sibling means "different things".
+    raw_declared = (incoming_meta or {}).get("distinct_from") or []
+    if isinstance(raw_declared, str):
+        raw_declared = [raw_declared]
+    declared_paths = {dc.normalize_rel(str(v), path) for v in raw_declared if str(v).strip()}
+    collisions = [
+        c
+        for c in st.sibling_collisions(siblings, leaf)
+        if _join_path(parent_path, c.name) not in declared_paths
+        and path not in dc.read_decisions(kg_root, _join_path(parent_path, c.name))["distinct_from"]
+    ]
     hard = [c for c in collisions if c.kind == "same_words"]
     if hard and not allow_similar:
         twin = _join_path(parent_path, hard[0].name)
@@ -866,16 +886,17 @@ def _create_guard(kg_root: Path, path: str, new_root: bool, allow_similar: bool)
         )
 
     new_count = len(siblings) + 1
-    if new_count > MAX_DIRECT_CHILDREN:
+    ceiling = dc.child_ceiling(kg_root, parent_path, MAX_DIRECT_CHILDREN)
+    if new_count > ceiling:
         notes.append(
             nt.note(
                 "structure",
-                f"{parent_path} now has {new_count} direct children (ceiling {MAX_DIRECT_CHILDREN})",
+                f"{parent_path} now has {new_count} direct children (ceiling {ceiling})",
                 detail={
                     "kind": "over_fanout",
                     "parent": parent_path,
                     "child_count": new_count,
-                    "max_direct_children": MAX_DIRECT_CHILDREN,
+                    "max_direct_children": ceiling,
                 },
                 why=(
                     "past the ceiling the orientation tree elides children and a parent "
@@ -1028,6 +1049,7 @@ def _resolve_entity_meta(
     create: bool,
     journal_source: Optional[str] = None,
     default_source: str = "auto:cli",
+    drop_keys: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Merge incoming meta with existing meta and safe defaults."""
     meta: Dict[str, Any] = dict(incoming_meta or {})
@@ -1039,6 +1061,10 @@ def _resolve_entity_meta(
 
     merged: Dict[str, Any] = dict(existing_meta)
     merged.update(meta)
+    # A merge cannot express "remove this key"; callers that need to (mark
+    # --clear) say so explicitly.
+    for key in drop_keys or ():
+        merged.pop(key, None)
 
     if not merged.get("source"):
         merged["source"] = journal_source or existing_meta.get("source") or default_source
@@ -1125,6 +1151,7 @@ def write_node(
     event_ids: Optional[List[str]] = None,
     new_root: bool = False,
     allow_similar: bool = False,
+    drop_meta_keys: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Write any node summary with YAML frontmatter.
 
@@ -1179,7 +1206,9 @@ def write_node(
     structure_notes: List[Dict[str, Any]] = []
     stub_paths: List[str] = []
     if create and path != ".":
-        guard = _create_guard(kg_root, path, new_root=new_root, allow_similar=allow_similar)
+        guard = _create_guard(
+            kg_root, path, new_root=new_root, allow_similar=allow_similar, incoming_meta=meta
+        )
         if not guard.get("success"):
             return guard
         structure_notes = guard["notes"]
@@ -1200,6 +1229,7 @@ def write_node(
             create=create,
             journal_source=journal_source,
             default_source=default_source,
+            drop_keys=drop_meta_keys,
         )
     except ValueError as exc:
         return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
@@ -1623,15 +1653,16 @@ def prepare_summary_update(kg_root: Path, path: str, children: str = "auto") -> 
                 "out of the KB. Do not update this parent summary until it resolves."
             ),
         )
+    ceiling = dc.child_ceiling(kg_root, path, MAX_DIRECT_CHILDREN)
     mode = children
     if mode == "auto":
-        mode = "content" if child_count <= MAX_DIRECT_CHILDREN else "gist"
+        mode = "content" if child_count <= ceiling else "gist"
     notes: List[Dict[str, Any]] = []
     if children == "auto" and mode == "gist":
         notes.append(
             nt.note(
                 "truncated",
-                f"{child_count} children returned as gists (ceiling {MAX_DIRECT_CHILDREN})",
+                f"{child_count} children returned as gists (ceiling {ceiling})",
                 detail={"child_count": child_count, "children_mode": "gist"},
                 why=(
                     "full bodies for this many children exceed what one rollup should read; "
@@ -1649,8 +1680,8 @@ def prepare_summary_update(kg_root: Path, path: str, children: str = "auto") -> 
     result["children_mode"] = mode
     result["children_digest"] = digest
     result["digest_algorithm"] = SUMMARY_UPDATE_DIGEST_ALGORITHM
-    result["max_direct_children"] = MAX_DIRECT_CHILDREN
-    result["hierarchy_hint"] = _hierarchy_hint(child_count)
+    result["max_direct_children"] = ceiling
+    result["hierarchy_hint"] = _hierarchy_hint(child_count, ceiling)
     result["parent"] = _summary_update_node(parent_raw)
     result["children"] = [
         _summary_update_node(child) if mode == "content" else _summary_update_gist(child)
@@ -2134,6 +2165,30 @@ def move_entities(
             if missing not in stub_paths:
                 stub_paths.append(missing)
 
+    if new_root:
+        # --new-root on a batch means consolidation, never addition: the
+        # root count after the batch may not exceed the count before. A
+        # deliberate new root is `kvault write <root>/... --new-root`.
+        roots_before = {d.name for d in st.child_dirs(kg_root, kg_root, ignore)}
+        roots_after = set(roots_before)
+        for src, tgt in normalized:
+            if "/" not in src:
+                roots_after.discard(src)
+        for src, tgt in normalized:
+            roots_after.add(tgt.split("/")[0])
+        if len(roots_after) > len(roots_before):
+            return error_response(
+                ErrorCode.VALIDATION_ERROR,
+                f"this batch would increase the root count from {len(roots_before)} to "
+                f"{len(roots_after)}; --new-root on a batch is for consolidation",
+                details={
+                    "reason": "new_root",
+                    "roots_before": sorted(roots_before),
+                    "roots_after": sorted(roots_after),
+                },
+                hint="Create a root deliberately with kvault write <root>/<node> --create --new-root, then move into it",
+            )
+
     if dry_run:
         return {
             "success": True,
@@ -2228,6 +2283,61 @@ def move_entities(
     result["propagation_required"] = len(combined) > 0
     result["ancestor_paths"] = [t["path"] for t in combined]
     result["ancestors"] = combined
+    return result
+
+
+def mark_node(
+    kg_root: Path,
+    path: str,
+    distinct_from: Optional[List[str]] = None,
+    max_children: Optional[int] = None,
+    series_ok: Optional[bool] = None,
+    clear: bool = False,
+) -> Dict[str, Any]:
+    """Record a structure decision in a node's frontmatter (see core.decisions).
+
+    Goes through ``write_node`` so it is validated, no-op aware, and logged.
+    """
+    path = _normalize_node_path(path)
+    if not (distinct_from or max_children is not None or series_ok is not None or clear):
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            "nothing to record: pass --distinct-from, --max-children, --series-ok, or --clear",
+        )
+    raw = _read_node_raw(kg_root, path)
+    if raw is None:
+        return error_response(ErrorCode.NOT_FOUND, f"Node doesn't exist: {path}")
+    meta = dc.merge_decisions(
+        raw["meta"] or {},
+        path,
+        distinct_from=distinct_from,
+        max_children=max_children,
+        series_ok=series_ok,
+        clear=clear,
+    )
+    drops = [key for key in dc.DECISION_KEYS if key not in meta and key in (raw["meta"] or {})]
+    result = write_node(
+        kg_root, path, raw["content"], meta=meta, create=False, drop_meta_keys=drops or None
+    )
+    if not result.get("success"):
+        return result
+    decisions = dc.read_decisions(kg_root, path)
+    parts: List[str] = []
+    if clear:
+        parts.append("cleared")
+    if distinct_from:
+        parts.append(
+            "distinct_from += " + ", ".join(decisions["distinct_from"][-len(distinct_from) :])
+        )
+    if max_children is not None:
+        parts.append(f"max_children={decisions['max_children']}")
+    if series_ok is not None:
+        parts.append(f"series_ok={str(decisions['series_ok']).lower()}")
+    result["did"] = f"marked {path}: " + "; ".join(parts)
+    result["decisions"] = decisions
+    result.pop("ancestors", None)  # a decision does not change what the parent should say
+    result["ancestor_paths"] = []
+    result["propagation_required"] = False
     return result
 
 

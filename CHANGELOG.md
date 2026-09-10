@@ -2,6 +2,48 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.15.1 - Unreleased
+
+Corrections that stick, and nothing that waits on a person. 0.15.0's
+maintenance loop still had a "monthly (a person)" step and a questions list
+addressed to one. Eddie's premise: "human review is not a reasonable
+expectation; more likely is the human correcting the agent when it pulls
+something wrong from kvault." A correction that only lives in a chat is
+re-proposed the next week, so it needs a home the deterministic rules read.
+
+### Added
+
+- **Decisions in frontmatter** (`kvault/core/decisions.py`), honored by the
+  create guard, `check`, `plan`, and the strict path:
+  `distinct_from: [path, …]` on a node (different things — the sibling
+  finding, the same-name finding, and the similarity refusal skip the pair;
+  either side may carry it; a bare name means a sibling), `max_children: N`
+  on a parent (its own ceiling for `BRANCH:`, the over-fanout note,
+  clustering, and the gist switch), `series_ok: true` on a parent (a
+  deliberate chronology; `SERIES:` and the fold are suppressed).
+- **`kvault mark <path> [--distinct-from X]… [--max-children N]
+  [--series-ok] [--clear]`** and MCP **`kvault_mark`**: record a decision
+  in one command, through the normal write path (validated, no-op aware,
+  logged as `mark` in the ops log). `--clear` drops all three.
+- **`write_node(..., drop_meta_keys=…)`**: the write path can now remove a
+  frontmatter key; a merge could not express it.
+
+### Changed
+
+- **A batch may carry `--new-root` only when it does not increase the root
+  count.** Consolidating 23 roots into hubs runs unattended; a batch that
+  would add a root is refused with the counts, and the deliberate path is
+  `kvault write <root>/<node> --create --new-root`. Single moves keep the
+  flag as an explicit override.
+- **Every `plan` question carries a default action**, and `plan` items say
+  how to record the other decision (`kvault mark … --distinct-from`,
+  `--max-children`, `--series-ok`). The human label reads "Decisions (each
+  has a default; act on it, record it with kvault mark if it should stick)".
+- **The maintenance skill has no human step.** The monthly review is a
+  headless pass over remaining defaults; a new "Corrections" section says
+  what to do when the owner says something is wrong: fix the tree, then
+  `kvault mark`, then report one line each.
+
 ## 0.15.0 - 2026-09-10
 
 Structure guards, complete and bounded checks, and a maintenance engine.

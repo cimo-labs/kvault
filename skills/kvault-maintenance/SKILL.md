@@ -13,9 +13,14 @@ check` names each of these; `kvault plan` orders the fixes and emits the
 commands. This skill is the procedure around those two commands. The plan
 comes from kvault, not from you, so every runtime makes the same moves.
 
-Requires knowledgevault 0.15 or later. The first line of every unattended
+Requires knowledgevault 0.15.1 or later. The first line of every unattended
 job is `kvault doctor`, so a runtime older than the skill text is visible in
 the job log instead of silently missing the signals below.
+
+Nothing here waits on a person. Agents decide from the summaries and act;
+when unsure they take the reversible action (nest, do not merge; move, do
+not delete). The human's part is correcting the agent later, in use, and a
+correction is recorded in the tree with `kvault mark` so it sticks.
 
 ## Vocabulary
 
@@ -77,7 +82,7 @@ kvault check --json --kb-root "$KB" > "$LOG/check.json"
 4. Finish with `kvault check --strict`-equivalent discipline: log the exit
    code and the `did` line. **No restructuring at night.** Moves are weekly.
 
-### Weekly (headless or supervised)
+### Weekly (headless)
 
 ```bash
 kvault doctor --kb-root "$KB"
@@ -103,15 +108,16 @@ kvault plan --json --limit 5 --kb-root "$KB" > "$LOG/plan.json"
    `siblings` item, read both nodes; the summaries decide, not the names.
 4. `summary` items last.
 5. `kvault validate --kb-root "$KB"`, then journal the moves
-   (`kvault journal`), then stop. **One structural batch per run** unless a
-   person is watching. Stop early when `plan` returns `nothing to do`.
+   (`kvault journal`), then stop. **One structural batch per run.** Stop
+   early when `plan` returns `nothing to do`.
 
 Rules a weekly job never breaks: fold, never split, for `too_long`; overflow
-goes to `deep_context/`; never mint a root; never merge two nodes on name
-alone. A merge needs evidence: for people, an exact identifier match
-(email, phone); for topics, both summaries read and plainly describing one
-thing. If the evidence is there, an agent decides; if it is not, the
-question waits for the monthly review.
+goes to `deep_context/`; never add a root (a root cluster's batch passes
+`--new-root` and kvault verifies it does not increase the root count);
+never merge two nodes on name alone. A merge needs evidence: for people, an
+exact identifier match (email, phone); for topics, both summaries read and
+plainly describing one thing. Without it, nest; a nest is one move to undo.
+Every `plan` question carries a default; take the default and move on.
 
 A `cluster` item's hub is named by the leading word (`projects/ai`). That
 is a placeholder, not a name: read the `members` gists, decide what the
@@ -119,19 +125,33 @@ group is, and rename the hub in the `to` paths before running the batch.
 Adjacent groups that are one initiative (`aio` and `ai_overview`) are
 merged the same way, by pointing both groups' `to` paths at one hub.
 
-### Monthly (the owner, or an agent with the owner's standing)
+### Corrections (whenever the owner says something is wrong)
 
-- Read the `questions` list from `kvault plan --json --limit 0`. Those are
-  the calls the clusterer will not make (`people` vs `team`, `aio` vs
-  `ai_overview`). Answer each from the summaries; only a question the
-  summaries cannot settle goes to the owner. The next weekly run executes.
+The only human step there is. It arrives in use, after the fact: "those are
+two different projects", "that parent is meant to be flat", "those daily
+notes are on purpose", "you filed that under the wrong customer".
+
+1. Fix the tree: `kvault move --confirm` (or a batch) puts the node where it
+   belongs; a wrong merge is undone by moving the folded node back out.
+2. Record the decision so the rules stop re-proposing it:
+   - different things → `kvault mark <a> --distinct-from <b>` (either side)
+   - a parent that is meant to be flat → `kvault mark <parent> --max-children N`
+   - an intentional chronology → `kvault mark <parent> --series-ok`
+   The decision lives in the node's frontmatter, goes through the normal
+   write path (logged, no-op aware), and is honored by `check`, `plan`, and
+   the create guard. `--clear` drops it again.
+3. Report what you changed and what you recorded, in one line each.
+
+### Monthly (headless)
+
+- `kvault plan --json --limit 0`: act on every remaining item's default.
 - Confirm `kvault doctor` reports the version this skill text describes.
 - Prune `.kvaultignore` of paths that no longer exist.
 
 ## One-time consolidation of a sprawling KB
 
 For a KB that has already rotted (dozens of flat children, split-brain
-roots), do this once, supervised:
+roots), do this once, one batch at a time:
 
 1. `kvault doctor`; upgrade if below 0.15.
 2. Create `.kvaultignore` for tooling directories and files first, so
@@ -142,7 +162,9 @@ roots), do this once, supervised:
 4. Run one `move --batch --confirm` per cluster, rewrite the hub and chain,
    `validate`, commit. Repeat per cluster.
 5. Then the root: if the root has more than ten categories, cluster it the
-   same way. Root moves need `--new-root` only when the hub is new.
+   same way. The plan's root batches pass `--new-root`; kvault refuses a
+   batch that would leave more roots than it started with, so a
+   consolidation runs unattended and an addition does not.
 6. Remove the "split files over N lines into sub-files" rule from any
    maintenance prompt; it increases directory count. `too_long` means fold.
 
@@ -154,10 +176,11 @@ roots), do this once, supervised:
 | Worklist | `kvault plan [PATH] [--json] [--limit N\|0]` |
 | Batch move | `kvault move --batch [--dry-run] --confirm` (stdin: JSON list of `{from, to}`) |
 | Guards on create | `kvault write <path> --create [--new-root] [--allow-similar]` |
+| Record a correction | `kvault mark <path> [--distinct-from <other>]… [--max-children N] [--series-ok] [--clear]` |
 | Ignore tooling | `.kvaultignore` at the KB root, one fnmatch pattern per line; a directory pattern covers its subtree |
 | Runtime handshake | `kvault doctor`, `kvault --version` |
 | What ran recently | `kvault log tail [--session ID]`, `kvault log summary` |
 
 Over MCP the same signals are `kvault_check`, `kvault_plan`,
-`kvault_move_entities`, and the `new_root` / `allow_similar` arguments on
-`kvault_write_node`; `kvault_validate_kb` is integrity only.
+`kvault_move_entities`, `kvault_mark`, and the `new_root` / `allow_similar`
+arguments on `kvault_write_node`; `kvault_validate_kb` is integrity only.

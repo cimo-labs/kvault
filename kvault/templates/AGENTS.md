@@ -28,7 +28,8 @@
    reading both) or that adds a root category (`--new-root` only with the owner's say-so), and
    reports near-duplicates and over-full parents as `structure` notes — act on them.
    Create nodes only with `kvault write --create`: a `_summary.md` written with a file tool
-   skips those guards and never reaches the ops log.
+   skips those guards and never reaches the ops log. When the owner corrects a structure
+   call, fix it and record the decision with `kvault mark` so it is not re-proposed.
 
 6. **PARENT SUMMARIES ARE ROLLUPS.** Every parent `_summary.md` must be a comprehensive current-state
    summary of all descendant summaries. Do not replace parent summaries with placeholders such as
@@ -193,7 +194,7 @@ Context and notes here.
 
 **Node:** `kvault search`, `kvault read`, `kvault write` (stdin), `kvault list`
 **Compatibility:** `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors`, `kvault delete --confirm`, `kvault move --confirm` (destructive — both require `--confirm`), `kvault move --batch --confirm` (stdin JSON list of `{from, to}`)
-**Maintenance:** `kvault plan [PATH] [--limit N]` (ordered worklist with commands; never applies anything)
+**Maintenance:** `kvault plan [PATH] [--limit N]` (ordered worklist with commands; never applies anything), `kvault mark <path> [--distinct-from X] [--max-children N] [--series-ok] [--clear]` (record a decision the rules honor)
 **Journal:** `kvault journal --source TEXT` (stdin JSON)
 **Validation:** `kvault validate`, `kvault check` (prefixes: `[KB]`, `SUMMARY:`, `PENDING:`, `RETRACTED:`, `GHOST:`, `SERIES:`, `SIBLINGS:`, `LOOSE:`, `JOURNAL:`)
 **Status:** `kvault status`, `kvault doctor` (runtime/version/KB binding), `kvault tree [path] [--depth N] [--max-children N] [--gist]`

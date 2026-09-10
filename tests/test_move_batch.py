@@ -93,9 +93,13 @@ def test_batch_into_new_root_needs_flag(empty_kb):
     _seed(empty_kb)
     refused = ops.move_entities(empty_kb, [{"from": "projects/alpha", "to": "archive/alpha"}])
     assert refused["success"] is False and refused["details"]["reason"] == "new_root"
-    allowed = ops.move_entities(
+    # even with the flag a batch may not ADD a root (0.15.1 invariant); the
+    # deliberate path is a single move or a write --new-root
+    still = ops.move_entities(
         empty_kb, [{"from": "projects/alpha", "to": "archive/alpha"}], new_root=True
     )
+    assert still["success"] is False and "increase" in still["error"]
+    allowed = ops.move_entity(empty_kb, "projects/alpha", "archive/alpha", new_root=True)
     assert allowed["success"]
 
 

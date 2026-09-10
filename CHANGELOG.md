@@ -96,6 +96,10 @@ over MCP. Reproduced on a synthetic fixture before any of this was written.
   tier × segment facet). What remains carries each node's title so an
   agent can dismiss a false twin in one read (`people/family «Family»` vs
   `people/friends/family «Family Friends»`).
+- **`plan` cluster items carry `members` (name + gist, first 12) and
+  `hub_name_is_placeholder`**, so an agent can refine a cluster and name
+  the hub without reading every member. The questions list is addressed
+  to whoever has the evidence, not to "a person".
 - **`plan` collapses**: one `siblings` item per parent (with the top pairs)
   and one `loose` item per directory (with adopt commands for legacy node
   files). The uncollapsed form on a real 564-node KB was 131 items.

@@ -49,6 +49,18 @@ def test_plan_clusters_over_fanout_parent(empty_kb):
     }
     assert all(m["to"].startswith("projects/aio/") for m in aio["moves"])
     assert "kvault move --batch --confirm" in aio["commands"][0]
+    assert aio["hub_name_is_placeholder"] is False  # projects/aio already exists
+    pdp = clusters[1]
+    assert pdp["hub_name_is_placeholder"] is True and "rename the hub" in pdp["then"]
+    assert pdp["members_total"] == 3
+    assert {m["name"] for m in pdp["members"]} == {
+        "pdp_prompts",
+        "pdp_prompt_ranking",
+        "pdp_assortment",
+    }
+    assert all(
+        m["gist"] and m["gist"].startswith("A node with enough words") for m in pdp["members"]
+    )
     assert any("stay in place" in q for q in plan["questions"])
     assert plan["items"][0]["kind"] == "cluster"
 
@@ -94,7 +106,7 @@ def test_cli_plan_human_and_json(empty_kb):
     assert human.exit_code == 0, human.output
     assert human.output.startswith("Plan for .:")
     assert "1. cluster  projects → projects/aio" in human.output
-    assert "Questions for a person:" in human.output
+    assert "Questions (answer from evidence" in human.output
     as_json = runner.invoke(cli, ["plan", "--json", "--limit", "1", "--kb-root", str(empty_kb)])
     doc = json.loads(as_json.output)
     assert doc["count"] == 1 and doc["items"][0]["kind"] == "cluster"

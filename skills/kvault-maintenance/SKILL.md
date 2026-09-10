@@ -99,7 +99,8 @@ kvault plan --json --limit 5 --kb-root "$KB" > "$LOG/plan.json"
 2. `ghost` items: read what is inside, then either write the summary or add
    the path to `.kvaultignore`. Tooling directories (`scripts/`,
    `sources/`) are ignore entries, not nodes.
-3. `siblings`, `loose`, `journal` items: follow the item's commands.
+3. `siblings`, `loose`, `journal` items: follow the item's commands. For a
+   `siblings` item, read both nodes; the summaries decide, not the names.
 4. `summary` items last.
 5. `kvault validate --kb-root "$KB"`, then journal the moves
    (`kvault journal`), then stop. **One structural batch per run** unless a
@@ -107,13 +108,23 @@ kvault plan --json --limit 5 --kb-root "$KB" > "$LOG/plan.json"
 
 Rules a weekly job never breaks: fold, never split, for `too_long`; overflow
 goes to `deep_context/`; never mint a root; never merge two nodes on name
-alone — a merge needs an exact identifier match or a person.
+alone. A merge needs evidence: for people, an exact identifier match
+(email, phone); for topics, both summaries read and plainly describing one
+thing. If the evidence is there, an agent decides; if it is not, the
+question waits for the monthly review.
 
-### Monthly (a person)
+A `cluster` item's hub is named by the leading word (`projects/ai`). That
+is a placeholder, not a name: read the `members` gists, decide what the
+group is, and rename the hub in the `to` paths before running the batch.
+Adjacent groups that are one initiative (`aio` and `ai_overview`) are
+merged the same way, by pointing both groups' `to` paths at one hub.
+
+### Monthly (the owner, or an agent with the owner's standing)
 
 - Read the `questions` list from `kvault plan --json --limit 0`. Those are
-  the semantic merges (`people` vs `team`, `aio` vs `ai_overview`) the
-  clusterer will not decide. Decide them; the next weekly run executes.
+  the calls the clusterer will not make (`people` vs `team`, `aio` vs
+  `ai_overview`). Answer each from the summaries; only a question the
+  summaries cannot settle goes to the owner. The next weekly run executes.
 - Confirm `kvault doctor` reports the version this skill text describes.
 - Prune `.kvaultignore` of paths that no longer exist.
 

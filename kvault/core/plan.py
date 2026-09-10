@@ -23,6 +23,26 @@ from kvault._version import __version__
 from kvault.core import notes as nt
 from kvault.core import structure as st
 from kvault.core.check import DEFAULT_MAX_CHILDREN, run_checks
+from kvault.core.frontmatter import parse_frontmatter
+
+#: Members listed with a gist per cluster item; past this the count stands in.
+MAX_MEMBER_GISTS = 12
+
+
+def _gist_of(root: Path, rel: str, limit: int = 80) -> Optional[str]:
+    """First body line of a node summary, so an agent can refine a cluster
+    without reading every member."""
+    try:
+        _, body = parse_frontmatter((root / rel / "_summary.md").read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    for line in body.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        return line if len(line) <= limit else line[: limit - 1].rstrip() + "…"
+    return None
+
 
 DEFAULT_LIMIT = 10
 DEFAULT_MIN_CLUSTER = 3
@@ -103,6 +123,10 @@ def build_plan(
                 ]
                 if not moves:
                     continue
+                member_gists = [
+                    {"name": m, "gist": _gist_of(root, _join(fpath, m))}
+                    for m in members[:MAX_MEMBER_GISTS]
+                ]
                 items.append(
                     {
                         "kind": "cluster",
@@ -114,6 +138,12 @@ def build_plan(
                         ),
                         "new_parent": hub,
                         "new_parent_exists": hub_exists,
+                        # The hub is named by the leading word. That is a
+                        # placeholder: rename it in the `to` paths before the
+                        # batch runs ('projects/ai' is not a name).
+                        "hub_name_is_placeholder": not hub_exists,
+                        "members": member_gists,
+                        "members_total": len(members),
                         "moves": moves,
                         "commands": [
                             _batch_command(root, moves),
@@ -122,7 +152,12 @@ def build_plan(
                         ],
                         "then": (
                             f"rewrite {hub} as a rollup of its {len(members)} children"
-                            + (" (it was a leaf; it is a parent now)" if hub_exists else "")
+                            + (
+                                " (it was a leaf; it is a parent now)"
+                                if hub_exists
+                                else f"; '{token}' is the leading word, not a name — rename "
+                                "the hub in the `to` paths before running the batch"
+                            )
                         ),
                     }
                 )

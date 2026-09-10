@@ -1,4 +1,6 @@
-"""Hardening regressions: path containment, write lock, strict frontmatter."""
+"""Path containment, delete/move guards, strict frontmatter, atomic writes, and the write lock.
+
+Hardening regressions."""
 
 import json
 import os

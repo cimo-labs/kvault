@@ -1,68 +1,49 @@
-"""KB integrity checker for agent hooks and manual validation.
+"""``kvault check`` — the CLI face of ``kvault.core.check``.
 
-Checks:
-1. PROPAGATE: Parent summaries should be as recent as children
-2. LOG: Journal should be updated if entities changed today
-3. WRITE: Entities should have required frontmatter (source, aliases)
-4. BRANCH: Directories with >10 children should be restructured
+Hard findings (exit 1) are collapsed into one ``[KB]`` line for hook use;
+warn-class findings print one bounded group per prefix. The human output is
+tier-invariant and ``--json`` is one document (frozen since 0.13). The
+prefix vocabulary is ``[KB]``, ``SUMMARY:``, ``PENDING:``, ``RETRACTED:``
+and, since 0.15, ``GHOST:``, ``SIBLINGS:``, ``LOOSE:``, ``JOURNAL:``.
 
 Exit codes:
-    0 = All hard checks pass (summary-quality warnings are warn-only)
-    1 = Hard warnings found (minimal output for agent context)
+    0 = All hard checks pass (warn-class findings are warn-only)
+    1 = Hard findings (minimal output for agent context)
 """
 
 import json
 import sys
-from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import click
 
 from kvault.core import operations as ops
-from kvault.core.events import pending_event_findings, retracted_reference_findings
-from kvault.core.frontmatter import parse_frontmatter
-from kvault.core.summary_quality import (
-    DEFAULT_MAX_DATED_SECTIONS,
-    audit_summary_quality,
-    format_summary_quality_warnings,
+from kvault.core.check import (  # noqa: F401 — re-exported for callers and tests
+    DEFAULT_MAX_CHILDREN,
+    DEFAULT_MAX_FINDINGS,
+    DEFAULT_PENDING_MAX_AGE,
+    DEFAULT_THRESHOLD_MINUTES,
+    STRUCTURE_CODES,
+    _find_entities,
+    _get_mtime,
+    _get_updated_date,
+    check_directory_size,
+    check_frontmatter,
+    check_journal,
+    check_propagation,
+    run_checks,
 )
+from kvault.core.summary_quality import DEFAULT_MAX_DATED_SECTIONS
 
-DEFAULT_THRESHOLD_MINUTES = 5
-
-
-def _get_mtime(path: Path) -> datetime:
-    """Get modification time of a file."""
-    return datetime.fromtimestamp(path.stat().st_mtime)
-
-
-def _get_updated_date(path: Path) -> Optional[date]:
-    """Parse frontmatter 'updated' (or 'created') field from a _summary.md file.
-
-    Returns a date if found, None otherwise (caller should fall back to mtime).
-    """
-    try:
-        content = path.read_text()
-    except Exception:
-        return None
-
-    meta, _ = parse_frontmatter(content)
-    if not meta:
-        return None
-
-    for field in ("updated", "created"):
-        val = meta.get(field)
-        if val is None:
-            continue
-        if isinstance(val, date):
-            return val
-        # Handle string dates like '2026-01-15'
-        try:
-            return datetime.strptime(str(val).strip("'\""), "%Y-%m-%d").date()
-        except (ValueError, TypeError):
-            continue
-
-    return None
+_STRUCTURE_FIX_LINE = {
+    "GHOST": "write a summary (kvault write <path> --create) or list it in .kvaultignore",
+    "SERIES": "chronology as nodes → kvault plan folds them under one current-state node's "
+    "deep_context/; new entries go to journal/",
+    "SIBLINGS": "same thing → merge; subtopic → kvault move; kvault plan lists the moves",
+    "LOOSE": "move into <node>/deep_context/, make it a node, or list it in .kvaultignore",
+    "JOURNAL": "one history: journal/YYYY-MM/log.md via kvault journal",
+}
 
 
 def _find_kb_root() -> Optional[Path]:
@@ -75,155 +56,23 @@ def _find_kb_root() -> Optional[Path]:
     return None
 
 
-def _find_entities(kb_root: Path) -> List[Path]:
-    """Find all entity _summary.md files (leaf nodes at depth >= 3)."""
-    entities = []
-    for summary in kb_root.rglob("_summary.md"):
-        parent_dir = summary.parent
-        rel_path = summary.relative_to(kb_root)
-        depth = len(rel_path.parts)
-
-        if parent_dir == kb_root:
-            continue
-        if depth < 3:
-            continue
-
-        has_child_summaries = any(
-            (child / "_summary.md").exists()
-            for child in parent_dir.iterdir()
-            if child.is_dir() and not child.name.startswith(".")
-        )
-
-        if not has_child_summaries:
-            entities.append(summary)
-
-    return entities
-
-
-def check_propagation(kb_root: Path, threshold_minutes: int) -> List[str]:
-    """Check if parent summaries are as recent as their children.
-
-    Uses a two-layer strategy:
-    1. Primary: Compare frontmatter 'updated' dates (survives git operations).
-       If child's date is strictly after parent's date, flag it.
-    2. Fallback: If either side has no frontmatter date, use file mtime
-       with the threshold_minutes parameter.
-    """
-    warnings = []
-    threshold = timedelta(minutes=threshold_minutes)
-
-    for summary in kb_root.rglob("_summary.md"):
-        parent_dir = summary.parent
-
-        children = []
-        for child_dir in parent_dir.iterdir():
-            if child_dir.is_dir() and not child_dir.name.startswith("."):
-                child_summary = child_dir / "_summary.md"
-                if child_summary.exists():
-                    children.append(child_summary)
-
-        if not children:
-            continue
-
-        parent_date = _get_updated_date(summary)
-
-        for child in children:
-            child_date = _get_updated_date(child)
-
-            stale = False
-            detail = ""
-
-            if child_date is not None and parent_date is not None:
-                # Primary: frontmatter date comparison (day-level)
-                if child_date > parent_date:
-                    stale = True
-                    detail = f"child updated {child_date}, parent updated {parent_date}"
-            else:
-                # Fallback: mtime comparison with threshold
-                parent_mtime = _get_mtime(summary)
-                child_mtime = _get_mtime(child)
-                delta = child_mtime - parent_mtime
-                if delta > threshold:
-                    stale = True
-                    detail = f"{int(delta.total_seconds()) // 60}m newer"
-
-            if stale:
-                rel_parent = summary.relative_to(kb_root)
-                rel_child = child.relative_to(kb_root)
-                parent_path = str(rel_parent)
-                child_name = rel_child.parent.name
-                warnings.append(f"PROPAGATE: edit {parent_path} ({child_name}/ is {detail})")
-
-    return warnings
-
-
-def check_journal(kb_root: Path) -> List[str]:
-    """Check if journal was updated today (if entities were modified today)."""
-    warnings = []
-    today = date.today()
-
-    entities_modified_today = []
-    for entity in _find_entities(kb_root):
-        if _get_mtime(entity).date() == today:
-            entities_modified_today.append(entity)
-
-    if not entities_modified_today:
-        return []
-
-    journal_file = kb_root / "journal" / today.strftime("%Y-%m") / "log.md"
-
-    if not journal_file.exists() or _get_mtime(journal_file).date() != today:
-        warnings.append(f"LOG: {len(entities_modified_today)} entities need journal")
-
-    return warnings
-
-
-def check_frontmatter(kb_root: Path) -> List[str]:
-    """Check that entities have required frontmatter fields."""
-    warnings = []
-    required_fields = ["source", "aliases"]
-    entities_with_issues = []
-
-    for entity in _find_entities(kb_root):
-        rel_path = entity.relative_to(kb_root)
-        try:
-            content = entity.read_text()
-        except Exception:
-            entities_with_issues.append(rel_path.parent.name)
-            continue
-
-        meta, _ = parse_frontmatter(content)
-
-        if not meta:
-            entities_with_issues.append(rel_path.parent.name)
-            continue
-
-        missing = [f for f in required_fields if f not in meta or meta[f] is None]
-        if missing:
-            entities_with_issues.append(rel_path.parent.name)
-
-    if entities_with_issues:
-        warnings.append(f"WRITE: {len(entities_with_issues)} entities need frontmatter")
-
-    return warnings
-
-
-def check_directory_size(kb_root: Path, max_children: int = 10) -> List[str]:
-    """Check if any directory has more than max_children subdirectories."""
-    warnings = []
-
-    for summary in kb_root.rglob("_summary.md"):
-        parent_dir = summary.parent
-        if parent_dir == kb_root:
-            continue
-
-        child_dirs = [d for d in parent_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
-
-        if len(child_dirs) > max_children:
-            rel_path = parent_dir.relative_to(kb_root)
-            warnings.append(f"BRANCH: {rel_path} has {len(child_dirs)} children (>{max_children})")
-
-    return warnings
+def _echo_group(
+    code: str, findings: List[Dict[str, Any]], max_lines: int, hidden_extra: int = 0
+) -> None:
+    # A per-parent overflow marker ("+2,340 more colliding pairs") is a count,
+    # not a finding; it prints after the capped lines instead of competing
+    # with them for the cap.
+    markers = [f for f in findings if (f.get("detail") or {}).get("kind") == "more_pairs"]
+    regular = [f for f in findings if f not in markers]
+    for finding in regular[:max_lines]:
+        click.echo(f"{code}: {finding['path']} — {finding['message']}")
+    hidden = max(len(regular) - max_lines, 0) + hidden_extra
+    if hidden > 0:
+        click.echo(f"{code}: (+{hidden} more)")
+    for marker in markers:
+        click.echo(f"{code}: {marker['path']} — {marker['message']}")
+    if findings:
+        click.echo(f"{code}: fix → {_STRUCTURE_FIX_LINE[code]}")
 
 
 @click.command("check")
@@ -251,7 +100,7 @@ def check_directory_size(kb_root: Path, max_children: int = 10) -> List[str]:
     type=int,
     default=5,
     show_default=True,
-    help="Maximum summary-quality warnings to print.",
+    help="Maximum warn-class lines to print per prefix.",
 )
 @click.option(
     "--summary-max-words",
@@ -272,9 +121,16 @@ def check_directory_size(kb_root: Path, max_children: int = 10) -> List[str]:
 @click.option(
     "--pending-max-age",
     type=int,
-    default=7,
+    default=DEFAULT_PENDING_MAX_AGE,
     show_default=True,
     help="Days a captured event may stay pending before it is flagged.",
+)
+@click.option(
+    "--max-children",
+    type=int,
+    default=DEFAULT_MAX_CHILDREN,
+    show_default=True,
+    help="Direct-child ceiling for BRANCH: (the root counts too).",
 )
 @click.pass_context
 def check_kb(
@@ -287,8 +143,9 @@ def check_kb(
     summary_max_words: Optional[int],
     summary_max_dated_sections: int,
     pending_max_age: int,
+    max_children: int,
 ) -> None:
-    """Check KB integrity (propagation, journal, index, frontmatter, branching)."""
+    """Check KB integrity (propagation, journal, frontmatter, branching, structure)."""
     ctx.ensure_object(dict)
     if ctx.obj.get("strict"):
         # check's exit codes are already a contract (0 = hard checks pass,
@@ -309,8 +166,6 @@ def check_kb(
             # EXPLICIT --kb-root is a hard error (2026-07-26 audit).
             sys.exit(0)
     else:
-        # An explicit path that is missing or is not a KB used to exit 0 with no
-        # output, making a misconfigured hook indistinguishable from a clean KB.
         kb_root = Path(explicit_root).resolve()
         if not kb_root.is_dir():
             raise click.ClickException(f"--kb-root does not exist or is not a directory: {kb_root}")
@@ -323,51 +178,19 @@ def check_kb(
     if allowed_error:
         raise click.ClickException(allowed_error)
 
-    hard_warnings: List[str] = []
-    hard_warnings.extend(check_propagation(kb_root, threshold))
-    hard_warnings.extend(check_journal(kb_root))
-    hard_warnings.extend(check_frontmatter(kb_root))
-    hard_warnings.extend(check_directory_size(kb_root))
-
-    summary_issues = (
-        []
-        if no_summary_quality
-        else audit_summary_quality(
-            kb_root,
-            max_words=summary_max_words,
-            max_dated_sections=summary_max_dated_sections,
-        )
+    doc = run_checks(
+        kb_root,
+        threshold_minutes=threshold,
+        summary_quality=not no_summary_quality,
+        max_words=summary_max_words,
+        max_dated_sections=summary_max_dated_sections,
+        pending_max_age=pending_max_age,
+        max_children=max_children,
     )
-    pending_events = pending_event_findings(kb_root, max_age_days=pending_max_age)
-    retracted_refs = retracted_reference_findings(kb_root)
+    hard_warnings: List[str] = doc["warnings"]
 
     if ctx.obj.get("as_json"):
-        click.echo(
-            json.dumps(
-                {
-                    "success": len(hard_warnings) == 0,
-                    "warnings": hard_warnings,
-                    "warning_count": len(hard_warnings),
-                    "summary_warnings": [
-                        {
-                            "path": issue.path,
-                            "code": issue.code,
-                            "message": issue.message,
-                            "details": issue.details,
-                        }
-                        for issue in summary_issues
-                    ],
-                    "summary_warning_count": len(summary_issues),
-                    "summary_quality_enabled": not no_summary_quality,
-                    "pending_events": pending_events,
-                    "pending_event_count": len(pending_events),
-                    "retracted_refs": retracted_refs,
-                    "retracted_ref_count": len(retracted_refs),
-                },
-                indent=2,
-                default=str,
-            )
-        )
+        click.echo(json.dumps(doc, indent=2, default=str))
         sys.exit(1 if hard_warnings else 0)
 
     if hard_warnings:
@@ -383,34 +206,38 @@ def check_kb(
                 msg += f" (+{len(hard_warnings) - 3} more)"
             click.echo(msg)
 
-    for warning in format_summary_quality_warnings(
-        summary_issues, max_warnings=summary_max_warnings
-    ):
-        click.echo(warning)
+    summary = doc["summary_warnings"]
+    for issue in summary[:summary_max_warnings]:
+        click.echo(f"SUMMARY: {issue['path']}: {issue['message']}")
+    if len(summary) > summary_max_warnings:
+        click.echo(f"SUMMARY: (+{len(summary) - summary_max_warnings} more)")
 
     # Warn-only, like SUMMARY: — a captured candidate that was never
     # promoted or explicitly resolved is unfinished maintenance work.
-    for finding in pending_events[:summary_max_warnings]:
+    pending = doc["pending_events"]
+    for finding in pending[:summary_max_warnings]:
         click.echo(
             f"PENDING: {finding['event_id']} captured {str(finding['captured_at'])[:10]} "
             f"({finding['age_days']}d) — resolve with kvault write --event or "
             f"kvault events resolve"
         )
-    if len(pending_events) > summary_max_warnings:
-        click.echo(f"PENDING: (+{len(pending_events) - summary_max_warnings} more)")
+    if len(pending) > summary_max_warnings:
+        click.echo(f"PENDING: (+{len(pending) - summary_max_warnings} more)")
 
-    # Warn-only: a node still cites an event whose text was retracted as wrong
-    # evidence — rewrite it, then re-link the corrected capture.
-    for finding in retracted_refs[:summary_max_warnings]:
+    retracted = doc["retracted_refs"]
+    for finding in retracted[:summary_max_warnings]:
         reason = str(finding.get("reason") or "")[:80]
         follow_up = finding.get("superseded_by") or "<id of the corrected capture>"
         click.echo(
             f"RETRACTED: {finding['path']} cites retracted {finding['event_id']} — {reason} — "
             f"rewrite the node, then write --event {follow_up} (drops the retracted ref)"
         )
-    if len(retracted_refs) > summary_max_warnings:
-        click.echo(f"RETRACTED: (+{len(retracted_refs) - summary_max_warnings} more)")
+    if len(retracted) > summary_max_warnings:
+        click.echo(f"RETRACTED: (+{len(retracted) - summary_max_warnings} more)")
 
-    if hard_warnings:
-        sys.exit(1)
-    sys.exit(0)
+    # 0.15: the structural set. One bounded group per prefix, fix line last.
+    for code in STRUCTURE_CODES:
+        group = [f for f in doc["structure_warnings"] if f["code"] == code]
+        _echo_group(code, group, summary_max_warnings, doc["truncated"].get(code, 0))
+
+    sys.exit(1 if hard_warnings else 0)

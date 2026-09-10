@@ -58,6 +58,7 @@ NOTE_CODES: Tuple[str, ...] = (
     "waited",  # kvault blocked on, or broke, another process's lock
     "guessed",  # an input was unusable and a fallback was chosen
     "propagate",  # ancestor summaries are stale because of this operation
+    "structure",  # this write changed the tree's shape in a way worth a look
 )
 
 #: Notes at or below the reader's tier are shown. ``partial`` is deliberately
@@ -75,6 +76,7 @@ DEFAULT_LEVELS: Dict[str, int] = {
     "waited": TRACE,
     "guessed": NORMAL,
     "propagate": EXPLAIN,
+    "structure": NORMAL,
 }
 
 

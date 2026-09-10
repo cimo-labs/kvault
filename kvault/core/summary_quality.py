@@ -21,6 +21,8 @@ _DATED_HEADING_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 DEFAULT_MAX_DATED_SECTIONS = 3
+#: Child names shown in a missing_child_coverage message before "(+N more)".
+MAX_MISSING_CHILDREN_SHOWN = 8
 
 _PLACEHOLDER_PATTERNS: Tuple[Tuple[str, re.Pattern[str]], ...] = (
     ("summary pending", re.compile(r"\bsummary\s+pending\b", re.IGNORECASE)),
@@ -113,12 +115,26 @@ def audit_summary_quality(
 
         missing_children = _missing_child_coverage(body, children)
         if missing_children:
+            # Bounded on purpose: on a 118-child parent the 0.14 line was 4.7 KB,
+            # a finding that was itself unbounded output. The full list stays
+            # in details for consumers that fix the parent.
+            shown = ", ".join(missing_children[:MAX_MISSING_CHILDREN_SHOWN])
+            hidden = len(missing_children) - MAX_MISSING_CHILDREN_SHOWN
+            if hidden > 0:
+                shown += f" (+{hidden} more)"
             issues.append(
                 SummaryQualityIssue(
                     path=relative_path,
                     code="missing_child_coverage",
-                    message="missing immediate child coverage: " + ", ".join(missing_children),
-                    details={"missing_children": missing_children},
+                    message=(
+                        f"missing immediate child coverage ({len(missing_children)} of "
+                        f"{len(children)}): {shown}"
+                    ),
+                    details={
+                        "missing_children": missing_children,
+                        "missing_count": len(missing_children),
+                        "child_count": len(children),
+                    },
                 )
             )
 

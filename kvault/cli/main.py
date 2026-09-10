@@ -10,6 +10,7 @@ import click
 
 from kvault.cli._helpers import apply_common_options, common_options, output_json, resolve_kb_root
 from kvault.cli.check import check_kb
+from kvault.cli.plan import plan
 from kvault.cli.doctor import doctor
 from kvault.cli.entity import read_entity, write_entity, list_entities, delete_entity, move_entity
 from kvault.cli.events import capture, events_group
@@ -78,6 +79,7 @@ def cli(
 
 # Register commands
 cli.add_command(check_kb)
+cli.add_command(plan)
 cli.add_command(doctor)
 cli.add_command(read_entity)
 cli.add_command(write_entity)

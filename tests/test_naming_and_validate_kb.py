@@ -1,4 +1,6 @@
-"""Regression tests for pressure-test findings: name extraction, validate_kb, auto-name."""
+"""Entity name extraction, write auto-name, and validate_kb category handling.
+
+Regression tests from the 2026-07 pressure-test findings."""
 
 from pathlib import Path
 

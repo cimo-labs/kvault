@@ -142,7 +142,7 @@ receipt (human mode) and as a `notes` array in `--json` and over MCP, each
 `{code, text, level}` — a note's `why`/`next` ride in the JSON at every tier, and print in
 human mode at `--explain`. Batch commands collapse
 repeated notes by code (`{code, count, examples}`), so a 40-ancestor maintenance run emits
-one line, not forty. The vocabulary is closed — 10 codes:
+one line, not forty. The vocabulary is closed — 11 codes:
 
 | Code | Contract |
 |------|----------|
@@ -156,6 +156,7 @@ one line, not forty. The vocabulary is closed — 10 codes:
 | `waited` | kvault blocked on, or broke, another process's lock |
 | `guessed` | an input was unusable and a fallback was chosen |
 | `propagate` | ancestor summaries are stale because of this operation |
+| `structure` | this write changed the tree's shape in a way worth a look: a near-duplicate name, a parent past the child ceiling, or a new root category |
 
 **Tiers.** `-q/--quiet` (receipt and warnings only) → normal → `--explain` (adds each note's
 `why` and the exact next command) → `--trace` (adds lock waits and mechanics). Flags work
@@ -176,18 +177,70 @@ failed append can never fail a write — the CLI surfaces the miss as a `skipped
 Full 0.13.0 detail — every new JSON field, per-command changes, frozen surfaces — is in the
 [CHANGELOG](https://github.com/cimo-labs/kvault/blob/main/CHANGELOG.md).
 
-## The maintenance loop
+## Structure that holds up under many agents
 
-KBs rot without pruning. The tree annotations make refactor triggers deterministic instead of
-aspirational — agents read them off the orientation pass:
+A KB rots in a specific way when several agents write to it: flat parents with dozens of
+children, `infra/` beside `infrastructure/`, one new root category per sub-problem, and
+directories with no summary that no surface can see. kvault guards the write and audits the
+tree with the same rules, so the two never disagree.
 
-| Signal | Action |
-|--------|--------|
-| Branch with >10 children (`[N children, ...]`) | Split into subgroups; `kvault move` entities; re-propagate |
-| Branch `~updated_max` older than ~6 months | Review for stale or dead content |
-| `SUMMARY:` warnings from `kvault check` | `too_short`/`missing_child_coverage`: rewrite the parent as a comprehensive rollup; `too_long`/`stale_history`: fold dated sections into current state (chronology belongs in `journal/`) |
-| `RETRACTED:` warnings from `kvault check` | The node cites an event retracted with `kvault events retract`; rewrite it and re-link with `write --event <corrected capture>` |
-| Near-duplicate titles or aliases | Verify identifiers, merge, delete the duplicate |
+**At write time** (`kvault write --create`, MCP `kvault_write_node`):
+
+- A create that would add a root category is refused unless you pass `--new-root`.
+- A create whose name has the same words as a sibling (`ai_overview` beside `ai_overviews`)
+  is refused unless you pass `--allow-similar`. Near-duplicates (`pdp_prompts` beside
+  `pdp_prompts_concord`, `infra` beside `infrastructure`) and a parent pushed past 10
+  children are reported as a `structure` note, with the node to read next.
+- Missing intermediate parents get a stub summary (a `created` note; it says "Placeholder"
+  until you rewrite it) instead of becoming an invisible directory.
+
+**In the audit** (`kvault check`), one bounded group per prefix, all warn-only:
+
+| Prefix | Meaning | Fix |
+|--------|---------|-----|
+| `BRANCH:` (hard) | A parent — the root included — has more than 10 children | `kvault plan <path>` |
+| `SUMMARY:` | A parent rollup is too short, misses children, has placeholder text, is too long, or accretes dated sections | Rewrite as a rollup; `too_long`/`stale_history` means **fold**, never split — chronology belongs in `journal/`, detail in `deep_context/` |
+| `GHOST:` | A directory with no `_summary.md` — invisible to `tree`, `search`, and `check` | Write a summary, or list it in `.kvaultignore` if it is tooling |
+| `SERIES:` | A parent whose children differ only by date or time words: a chronology written as nodes | `kvault plan` folds them: the dated nodes become `deep_context/` material of one current-state node you then write; new timeline entries go to `journal/` |
+| `SIBLINGS:` | Two sibling names share their words, or one basename lives at two depths (buckets like `a_m` and tier × segment facets are exempt) | Merge, or nest one with `kvault move` |
+| `LOOSE:` | A file outside the node convention: a legacy node file (Markdown with frontmatter, invisible to search), a supporting doc, or an artifact | Adopt it as a node (`plan` emits `kvault write <node> --create < file && git rm file`), move it into `<node>/deep_context/`, or ignore it |
+| `JOURNAL:` | Files off `journal/YYYY-MM/log.md`, or a second history | Fold into the canonical log |
+| `PENDING:` / `RETRACTED:` | Captured events never promoted; nodes citing retracted events | Promote or resolve; rewrite and re-link |
+
+`.kvaultignore` at the KB root (one fnmatch pattern per line; a directory pattern covers
+its subtree) declares the tooling directories and files that are not nodes and are fine.
+
+**One path in.** The guards run only on `kvault write` and the MCP write tools. A node
+written with a file tool or a shell redirect skips them and never reaches the ops log; on a
+real KB, 56 of the 59 nodes created in a month arrived that way. Agents and pipelines create
+nodes through kvault, and `check` is the backstop for the ones that did not.
+
+**The engine**: `kvault plan` turns findings into an ordered worklist with the exact commands —
+parents over the ceiling are clustered by leading word into new parents, each with a ready
+`kvault move --batch` payload; then ghosts, sibling collisions, loose files, journal drift,
+and summary rewrites. It never applies anything, and the judgment calls (are `aio` and
+`ai_overview` one initiative?) come back as questions. `kvault move --batch --confirm` runs
+a JSON list of `{from, to}` under one lock with one combined propagation list.
+
+```text
+$ kvault plan --limit 2
+Plan for .: 9 items (showing 2; --limit 0 for all)
+1. cluster  projects → projects/aio
+     projects has 119 direct children (ceiling 10); 13 share the leading word 'aio'
+     kvault move --batch --confirm --kb-root /home/me/my_kb <<'EOF'
+     [{"from": "projects/aio_architecture", "to": "projects/aio/aio_architecture"}, …]
+     EOF
+     then: rewrite projects/aio as a rollup of its 13 children
+2. ghost    infra
+     no _summary.md — invisible to tree, search, and check
+     …
+Questions (answer from evidence; defer only when the evidence is not there):
+  - projects: are any of these groups one initiative? aio, shopping, ai, pdp, concord, …
+```
+
+The cadence — every session, nightly, weekly, monthly — lives in
+[`skills/kvault-maintenance/SKILL.md`](https://github.com/cimo-labs/kvault/blob/main/skills/kvault-maintenance/SKILL.md),
+written so a cron or systemd job can load it alone.
 
 `kvault check` also catches stale propagation, and works as a pre-prompt hook:
 
@@ -206,9 +259,9 @@ aspirational — agents read them off the orientation pass:
 | Category | Commands |
 |----------|----------|
 | **Orient & discover** | `kvault tree [path] [--depth N] [--max-children N] [--gist]`, `kvault search "<query>"` |
-| **Nodes** | `kvault read`, `kvault write` (stdin), `kvault list`, `kvault delete`, `kvault move` |
+| **Nodes** | `kvault read`, `kvault write` (stdin) `[--new-root] [--allow-similar]`, `kvault list`, `kvault delete`, `kvault move [--batch --dry-run]` |
 | **Summaries** | `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors` |
-| **Quality** | `kvault validate`, `kvault check` |
+| **Quality** | `kvault validate`, `kvault check [--max-children N]`, `kvault plan [PATH] [--limit N]` |
 | **Journal & artifacts** | `kvault journal`, `kvault artifact daily`, `kvault log tail`, `kvault log summary` |
 | **Lifecycle** | `kvault init`, `kvault status` |
 
@@ -248,6 +301,11 @@ omits the full `ancestors[].current_content` payload, which can exceed 45,000 ch
 mature KB; pass `"content"` to inline it. Set
 `KVAULT_ALLOWED_ROOTS` to pin allowed roots on shared runtimes. Protocol details:
 [ARCHITECTURE.md](https://github.com/cimo-labs/kvault/blob/main/ARCHITECTURE.md).
+
+Every signal above is on the MCP surface too: `kvault_check` returns the `check` document,
+`kvault_plan` the worklist, `kvault_move_entities` runs a batch, `kvault_write_node` takes
+`new_root` and `allow_similar`, and `kvault_prepare_summary_update` returns child gists past
+the ceiling (`children="content"` for full bodies). `kvault_validate_kb` is integrity only.
 
 ## It's just files
 

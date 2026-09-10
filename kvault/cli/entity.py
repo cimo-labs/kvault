@@ -15,6 +15,7 @@ from kvault.cli._helpers import (
     get_tier,
     output_json,
     read_stdin,
+    read_stdin_json,
     record_op,
     resolve_kb_root,
     verbosity_options,
@@ -87,6 +88,16 @@ def read_entity(
     help="Captured event ID this write promotes (repeatable); "
     "stamps provenance and resolves the event",
 )
+@click.option(
+    "--new-root",
+    is_flag=True,
+    help="Allow this create to add a new root category (refused otherwise)",
+)
+@click.option(
+    "--allow-similar",
+    is_flag=True,
+    help="Create even though a sibling has the same words (refused otherwise)",
+)
 @verbosity_options
 @common_options
 @click.pass_context
@@ -97,6 +108,8 @@ def write_entity(
     reasoning: Optional[str],
     journal_source: Optional[str],
     event_ids: tuple,
+    new_root: bool,
+    allow_similar: bool,
     kb_root: Optional[Path],
     as_json: bool,
     quiet: bool,
@@ -129,6 +142,8 @@ def write_entity(
         reasoning=reasoning,
         journal_source=journal_source,
         event_ids=list(event_ids) or None,
+        new_root=new_root,
+        allow_similar=allow_similar,
     )
     record_op(kb_root, "write", result, started)
     if ctx.obj.get("as_json"):
@@ -233,17 +248,31 @@ def delete_entity(
 
 
 @click.command("move")
-@click.argument("source")
-@click.argument("target")
+@click.argument("source", required=False, default=None)
+@click.argument("target", required=False, default=None)
 @click.option("--confirm", is_flag=True, help="Confirm this destructive operation")
+@click.option(
+    "--new-root",
+    is_flag=True,
+    help="Allow the destination to add a new root category (refused otherwise)",
+)
+@click.option(
+    "--batch",
+    is_flag=True,
+    help='Read a JSON list of {"from", "to"} moves from stdin; one lock, one confirm',
+)
+@click.option("--dry-run", is_flag=True, help="With --batch: validate and report, move nothing")
 @verbosity_options
 @common_options
 @click.pass_context
 def move_entity(
     ctx: click.Context,
-    source: str,
-    target: str,
+    source: Optional[str],
+    target: Optional[str],
     confirm: bool,
+    new_root: bool,
+    batch: bool,
+    dry_run: bool,
     kb_root: Optional[Path],
     as_json: bool,
     quiet: bool,
@@ -251,10 +280,22 @@ def move_entity(
     trace: bool,
     strict: bool,
 ) -> None:
-    """Move an entity (requires --confirm, or answering an interactive prompt)."""
+    """Move an entity (requires --confirm, or answering an interactive prompt).
+
+    With --batch, stdin carries a JSON list of {"from", "to"} moves that run
+    under one lock with one confirmation and one combined propagation list
+    (the shape `kvault plan` emits).
+    """
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     apply_verbosity_options(ctx, quiet=quiet, explain=explain, trace=trace, strict=strict)
     kb_root = resolve_kb_root(ctx)
+    if batch:
+        _move_batch(ctx, kb_root, confirm=confirm, new_root=new_root, dry_run=dry_run)
+        return
+    if source is None or target is None:
+        raise click.UsageError("SOURCE and TARGET are required unless --batch is given")
+    if dry_run:
+        raise click.UsageError("--dry-run only applies with --batch")
     if not confirm:
         if ctx.obj.get("as_json"):
             output_json(
@@ -263,7 +304,7 @@ def move_entity(
             ctx.exit(1)
         click.confirm(f"Move '{source}' to '{target}'?", abort=True)
     started = time.monotonic()
-    result = ops.move_entity(kb_root, source, target)
+    result = ops.move_entity(kb_root, source, target, new_root=new_root)
     record_op(kb_root, "move", result, started)
     if ctx.obj.get("as_json"):
         output_json(result)
@@ -273,4 +314,48 @@ def move_entity(
             render_notes(result, get_tier(ctx))
         else:
             raise click.ClickException(result.get("error", "Move failed"))
+    finish_op(ctx, result)
+
+
+def _move_batch(
+    ctx: click.Context, kb_root: Path, confirm: bool, new_root: bool, dry_run: bool
+) -> None:
+    moves = read_stdin_json()
+    if not isinstance(moves, list):
+        raise click.ClickException("--batch expects a JSON list of {from, to} objects on stdin")
+    if not dry_run and not confirm:
+        if ctx.obj.get("as_json"):
+            output_json(_confirmation_error("move --batch", f"move {len(moves)} nodes"))
+            ctx.exit(1)
+        # stdin carried the payload, so there is no stream left to prompt on.
+        raise click.UsageError(
+            f"--batch would move {len(moves)} nodes and cannot prompt (stdin is the payload); "
+            "pass --confirm, or --dry-run to preview"
+        )
+    started = time.monotonic()
+    result = ops.move_entities(kb_root, moves, new_root=new_root, dry_run=dry_run)
+    if not dry_run:
+        record_op(kb_root, "move-batch", result, started)
+    if ctx.obj.get("as_json"):
+        output_json(result)
+    else:
+        if not result.get("success"):
+            detail = result.get("details", {}).get("errors") or []
+            lines = [result.get("error", "Batch move failed")]
+            lines.extend(f"  [{e.get('index')}] {e.get('error')}" for e in detail[:10])
+            raise click.ClickException("\n".join(lines))
+        if dry_run:
+            click.echo(f"Dry run: {result['count']} moves valid")
+            for mv in result["moves"]:
+                click.echo(f"  {mv['from']} → {mv['to']}")
+            if result.get("stubs"):
+                click.echo(f"  would stub summaries: {', '.join(result['stubs'])}")
+        else:
+            click.echo(f"Moved: {result['count']} nodes")
+            for mv in result["moved"]:
+                click.echo(f"  {mv['from']} → {mv['to']}")
+        render_notes(result, get_tier(ctx))
+        paths = result.get("ancestor_paths") or []
+        if paths:
+            click.echo(f"Ancestors to update: {len(paths)}  ({', '.join(paths)})")
     finish_op(ctx, result)

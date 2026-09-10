@@ -359,3 +359,70 @@ def _move_batch(
         if paths:
             click.echo(f"Ancestors to update: {len(paths)}  ({', '.join(paths)})")
     finish_op(ctx, result)
+
+
+@click.command("mark")
+@click.argument("path")
+@click.option(
+    "--distinct-from",
+    "distinct_from",
+    multiple=True,
+    help="Record that PATH and this node are different things (sibling name or KB path; repeatable)",
+)
+@click.option(
+    "--max-children", type=int, default=None, help="This parent's own child ceiling (0 clears)"
+)
+@click.option(
+    "--series-ok/--no-series-ok",
+    "series_ok",
+    default=None,
+    help="This parent's dated children are an intentional chronology",
+)
+@click.option("--clear", is_flag=True, help="Drop all recorded decisions on PATH first")
+@verbosity_options
+@common_options
+@click.pass_context
+def mark_node(
+    ctx: click.Context,
+    path: str,
+    distinct_from: tuple,
+    max_children: Optional[int],
+    series_ok: Optional[bool],
+    clear: bool,
+    kb_root: Optional[Path],
+    as_json: bool,
+    quiet: bool,
+    explain: bool,
+    trace: bool,
+    strict: bool,
+) -> None:
+    """Record a structure decision on a node so check, plan, and the guards honor it.
+
+    A correction that only lives in a conversation is re-proposed next week;
+    one recorded here sticks: `distinct_from` silences the sibling-collision
+    finding and the create guard for that pair, `max_children` sets the
+    parent's own ceiling, `--series-ok` keeps a deliberate chronology.
+    """
+    apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
+    apply_verbosity_options(ctx, quiet=quiet, explain=explain, trace=trace, strict=strict)
+    kb_root = resolve_kb_root(ctx)
+    started = time.monotonic()
+    result = ops.mark_node(
+        kb_root,
+        path,
+        distinct_from=list(distinct_from) or None,
+        max_children=max_children,
+        series_ok=series_ok,
+        clear=clear,
+    )
+    record_op(kb_root, "mark", result, started)
+    if ctx.obj.get("as_json"):
+        output_json(result)
+        if not result.get("success"):
+            ctx.exit(1)
+    else:
+        if not result.get("success"):
+            raise click.ClickException(result.get("error", "mark failed"))
+        click.echo(result["did"].replace("marked ", "Marked: ", 1))
+        render_notes(result, get_tier(ctx))
+    finish_op(ctx, result)

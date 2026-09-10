@@ -106,7 +106,7 @@ def test_cli_plan_human_and_json(empty_kb):
     assert human.exit_code == 0, human.output
     assert human.output.startswith("Plan for .:")
     assert "1. cluster  projects → projects/aio" in human.output
-    assert "Questions (answer from evidence" in human.output
+    assert "Decisions (each has a default" in human.output
     as_json = runner.invoke(cli, ["plan", "--json", "--limit", "1", "--kb-root", str(empty_kb)])
     doc = json.loads(as_json.output)
     assert doc["count"] == 1 and doc["items"][0]["kind"] == "cluster"

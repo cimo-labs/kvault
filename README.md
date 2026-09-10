@@ -215,6 +215,15 @@ written with a file tool or a shell redirect skips them and never reaches the op
 real KB, 56 of the 59 nodes created in a month arrived that way. Agents and pipelines create
 nodes through kvault, and `check` is the backstop for the ones that did not.
 
+**Corrections stick.** Nobody reviews a KB on a schedule; the owner corrects the agent in use,
+after the fact. A correction that only lives in a chat is re-proposed the next week, so it is
+recorded in the node's frontmatter, where every rule reads it: `kvault mark <a> --distinct-from
+<b>` (different things; the sibling finding and the create guard stop for that pair),
+`kvault mark <parent> --max-children N` (this parent is meant to be this wide), `kvault mark
+<parent> --series-ok` (this chronology is intentional). Every `plan` question carries a default,
+and a batch may carry `--new-root` only when it does not increase the root count, so
+consolidation runs unattended and nothing waits on a person.
+
 **The engine**: `kvault plan` turns findings into an ordered worklist with the exact commands —
 parents over the ceiling are clustered by leading word into new parents, each with a ready
 `kvault move --batch` payload; then ghosts, sibling collisions, loose files, journal drift,
@@ -261,7 +270,7 @@ written so a cron or systemd job can load it alone.
 | **Orient & discover** | `kvault tree [path] [--depth N] [--max-children N] [--gist]`, `kvault search "<query>"` |
 | **Nodes** | `kvault read`, `kvault write` (stdin) `[--new-root] [--allow-similar]`, `kvault list`, `kvault delete`, `kvault move [--batch --dry-run]` |
 | **Summaries** | `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors` |
-| **Quality** | `kvault validate`, `kvault check [--max-children N]`, `kvault plan [PATH] [--limit N]` |
+| **Quality** | `kvault validate`, `kvault check [--max-children N]`, `kvault plan [PATH] [--limit N]`, `kvault mark <path> [--distinct-from X] [--max-children N] [--series-ok]` |
 | **Journal & artifacts** | `kvault journal`, `kvault artifact daily`, `kvault log tail`, `kvault log summary` |
 | **Lifecycle** | `kvault init`, `kvault status` |
 
@@ -303,7 +312,7 @@ mature KB; pass `"content"` to inline it. Set
 [ARCHITECTURE.md](https://github.com/cimo-labs/kvault/blob/main/ARCHITECTURE.md).
 
 Every signal above is on the MCP surface too: `kvault_check` returns the `check` document,
-`kvault_plan` the worklist, `kvault_move_entities` runs a batch, `kvault_write_node` takes
+`kvault_plan` the worklist, `kvault_move_entities` runs a batch, `kvault_mark` records a decision, `kvault_write_node` takes
 `new_root` and `allow_similar`, and `kvault_prepare_summary_update` returns child gists past
 the ceiling (`children="content"` for full bodies). `kvault_validate_kb` is integrity only.
 

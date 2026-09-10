@@ -134,7 +134,7 @@ def build_plan(
                 if st.is_reserved_name(token):
                     questions.append(
                         f"{fpath}: {len(members)} children share the reserved word "
-                        f"'{token}'; name a hub for them by hand"
+                        f"'{token}'; default: name a hub for them by hand"
                     )
                     continue
                 non_members = [n for n in names if n not in members]
@@ -182,6 +182,8 @@ def build_plan(
                             _batch_command(root, moves, new_root=(fpath == "." and not hub_exists)),
                             f"kvault update-summaries --kb-root {q}  "
                             f"# rewrite {hub}, then {fpath}, then .",
+                            f"# or, to keep {fpath} flat on purpose: kvault mark {shlex.quote(fpath)} "
+                            f"--max-children {count} --kb-root {q}",
                         ],
                         "then": (
                             f"rewrite {hub} as a rollup of its {len(members)} children"
@@ -198,12 +200,13 @@ def build_plan(
                 sample = ", ".join(leftovers[:8]) + (" …" if len(leftovers) > 8 else "")
                 questions.append(
                     f"{fpath}: {len(leftovers)} children share no leading word with "
-                    f"{min_cluster - 1}+ siblings and stay in place: {sample}"
+                    f"{min_cluster - 1}+ siblings and stay in place: {sample} — default: leave them"
                 )
             if len(groups) >= 2:
                 questions.append(
                     f"{fpath}: are any of these groups one initiative? "
                     + ", ".join(t for t, _ in groups[:10])
+                    + " — default: keep them separate hubs (a merge is one later move)"
                 )
             continue
 
@@ -233,15 +236,15 @@ def build_plan(
                 # parent itself; the parent is the current-state node.
                 questions.append(
                     f"{fpath}: {len(members)} children are named by date alone "
-                    f"({members[0]}, …) — they are the timeline of {fpath} itself; fold "
-                    f"them into {fpath}/deep_context/ by hand and keep {fpath} as the "
+                    f"({members[0]}, …) — they are the timeline of {fpath} itself; "
+                    f"default: fold them into {fpath}/deep_context/ and keep {fpath} as the "
                     "current state"
                 )
                 continue
             if st.is_reserved_name(key):
                 questions.append(
-                    f"{fpath}: the series key '{key}' is a reserved name; pick a hub name "
-                    "and fold by hand"
+                    f"{fpath}: the series key '{key}' is a reserved name; default: pick a hub "
+                    "name and fold by hand"
                 )
                 continue
             existing = [n for n in names if n not in members]
@@ -286,13 +289,15 @@ def build_plan(
                     f"kvault write {shlex.quote(hub)} --kb-root {q} <<'EOF' … (the current "
                     "state, written from deep_context/) EOF",
                     f"kvault update-summaries --kb-root {q}  # then {fpath}, then up",
+                    f"# or, if this chronology is intentional: kvault mark {shlex.quote(fpath)} "
+                    f"--series-ok --kb-root {q}",
                 ],
                 "then": then,
             }
             if fpath != "." and st.series_key(parent_leaf)[1] and hub != fpath:
                 item["_question"] = (
                     f"{fpath} is itself a dated name; is the whole subtree one chronology "
-                    "that should fold one level up?"
+                    "that should fold one level up? — default: run this fold; fold up later if so"
                 )
             items.append(item)
             continue
@@ -328,7 +333,8 @@ def build_plan(
             if detail.get("kind") == "same_name_elsewhere":
                 questions.append(
                     f"'{fpath}' lives at {len(detail['paths'])} places "
-                    f"({', '.join(detail['paths'][:4])}): which one is home?"
+                    f"({', '.join(detail['paths'][:4])}): which one is home? — default: read both; "
+                    "different things → kvault mark <one> --distinct-from <other>"
                 )
                 items.append(
                     {
@@ -353,6 +359,8 @@ def build_plan(
                             f"kvault read {_join(fpath, b)} --kb-root {q}",
                             "# same thing → merge and delete one; subtopic → "
                             f"kvault move --confirm {_join(fpath, b)} {_join(fpath, a)}/{b}",
+                            f"# different things → kvault mark {_join(fpath, a)} --distinct-from {b} "
+                            f"--kb-root {q}  (the finding stops)",
                         ],
                     }
                 )
@@ -432,6 +440,8 @@ def build_plan(
                     "# same thing → merge and delete one; subtopic → "
                     f"kvault move --confirm {_join(parent, top.get('b'))} "
                     f"{_join(parent, top.get('a'))}/{top.get('b')}",
+                    f"# different things → kvault mark {_join(parent, top.get('a'))} "
+                    f"--distinct-from {top.get('b')} --kb-root {q}  (the finding stops)",
                 ],
             }
         )

@@ -13,6 +13,6 @@ try:
     __version__ = _distribution_version("knowledgevault")
 except PackageNotFoundError:
     # Uninstalled source tree only; keep in sync with pyproject.toml.
-    __version__ = "0.15.1"
+    __version__ = "0.15.2"
 
 __all__ = ["__version__"]

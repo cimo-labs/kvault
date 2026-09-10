@@ -1531,18 +1531,41 @@ def write_summary(
     dir_existed = dir_path.exists()
     summary_existed = summary_path.exists()
     existing = _read_node_raw(kg_root, path)
-    preserved_meta = existing.get("meta", {}) if existing and meta is None else {}
-    final_meta = meta if meta is not None else preserved_meta
+    existing_meta: Dict[str, Any] = (
+        dict(existing.get("meta") or {})
+        if existing and isinstance(existing.get("meta"), dict)
+        else {}
+    )
+    preserved_meta = existing_meta if meta is None else {}
+    final_meta: Dict[str, Any] = dict(meta) if meta is not None else dict(preserved_meta)
 
     # When the caller passes meta explicitly it REPLACES the existing
     # frontmatter rather than merging — keys the caller didn't repeat are
-    # gone. That was silent; now it is a note. created/updated are NOT
-    # excluded: unlike write_node, write_summary never re-stamps dates, so a
-    # dropped `updated` really is lost (degrading check's PROPAGATE date
-    # comparison to its mtime fallback for that node).
+    # gone. That was silent; now it is a note. created/updated are excluded
+    # from the drop list because they are re-stamped below.
     dropped_keys: List[str] = []
-    if meta is not None and existing and isinstance(existing.get("meta"), dict):
-        dropped_keys = sorted(k for k in existing["meta"] if k not in meta)
+    if meta is not None and existing_meta:
+        dropped_keys = sorted(
+            k for k in existing_meta if k not in meta and k not in ("created", "updated")
+        )
+
+    # Dates (0.15.2): a rewritten summary carries today's `updated`, else the
+    # 2-call workflow's second call left the parent older than its child and
+    # `check` reported PROPAGATE for it indefinitely (seen on a real KB).
+    # An identical rewrite is a no-op: nothing written, dates untouched.
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    is_noop = bool(
+        existing and summary_existed and _is_noop_node_write(existing, content, final_meta)
+    )
+    if is_noop:
+        final_meta = dict(existing_meta)
+    else:
+        if "created" in existing_meta and "created" not in final_meta:
+            final_meta["created"] = existing_meta["created"]
+        if not summary_existed and "created" not in final_meta:
+            final_meta["created"] = today
+        final_meta["updated"] = today
 
     if final_meta:
         full_content = build_frontmatter(final_meta) + content
@@ -1550,10 +1573,21 @@ def write_summary(
         full_content = content
     with KBWriteLock(kg_root) as lock:
         dir_path.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(summary_path, full_content)
+        if not is_noop:
+            atomic_write_text(summary_path, full_content)
 
     created = not summary_existed
     notes: List[Dict[str, Any]] = []
+    if is_noop:
+        notes.append(
+            nt.note(
+                "unchanged",
+                "body and metadata identical — file not rewritten, updated preserved",
+                detail={"path": path, "updated": existing_meta.get("updated")},
+                why="compared body and all frontmatter except created/updated; no difference",
+                next_step="nothing to do for this summary",
+            )
+        )
     if created and path != ".":
         text = f"new node created at {path}"
         if not dir_existed:
@@ -1587,6 +1621,8 @@ def write_summary(
     result: Dict[str, Any] = {
         "success": True,
         "path": path,
+        "changed": not is_noop,
+        "updated": final_meta.get("updated"),
         "created": created,
         "did": ("created" if created else "updated") + f" summary {path}",
     }

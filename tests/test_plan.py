@@ -337,3 +337,31 @@ def test_plan_scope_accepts_dot_slash(empty_kb):
     (empty_kb / "projects" / "ghostly").mkdir()
     plan = build_plan(empty_kb, path="./projects", limit=0)
     assert plan["path"] == "projects" and plan["total"] >= 1
+
+
+def test_hub_is_not_clustered_by_its_own_name(empty_kb):
+    """Real KB, first weekly run after consolidation: projects/aio held 12 aio_* nodes
+    and the plan proposed projects/aio/aio."""
+    names = [
+        "aio",
+        "aio_architecture",
+        "aio_reporting",
+        "aio_scaling",
+        "aio_search",
+        "aio_experiments",
+        "aio_experiment_evaluation",
+        "aio_daily_standups",
+        "aio_commerce_search",
+        "aio_modeling",
+        "aio_routing_model",
+        "aio_mendel_insights",
+    ]
+    for n in names:
+        assert ops.write_node(
+            empty_kb, f"projects/aio/{n}", BODY, META, create=True, allow_similar=True
+        )["success"]
+    clusters = [i for i in build_plan(empty_kb, limit=0)["items"] if i["kind"] == "cluster"]
+    assert not any(i["new_parent"].endswith("/aio/aio") for i in clusters)
+    # grouping falls through to the next word where there is one
+    hubs = {i["new_parent"] for i in clusters}
+    assert hubs <= {"projects/aio/experiment", "projects/aio/search"} or hubs == set()

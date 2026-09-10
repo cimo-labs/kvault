@@ -453,20 +453,26 @@ class TestReviewRegressions:
         removed = next(n for n in result["notes"] if n["code"] == "removed")
         assert "owner" in removed["detail"]["dropped_keys"]
 
-    def test_write_summary_reports_dropped_created_updated(self, tmp_path):
-        """M5: write_summary never re-stamps dates, so dropping created/updated
-        must be reported like any other dropped key."""
+    def test_write_summary_keeps_created_and_restamps_updated(self, tmp_path):
+        """0.15.2 reverses M5: write_summary re-stamps dates, so created is
+        preserved, updated is today, and neither is a "dropped key"."""
         kb = _make_kb(tmp_path)
         ops.write_node(kb, "people/contacts/jane_doe", BODY, create=True)
+        before = ops.read_node(kb, "people/contacts/jane_doe")["meta"]
         result = ops.write_summary(
             kb,
             "people/contacts/jane_doe",
             "# Jane\n\nReplaced.\n",
             meta={"source": "manual", "aliases": []},
         )
-        removed = next(n for n in result["notes"] if n["code"] == "removed")
-        assert "created" in removed["detail"]["dropped_keys"]
-        assert "updated" in removed["detail"]["dropped_keys"]
+        assert result["success"] and result["changed"]
+        after = ops.read_node(kb, "people/contacts/jane_doe")["meta"]
+        assert after["created"] == before["created"]
+        assert after["updated"] == result["updated"]
+        removed = [n for n in result["notes"] if n["code"] == "removed"]
+        assert not any(
+            k in ("created", "updated") for n in removed for k in n["detail"]["dropped_keys"]
+        )
 
     def test_attach_note_keeps_notes_before_ancestors(self):
         """M7: a late-attached note must not land after the bulk payload."""

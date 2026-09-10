@@ -109,3 +109,49 @@ class TestFullWriteWorkflow:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["valid"] is True or all(i["severity"] == "info" for i in data.get("issues", []))
+
+
+def test_update_summaries_stamps_updated_and_clears_propagate(empty_kb):
+    """0.15.2: the second call of the 2-call workflow left the parent older than its child."""
+    from kvault.core import operations as ops
+    from kvault.core.check import run_checks
+
+    (empty_kb / "people" / "_summary.md").write_text(
+        "---\nupdated: '2026-09-01'\nsource: manual\naliases: []\n---\n# People\n\nAll.\n"
+    )
+    r = ops.write_node(
+        empty_kb,
+        "people/alice",
+        "# Alice\n\nx\n",
+        {"source": "manual", "aliases": ["Alice"]},
+        create=True,
+    )
+    assert r["success"]
+    assert any(w.startswith("PROPAGATE") for w in run_checks(empty_kb)["warnings"])
+    u = ops.update_summaries(
+        empty_kb,
+        [
+            {"path": "people", "content": "# People\n\nAll, including Alice.\n"},
+            {"path": ".", "content": "# Root\n\nRoot with people.\n"},
+        ],
+    )
+    assert u["success"], u
+    text = (empty_kb / "people" / "_summary.md").read_text()
+    assert "updated: '2026-09-01'" not in text and "updated:" in text
+    assert not [w for w in run_checks(empty_kb)["warnings"] if w.startswith("PROPAGATE")]
+    # identical rewrite is a no-op that keeps the date
+    again = ops.write_summary(empty_kb, "people", "# People\n\nAll, including Alice.\n")
+    assert again["success"] and again["changed"] is False
+    assert any(n["code"] == "unchanged" for n in again["notes"])
+    # explicit meta without dates still gets stamped, and created survives
+    (empty_kb / "people" / "bob").mkdir()
+    (empty_kb / "people" / "bob" / "_summary.md").write_text(
+        "---\ncreated: '2026-01-01'\nupdated: '2026-01-01'\nsource: manual\naliases: [Bob]\n---\n# Bob\n\nold\n"
+    )
+    w = ops.write_summary(
+        empty_kb, "people/bob", "# Bob\n\nnew\n", meta={"source": "manual", "aliases": ["Bob"]}
+    )
+    assert w["success"] and w["changed"]
+    t = (empty_kb / "people" / "bob" / "_summary.md").read_text()
+    assert "created: '2026-01-01'" in t and "updated: '2026-01-01'" not in t
+    assert not any(n["code"] == "removed" for n in w.get("notes", []))  # dates are not dropped keys

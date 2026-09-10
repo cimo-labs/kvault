@@ -96,6 +96,15 @@ over MCP. Reproduced on a synthetic fixture before any of this was written.
   tier × segment facet). What remains carries each node's title so an
   agent can dismiss a false twin in one read (`people/family «Family»` vs
   `people/friends/family «Family Friends»`).
+- **`plan` folds a series and adopts legacy files through kvault.** A
+  `series` item carries the `move --batch` payload that moves the dated
+  nodes under one new hub's `deep_context/` (nothing deleted, search still
+  reaches every node; the hub is a stub until the agent writes the current
+  state). A `loose` item adopts a legacy node file with `kvault write
+  <node> --create < file` so the write is validated, guarded, and logged;
+  the raw `git mv` form left `WRITE:` findings behind on a real KB. The
+  clusterer never keys on a date token (six meeting notes are not a
+  cluster called `2026`).
 - **`plan` cluster items carry `members` (name + gist, first 12) and
   `hub_name_is_placeholder`**, so an agent can refine a cluster and name
   the hub without reading every member. The questions list is addressed

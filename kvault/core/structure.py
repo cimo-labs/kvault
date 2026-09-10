@@ -173,12 +173,16 @@ def cluster_by_leading_token(
     groups (``aio`` with ``ai_overview``) is left to a person.
     """
     buckets: Dict[str, List[str]] = {}
-    for name in names:
-        tokens = name_tokens(name)
-        key = tokens[0] if tokens else name
-        buckets.setdefault(key, []).append(name)
-    groups: List[Tuple[str, List[str]]] = []
     leftovers: List[str] = []
+    for name in names:
+        # A date is never a topic: six meeting notes named 2026_02_13_* are
+        # a chronology, not a cluster called "2026".
+        tokens = [t for t in name_tokens(name) if not is_date_token(t)]
+        if not tokens:
+            leftovers.append(name)
+            continue
+        buckets.setdefault(tokens[0], []).append(name)
+    groups: List[Tuple[str, List[str]]] = []
     for key, members in buckets.items():
         if len(members) >= min_size:
             groups.append((key, sorted(members)))

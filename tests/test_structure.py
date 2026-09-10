@@ -212,6 +212,17 @@ def test_same_series_and_date_series_groups():
     assert st.date_series(names, min_size=2)[1][0] == "graph_mailbox_review"
 
 
+def test_cluster_never_keys_on_a_date():
+    names = [
+        "2026_02_13_sales_sync",
+        "2026_02_20_kevlar_camaro_test",
+        "2026_02_22_fleet_pilot_conversation",
+        "2026_02_23_mcmaster_carr_brainstorm",
+    ]
+    groups, leftovers = st.cluster_by_leading_token(names, min_size=3)
+    assert groups == [] and leftovers == sorted(names)
+
+
 def test_bucket_and_facet_exemptions():
     assert st.is_bucket_name("a_m") and st.is_bucket_name("n_z")
     assert not st.is_bucket_name("ai") and not st.is_bucket_name("a_m_x")

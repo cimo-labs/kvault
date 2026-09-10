@@ -124,7 +124,52 @@ def test_plan_collapses_loose_files_per_directory_and_siblings_per_parent(empty_
     loose = [i for i in plan["items"] if i["kind"] == "loose"]
     assert len(loose) == 1 and loose[0]["path"] == "projects"
     assert "2 legacy node file(s)" in loose[0]["why"]
-    assert sum("git mv" in c and "_summary.md" in c for c in loose[0]["commands"]) == 2
+    assert sum(c.startswith("kvault write") and "--create" in c for c in loose[0]["commands"]) == 2
     siblings = [i for i in plan["items"] if i["kind"] == "siblings"]
     assert len(siblings) == 1 and siblings[0]["path"] == "people"
     assert len(siblings[0]["pairs"]) == 2
+
+
+def test_series_item_emits_the_fold_batch(empty_kb):
+    for day, name in ((15, "monday"), (16, "tuesday"), (17, "wednesday")):
+        r = ops.write_node(
+            empty_kb,
+            f"projects/critical_june{day}_{name}_source_boundary_2026_06_{day}",
+            BODY,
+            META,
+            create=True,
+        )
+        assert r["success"], r
+    plan = build_plan(empty_kb, limit=0)
+    series = [i for i in plan["items"] if i["kind"] == "series"]
+    assert len(series) == 1
+    item = series[0]
+    assert item["new_parent"] == "projects/critical_source_boundary"
+    assert len(item["moves"]) == 3
+    assert all(
+        m["to"].startswith("projects/critical_source_boundary/deep_context/") for m in item["moves"]
+    )
+    result = ops.move_entities(empty_kb, item["moves"])
+    assert result["success"] and result["count"] == 3
+    after = run_checks(empty_kb)
+    assert not [f for f in after["findings"] if f["code"] == "SERIES"]
+    assert ops.search_nodes(empty_kb, "critical june16")["results"]
+
+
+def test_adopt_commands_go_through_kvault_write(empty_kb):
+    import subprocess
+
+    (empty_kb / "projects" / "landscape.md").write_text(
+        "---\nsource: manual\ntopic: Landscape\n---\n# Landscape\n\nThe field.\n"
+    )
+    plan = build_plan(empty_kb, limit=0)
+    loose = [i for i in plan["items"] if i["kind"] == "loose"][0]
+    adopt = [c for c in loose["commands"] if c.startswith("kvault write")]
+    assert len(adopt) == 1
+    assert "projects/landscape --create" in adopt[0] and "< " in adopt[0]
+    assert adopt[0].endswith("rm " + str(empty_kb / "projects" / "landscape.md"))
+    # and the command actually works end to end through the CLI
+    subprocess.run(adopt[0], shell=True, check=True)
+    assert (empty_kb / "projects" / "landscape" / "_summary.md").exists()
+    assert not (empty_kb / "projects" / "landscape.md").exists()
+    assert not [f for f in run_checks(empty_kb)["findings"] if f["code"] in ("LOOSE", "WRITE")]

@@ -14,6 +14,9 @@ from kvault.cli._helpers import (
 from kvault.core.check import DEFAULT_MAX_CHILDREN
 from kvault.core.plan import DEFAULT_LIMIT, build_plan
 
+#: Commands printed per item in human mode; the JSON carries all of them.
+MAX_COMMANDS_SHOWN = 6
+
 
 def _echo_item(index: int, item: Dict[str, Any]) -> None:
     head = f"{index}. {item['kind']:<9}{item['path']}"
@@ -21,9 +24,13 @@ def _echo_item(index: int, item: Dict[str, Any]) -> None:
         head += f" → {item['new_parent']}"
     click.echo(head)
     click.echo(f"     {item['why']}")
-    for command in item.get("commands", []):
+    commands = item.get("commands", [])
+    shown = commands[:MAX_COMMANDS_SHOWN]
+    for command in shown:
         for line in str(command).splitlines():
             click.echo(f"     {line}")
+    if len(commands) > len(shown):
+        click.echo(f"     … +{len(commands) - len(shown)} more commands (--json for all)")
     if item.get("then"):
         click.echo(f"     then: {item['then']}")
 

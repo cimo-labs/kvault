@@ -27,6 +27,12 @@ from kvault.core.frontmatter import parse_frontmatter
 
 #: Members listed with a gist per cluster item; past this the count stands in.
 MAX_MEMBER_GISTS = 12
+#: Adopt commands per directory in the JSON; the human renderer bounds further.
+MAX_ADOPT_COMMANDS = 25
+
+
+def _rm_command(root: Path) -> str:
+    return "git rm -q" if (root / ".git").exists() else "rm"
 
 
 def _gist_of(root: Path, rel: str, limit: int = 80) -> Optional[str]:
@@ -188,22 +194,44 @@ def build_plan(
 
         if code == "SERIES":
             d = finding["detail"]
+            key = d["key"]
+            parent_dir = root if fpath == "." else root / fpath
+            names = [x.name for x in st.child_dirs(parent_dir, root, ignore)]
+            members = next((m for k, m in st.date_series(names) if k == key), d.get("members", []))
+            hub = _join(fpath, key)
+            # The fold that worked on a real KB: the dated nodes become
+            # background material of one current-state node. Nothing is
+            # deleted, search still reaches every card, and the hub is a
+            # stub until the agent writes the current state from them.
+            moves = [{"from": _join(fpath, m), "to": f"{hub}/deep_context/{m}"} for m in members]
             items.append(
                 {
                     "kind": "series",
                     "priority": PRIORITY["series"],
                     "path": fpath,
                     "why": finding["message"],
+                    "new_parent": hub,
+                    "moves": moves,
+                    "members": members[:MAX_MEMBER_GISTS],
+                    "members_total": len(members),
                     "commands": [
-                        f"kvault tree {fpath} --gist --kb-root {root}",
-                        f"# write one current-state node: kvault write {fpath}/{d['key']} "
-                        "--create <<'EOF' … EOF",
-                        "# move the timeline into journal/ (kvault journal), then delete the "
-                        "dated nodes (kvault delete --confirm)",
+                        _batch_command(root, moves),
+                        f"kvault write {hub} --kb-root {root} <<'EOF' … (the current state, "
+                        "written from deep_context/) EOF",
+                        f"kvault update-summaries --kb-root {root}  # then {fpath}, then up",
                     ],
-                    "members": d.get("members", []),
+                    "then": (
+                        f"{hub} is a stub after the batch; write it as the current state of "
+                        f"'{key}' from the {len(members)} dated nodes now under its deep_context/"
+                    ),
                 }
             )
+            parent_name = fpath.rsplit("/", 1)[-1]
+            if fpath != "." and st.series_key(parent_name)[1]:
+                questions.append(
+                    f"{fpath} is itself a dated name; is the whole subtree one chronology "
+                    "that should fold one level up?"
+                )
             continue
         if code == "SIBLINGS" and finding["detail"].get("kind") not in (
             "same_name_elsewhere",
@@ -329,21 +357,29 @@ def build_plan(
         legacy = [g for g in group if g["detail"].get("kind") == "legacy_node_file"]
         home = "deep_context" if parent == "." else f"{parent}/deep_context"
         commands: List[str] = []
-        for g in legacy[:8]:
+        rm = _rm_command(root)
+        # Adopt THROUGH kvault: the write validates and autofills frontmatter,
+        # runs the create guards, and lands in the ops log. A raw git mv did
+        # none of that (and left WRITE: findings behind on a real KB).
+        for g in legacy[:MAX_ADOPT_COMMANDS]:
             node = g["path"][: -len(".md")]
             commands.append(
-                f"mkdir -p {root}/{node} && git mv {root}/{g['path']} {root}/{node}/_summary.md"
+                f"kvault write {node} --create --kb-root {root} < {root}/{g['path']} "
+                f"&& {rm} {root}/{g['path']}"
             )
-        if len(legacy) > 8:
-            commands.append(f"# … +{len(legacy) - 8} more legacy node files under {parent}")
+        if len(legacy) > MAX_ADOPT_COMMANDS:
+            commands.append(
+                f"# … +{len(legacy) - MAX_ADOPT_COMMANDS} more legacy node files under {parent}"
+            )
         if legacy:
             commands.append(
                 f"kvault update-summaries --kb-root {root}  # rewrite {parent} to cover the adopted nodes"
             )
         others = [g for g in group if g["detail"].get("kind") != "legacy_node_file"]
         if others:
+            mv = "git mv" if (root / ".git").exists() else "mv"
             commands.append(
-                f"mkdir -p {root}/{home} && git mv "
+                f"mkdir -p {root}/{home} && {mv} "
                 + " ".join(f"{root}/{g['path']}" for g in others[:6])
                 + f" {root}/{home}/"
             )

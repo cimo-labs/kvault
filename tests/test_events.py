@@ -253,7 +253,7 @@ def test_promoted_event_retry_appends_target(kb):
     retry = ops.write_entity(kb, "people/alice", "# Alice\n\nMore.\n", event_ids=[event_id])
     assert retry["success"], retry
     second = ops.write_entity(
-        kb, "projects/larkspur_move", "# Move\n", create=True, event_ids=[event_id]
+        kb, "projects/larkspur_move", "# Move\n", create=True, new_root=True, event_ids=[event_id]
     )
     assert second["success"], second
 

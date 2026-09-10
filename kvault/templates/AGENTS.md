@@ -24,6 +24,9 @@
 
 5. **CHECK BEFORE WRITE.** Always browse the tree and read parent summaries before creating new nodes.
    Use `kvault search` and native tools such as `rg` before creating. Never create duplicates.
+   kvault refuses a create that has the same words as a sibling (`--allow-similar` only after
+   reading both) or that adds a root category (`--new-root` only with the owner's say-so), and
+   reports near-duplicates and over-full parents as `structure` notes — act on them.
 
 6. **PARENT SUMMARIES ARE ROLLUPS.** Every parent `_summary.md` must be a comprehensive current-state
    summary of all descendant summaries. Do not replace parent summaries with placeholders such as
@@ -152,9 +155,11 @@ counts, descendant totals, and most-recent activity (`~date`) per branch. Act on
 
 | Signal | Action |
 |--------|--------|
-| Branch with >10 children (`[N children, ...]`) | Split into subgroups — by type first, else alphabetical (`a_m`/`n_z`), else temporal (by year). Create new parent dirs with `_summary.md` → `kvault move --confirm` each entity → update ancestor summaries → `kvault validate` |
+| Branch with >10 children (`[N children, ...]`, `BRANCH:` from `kvault check`) | `kvault plan <path>` → run the `cluster` item's `kvault move --batch --confirm` payload → rewrite the new hub, then the chain (`kvault update-summaries`) → `kvault validate` |
+| `[+K ghost]` in the tree, `GHOST:` from `kvault check` | A directory with no summary — write one (`kvault write <path> --create`) or list it in `.kvaultignore` if it is tooling |
+| `SIBLINGS:` / `LOOSE:` / `JOURNAL:` from `kvault check` | Merge or nest the twins; move loose files into `<node>/deep_context/`; fold stray journal files into `journal/YYYY-MM/log.md` |
 | Branch `~updated_max` older than ~6 months | Review for stale or dead content; update, merge, or prune |
-| `SUMMARY:` warnings from `kvault check` | Rewrite the flagged parent summaries as comprehensive rollups — this is real maintenance work even though the command exits 0 |
+| `SUMMARY:` warnings from `kvault check` | Rewrite the flagged parent summaries as comprehensive rollups — this is real maintenance work even though the command exits 0. `too_long`/`stale_history`: fold, never split into sub-files |
 | Near-duplicate titles or aliases | Verify identifiers exactly (email/phone) → merge into the canonical entity → delete the duplicate |
 
 Before creating any node: `kvault search "<name/topic>" --json` and `kvault tree <target-branch>`.
@@ -185,9 +190,10 @@ Context and notes here.
 ## CLI Commands Reference
 
 **Node:** `kvault search`, `kvault read`, `kvault write` (stdin), `kvault list`
-**Compatibility:** `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors`, `kvault delete --confirm`, `kvault move --confirm` (destructive — both require `--confirm`)
+**Compatibility:** `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors`, `kvault delete --confirm`, `kvault move --confirm` (destructive — both require `--confirm`), `kvault move --batch --confirm` (stdin JSON list of `{from, to}`)
+**Maintenance:** `kvault plan [PATH] [--limit N]` (ordered worklist with commands; never applies anything)
 **Journal:** `kvault journal --source TEXT` (stdin JSON)
-**Validation:** `kvault validate`, `kvault check`
+**Validation:** `kvault validate`, `kvault check` (prefixes: `[KB]`, `SUMMARY:`, `PENDING:`, `RETRACTED:`, `GHOST:`, `SIBLINGS:`, `LOOSE:`, `JOURNAL:`)
 **Status:** `kvault status`, `kvault doctor` (runtime/version/KB binding), `kvault tree [path] [--depth N] [--max-children N] [--gist]`
 
 All agent-facing commands support `--json` for machine-readable output and `--kb-root` to specify

@@ -1,10 +1,10 @@
-"""Tests for kvault.cli.check — propagation staleness detection."""
+"""Tests for kvault.core.check — propagation staleness detection."""
 
 import os
 import time
 from pathlib import Path
 
-from kvault.cli.check import check_propagation, _get_updated_date
+from kvault.core.check import _get_updated_date, check_propagation
 from kvault.core.frontmatter import build_frontmatter
 
 

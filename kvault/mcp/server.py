@@ -16,6 +16,8 @@ import click
 
 from kvault.core import notes as nt
 from kvault.core import operations as ops
+from kvault.core.check import DEFAULT_MAX_CHILDREN, DEFAULT_MAX_FINDINGS, run_checks
+from kvault.core.plan import DEFAULT_LIMIT, build_plan
 from kvault.core.search import KINDS
 from kvault.core.daily_artifacts import generate_daily_artifact, parse_iso_date
 from kvault.core.observability import ObservabilityLogger
@@ -232,6 +234,8 @@ def create_server(kb_root: Path | str) -> Any:
         reasoning: Optional[str] = None,
         journal_source: Optional[str] = None,
         ancestors: str = "paths",
+        new_root: bool = False,
+        allow_similar: bool = False,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create or update an entity.
@@ -264,6 +268,8 @@ def create_server(kb_root: Path | str) -> Any:
             reasoning=reasoning,
             journal_source=journal_source,
             default_source="auto:mcp",
+            new_root=new_root,
+            allow_similar=allow_similar,
         )
         _record("write", result, started)
         return _strip_ancestors(result, ancestors)
@@ -277,9 +283,18 @@ def create_server(kb_root: Path | str) -> Any:
         reasoning: Optional[str] = None,
         journal_source: Optional[str] = None,
         ancestors: str = "paths",
+        new_root: bool = False,
+        allow_similar: bool = False,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create or update any node summary.
+
+        A create is refused when it would add a root category (pass
+        new_root=true deliberately) or collide with a sibling of the same
+        words (allow_similar=true to override); near-duplicate names and
+        over-ceiling parents come back as `structure` notes, and missing
+        intermediate parents are stubbed (a `created` note) rather than
+        left as invisible directories.
 
         The result narrates kvault's decisions BEFORE the bulk payload:
         `did` (one line), `notes` (autofilled metadata, no-op detection,
@@ -308,6 +323,8 @@ def create_server(kb_root: Path | str) -> Any:
             reasoning=reasoning,
             journal_source=journal_source,
             default_source="auto:mcp",
+            new_root=new_root,
+            allow_similar=allow_similar,
         )
         _record("write", result, started)
         return _strip_ancestors(result, ancestors)
@@ -451,7 +468,10 @@ def create_server(kb_root: Path | str) -> Any:
 
     @server.tool(name="kvault_move_entity")
     def kvault_move_entity(
-        source_path: str, target_path: str, kg_root: Optional[str] = None
+        source_path: str,
+        target_path: str,
+        new_root: bool = False,
+        kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Move an entity to a new path.
 
@@ -464,8 +484,32 @@ def create_server(kb_root: Path | str) -> Any:
             return err
         assert root is not None
         started = time.monotonic()
-        result = ops.move_entity(root, source_path, target_path)
+        result = ops.move_entity(root, source_path, target_path, new_root=new_root)
         _record("move", result, started)
+        return result
+
+    @server.tool(name="kvault_move_entities")
+    def kvault_move_entities(
+        moves: List[Dict[str, str]],
+        new_root: bool = False,
+        dry_run: bool = False,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Move several nodes under one lock: `moves` is a list of {from, to}.
+
+        Every move is validated before any runs. The result carries one
+        combined `ancestor_paths` list; a `partial` note names what moved
+        and what did not if a move fails mid-batch. This is the shape
+        `kvault_plan` emits for a cluster.
+        """
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        started = time.monotonic()
+        result = ops.move_entities(root, moves, new_root=new_root, dry_run=dry_run)
+        if not dry_run:
+            _record("move-batch", result, started)
         return result
 
     @server.tool(name="kvault_read_summary")
@@ -509,14 +553,20 @@ def create_server(kb_root: Path | str) -> Any:
     @server.tool(name="kvault_prepare_summary_update")
     def kvault_prepare_summary_update(
         path: str,
+        children: str = "auto",
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Read a parent summary and all direct child summaries for a strict update."""
+        """Read a parent summary and its direct children for a strict update.
+
+        `children` is 'auto' (full bodies up to the direct-child ceiling,
+        gists above it — a `truncated` note says which), 'content', or
+        'gist'. The digest always covers full content.
+        """
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        return ops.prepare_summary_update(root, path)
+        return ops.prepare_summary_update(root, path, children=children)
 
     @server.tool(name="kvault_write_parent_summary")
     def kvault_write_parent_summary(
@@ -627,9 +677,59 @@ def create_server(kb_root: Path | str) -> Any:
             return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
         return _serialize_daily_result(root, result)
 
+    @server.tool(name="kvault_check")
+    def kvault_check(
+        threshold_minutes: int = 5,
+        summary_quality: bool = True,
+        pending_max_age: int = 7,
+        max_children: int = DEFAULT_MAX_CHILDREN,
+        max_findings: int = DEFAULT_MAX_FINDINGS,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Run the maintenance checks (the CLI's `kvault check`, one document).
+
+        `success` is false only for hard findings (PROPAGATE, LOG, WRITE,
+        BRANCH). `findings` is the unified list, hard first; SUMMARY,
+        PENDING, RETRACTED, GHOST, SIBLINGS, LOOSE and JOURNAL are warn-only
+        maintenance work. Lists are capped at `max_findings` per code with
+        the hidden counts in `truncated`. `kvault_validate_kb` checks
+        integrity only; this is the one that says whether the tree is rotting.
+        """
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        return run_checks(
+            root,
+            threshold_minutes=threshold_minutes,
+            summary_quality=summary_quality,
+            pending_max_age=pending_max_age,
+            max_children=max_children,
+            max_findings=max_findings,
+        )
+
+    @server.tool(name="kvault_plan")
+    def kvault_plan(
+        path: Optional[str] = None,
+        limit: int = DEFAULT_LIMIT,
+        max_children: int = DEFAULT_MAX_CHILDREN,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Maintenance worklist in leverage order, with commands and moves.
+
+        Cluster items carry a `moves` list you can pass straight to
+        `kvault_move_entities`; `questions` are the judgment calls that need
+        a person. Never applies anything.
+        """
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        return build_plan(root, path=path, limit=limit, max_children=max_children)
+
     @server.tool(name="kvault_validate_kb")
     def kvault_validate_kb(kg_root: Optional[str] = None) -> Dict[str, Any]:
-        """Validate KB integrity."""
+        """Validate KB integrity (frontmatter, placeholders, ghost directories)."""
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err

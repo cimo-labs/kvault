@@ -1,4 +1,6 @@
-"""Regression tests for the 2026-07-26 audit findings.
+"""Node-path components, reserved namespaces, child-digest guards, and check --kb-root.
+
+Regression tests from the 2026-07-26 audit findings.
 
 1. Node path components rejected digit-leading and hyphenated names, making real
    on-disk nodes unreachable through the node API — including every journal month

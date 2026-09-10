@@ -23,6 +23,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from kvault._version import __version__
 from kvault.core import notes as nt
+from kvault.core import structure as st
 from kvault.core.frontmatter import (
     FrontmatterError,
     build_frontmatter,
@@ -167,7 +168,8 @@ def build_outline(
     if not is_valid or not validate_within_root(kg_root, path):
         return None
     visited: Set[Path] = set()
-    return _walk_outline(kg_root, path, depth, max_children, include_gist, 0, visited)
+    ignore = st.load_ignore(kg_root)
+    return _walk_outline(kg_root, path, depth, max_children, include_gist, 0, visited, ignore)
 
 
 def _walk_outline(
@@ -178,6 +180,7 @@ def _walk_outline(
     include_gist: bool,
     level: int,
     visited: Set[Path],
+    ignore: Sequence[str] = (),
 ) -> Optional[Dict[str, Any]]:
     raw = _read_node_raw(kg_root, path)
     if raw is None:
@@ -193,10 +196,17 @@ def _walk_outline(
     children: List[Dict[str, Any]] = []
     for child_path in _child_node_paths(kg_root, path):
         child = _walk_outline(
-            kg_root, child_path, depth, max_children, include_gist, level + 1, visited
+            kg_root, child_path, depth, max_children, include_gist, level + 1, visited, ignore
         )
         if child is not None:
             children.append(child)
+    # Directories with no summary are invisible to every other surface; the
+    # outline at least counts them so an agent knows the shape it cannot see.
+    ghost_count = sum(
+        1
+        for d in st.child_dirs(kg_root if path == "." else kg_root / path, kg_root, ignore)
+        if st.is_ghost(d)
+    )
 
     descendants = sum(1 + c["descendants_count"] for c in children)
     updated_max = updated
@@ -215,6 +225,7 @@ def _walk_outline(
         "updated_max": updated_max,
         "children_count": len(children),
         "descendants_count": descendants,
+        "ghost_count": ghost_count,
         "children": children,
         "truncated": None,
     }
@@ -271,8 +282,13 @@ def render_outline_text(outline: Dict[str, Any]) -> str:
         parts = [label]
         if node["title_differs"]:
             parts.append(f"« {node['title']} »")
+        counts: List[str] = []
         if node["children_count"]:
-            parts.append(f"[{node['children_count']} children, {node['descendants_count']} total]")
+            counts.append(f"{node['children_count']} children, {node['descendants_count']} total")
+        if node.get("ghost_count"):
+            counts.append(f"+{node['ghost_count']} ghost")
+        if counts:
+            parts.append(f"[{', '.join(counts)}]")
         if node["updated_max"]:
             parts.append(f"~{node['updated_max']}")
         line = " ".join(parts)
@@ -663,6 +679,208 @@ def _hierarchy_hint(child_count: int) -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Structure guards (0.15)
+# ---------------------------------------------------------------------------
+#
+# Why these exist: a 1,045-node KB grew 119 flat children under projects/,
+# 23 root categories, and infra/ beside infrastructure/ beside
+# tech/infrastructure/ — while validate stayed green. Every one of those was
+# a legitimate `write --create` that nothing looked at. The orientation tree
+# prunes to 20 children, so the agent never saw the sibling it duplicated;
+# `mkdir(parents=True)` minted summary-less parents no surface could see;
+# and "search before create" was an instruction to the model, which a small
+# model running unattended skips. These are the server-side checks.
+
+
+def _stub_body(path: str, trigger: str) -> str:
+    title = _default_title(path.split("/")[-1])
+    return (
+        f"# {title}\n\n"
+        f"Placeholder summary created by kvault when `{trigger}` was written. "
+        "Rewrite it as a rollup of its children.\n"
+    )
+
+
+def _missing_ancestor_summaries(kg_root: Path, path: str) -> List[str]:
+    """Ancestors of *path* (root excluded) with no ``_summary.md``, shallowest first."""
+    missing = [
+        a
+        for a in _ancestor_node_paths(path)
+        if a != "." and not _summary_path_for_node(kg_root, a).exists()
+    ]
+    return sorted(missing, key=lambda a: a.count("/"))
+
+
+def _write_stub_summaries(kg_root: Path, paths: Sequence[str], trigger: str) -> List[str]:
+    """Write a self-flagging stub for each path (caller holds the write lock).
+
+    The body says "Placeholder" on purpose: `kvault check` keeps reporting
+    ``placeholder_language`` until an agent rewrites it as a real rollup.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    written: List[str] = []
+    for rel_path in paths:
+        summary_path = _summary_path_for_node(kg_root, rel_path)
+        if summary_path.exists():
+            continue
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        meta = {"created": today, "updated": today, "source": "kvault-stub", "aliases": []}
+        atomic_write_text(summary_path, build_frontmatter(meta) + _stub_body(rel_path, trigger))
+        written.append(rel_path)
+    return written
+
+
+def _stub_note(written: Sequence[str]) -> Dict[str, Any]:
+    n = len(written)
+    return nt.note(
+        "created",
+        f"{n} intermediate summar{'y' if n == 1 else 'ies'} stubbed: " + ", ".join(written),
+        detail={"paths": list(written), "count": n},
+        why=(
+            "a directory without _summary.md is invisible to tree, search, and check; "
+            "kvault no longer mints those"
+        ),
+        next_step="kvault update-summaries — the stubs are in ancestor_paths; rewrite them as rollups",
+    )
+
+
+def _root_guard(
+    kg_root: Path, path: str, new_root: bool, ignore: Sequence[str]
+) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Refuse to mint a root category unless *new_root*; note it when allowed.
+
+    A KB with no root categories yet (built by hand, not ``kvault init``)
+    has no orientation to protect: its first roots are allowed and noted.
+    The guard is for the 2nd..23rd root, which is where the audited KB
+    went wrong.
+    """
+    root_component = path.split("/")[0]
+    if (kg_root / root_component).is_dir():
+        return None, []
+    existing_roots = [d.name for d in st.child_dirs(kg_root, kg_root, ignore)]
+    if existing_roots and not new_root:
+        return (
+            error_response(
+                ErrorCode.VALIDATION_ERROR,
+                f"'{path}' would add a new root category '{root_component}' "
+                f"({len(existing_roots)} exist: {', '.join(existing_roots[:12])}"
+                + (" …" if len(existing_roots) > 12 else "")
+                + ")",
+                details={
+                    "reason": "new_root",
+                    "proposed_root": root_component,
+                    "existing_roots": existing_roots,
+                },
+                hint=(
+                    "Create it under an existing root, or pass --new-root "
+                    "(new_root=true) to add a root category deliberately"
+                ),
+            ),
+            [],
+        )
+    note = nt.note(
+        "structure",
+        f"new root category '{root_component}' ({len(existing_roots) + 1} roots)",
+        detail={
+            "kind": "new_root",
+            "root": root_component,
+            "existing_roots": existing_roots,
+        },
+        why=(
+            "root categories are the top of every agent's orientation pass; "
+            "each one is a structural decision"
+        ),
+        next_step="kvault update-summaries — describe the new root in the root summary",
+    )
+    return None, [note]
+
+
+def _create_guard(kg_root: Path, path: str, new_root: bool, allow_similar: bool) -> Dict[str, Any]:
+    """Run the structural checks for a create. Returns an error response or
+    ``{"success": True, "notes": [...], "stubs": [...]}``."""
+    ignore = st.load_ignore(kg_root)
+    err, notes = _root_guard(kg_root, path, new_root, ignore)
+    if err is not None:
+        return err
+
+    parent_path = _parent_path(path) or "."
+    parent_dir = kg_root if parent_path == "." else kg_root / parent_path
+    siblings = (
+        [d.name for d in st.child_dirs(parent_dir, kg_root, ignore)] if parent_dir.is_dir() else []
+    )
+    leaf = path.split("/")[-1]
+
+    collisions = st.sibling_collisions(siblings, leaf)
+    hard = [c for c in collisions if c.kind == "same_words"]
+    if hard and not allow_similar:
+        twin = _join_path(parent_path, hard[0].name)
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            f"'{path}' collides with existing sibling '{twin}' (same words)",
+            details={
+                "reason": "similar",
+                "collisions": [c.as_dict() for c in collisions],
+                "existing": twin,
+            },
+            hint=(
+                f"Update the existing node (kvault read {twin}), or pass "
+                "--allow-similar (allow_similar=true) to create anyway"
+            ),
+        )
+    elsewhere = st.basename_matches(kg_root, leaf, exclude=path, ignore=ignore)
+    if collisions or elsewhere:
+        parts: List[str] = []
+        for c in collisions:
+            score = "" if c.kind == "same_words" else f" {c.score}"
+            parts.append(f"{c.name} ({c.kind}{score})")
+        if elsewhere:
+            parts.append(f"same name at {', '.join(elsewhere[:3])}")
+        first = _join_path(parent_path, collisions[0].name) if collisions else elsewhere[0]
+        notes.append(
+            nt.note(
+                "structure",
+                "similar: " + "; ".join(parts),
+                detail={
+                    "kind": "similar",
+                    "siblings": [c.as_dict() for c in collisions],
+                    "elsewhere": elsewhere[:5],
+                },
+                why="a near-duplicate name is how flat sprawl starts; kvault compared names only",
+                next_step=f"kvault read {first} — if it is the same thing, update it and delete this one",
+            )
+        )
+
+    new_count = len(siblings) + 1
+    if new_count > MAX_DIRECT_CHILDREN:
+        notes.append(
+            nt.note(
+                "structure",
+                f"{parent_path} now has {new_count} direct children (ceiling {MAX_DIRECT_CHILDREN})",
+                detail={
+                    "kind": "over_fanout",
+                    "parent": parent_path,
+                    "child_count": new_count,
+                    "max_direct_children": MAX_DIRECT_CHILDREN,
+                },
+                why=(
+                    "past the ceiling the orientation tree elides children and a parent "
+                    "rollup stops fitting on an index page"
+                ),
+                next_step=f"kvault plan {parent_path}",
+            )
+        )
+    return {
+        "success": True,
+        "notes": notes,
+        "stubs": _missing_ancestor_summaries(kg_root, path),
+    }
+
+
+def _join_path(parent: str, name: str) -> str:
+    return name if parent == "." else f"{parent}/{name}"
+
+
+# ---------------------------------------------------------------------------
 # KB info (replaces _init_infrastructure output)
 # ---------------------------------------------------------------------------
 
@@ -835,6 +1053,8 @@ def write_entity(
     journal_source: Optional[str] = None,
     default_source: str = "auto:cli",
     event_ids: Optional[List[str]] = None,
+    new_root: bool = False,
+    allow_similar: bool = False,
 ) -> Dict[str, Any]:
     """Write entity with YAML frontmatter.
 
@@ -855,6 +1075,8 @@ def write_entity(
         journal_source=journal_source,
         default_source=default_source,
         event_ids=event_ids,
+        new_root=new_root,
+        allow_similar=allow_similar,
     )
 
 
@@ -886,8 +1108,17 @@ def write_node(
     journal_source: Optional[str] = None,
     default_source: str = "auto:cli",
     event_ids: Optional[List[str]] = None,
+    new_root: bool = False,
+    allow_similar: bool = False,
 ) -> Dict[str, Any]:
     """Write any node summary with YAML frontmatter.
+
+    A create runs the structure guards first (0.15): it is refused when it
+    would mint a root category without *new_root* or collide with a sibling
+    of the same words without *allow_similar*; near-duplicate names and
+    over-ceiling parents are reported as ``structure`` notes; and missing
+    intermediate parents get stub summaries (a ``created`` note) instead of
+    becoming invisible directories.
 
     When *event_ids* is given, each captured event must be pending (or
     already promoted — idempotent retries).  The write stamps
@@ -929,6 +1160,15 @@ def write_node(
             f"Node doesn't exist: {path}",
             hint="Use create=true to create new entity",
         )
+
+    structure_notes: List[Dict[str, Any]] = []
+    stub_paths: List[str] = []
+    if create and path != ".":
+        guard = _create_guard(kg_root, path, new_root=new_root, allow_similar=allow_similar)
+        if not guard.get("success"):
+            return guard
+        structure_notes = guard["notes"]
+        stub_paths = guard["stubs"]
 
     if meta is not None and not isinstance(meta, dict):
         return error_response(
@@ -1041,8 +1281,11 @@ def write_node(
     frontmatter = build_frontmatter(meta)
     full_content = frontmatter + content
     meta_json_removed = False
+    stubs_written: List[str] = []
     with KBWriteLock(kg_root) as lock:
         full_path.mkdir(parents=True, exist_ok=True)
+        if stub_paths:
+            stubs_written = _write_stub_summaries(kg_root, stub_paths, trigger=path)
         # A detected no-op skips the rewrite entirely rather than rewriting
         # identical bytes. That stops the mtime bump which made `kvault check`
         # manufacture PROPAGATE warnings for edits that never happened.
@@ -1075,6 +1318,9 @@ def write_node(
                 why=_autofill_why(autofilled_source, autofilled_aliases, autofilled_name, create),
             )
         )
+    if stubs_written:
+        notes.append(_stub_note(stubs_written))
+    notes.extend(structure_notes)
     if is_noop:
         preserved = ", ".join(f"{k} {v}" for k, v in sorted(noop_dates.items()))
         notes.append(
@@ -1304,8 +1550,36 @@ def write_summary(
     return result
 
 
-def prepare_summary_update(kg_root: Path, path: str) -> Dict[str, Any]:
-    """Return parent and direct-child summaries for a strict parent update."""
+def _summary_update_gist(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """The bounded child shape: enough to write a rollup line, not the body."""
+    return {
+        "path": raw["path"],
+        "kind": raw["kind"],
+        "title": raw["title"],
+        "gist": _extract_gist(raw["content"]),
+        "updated": _meta_date(raw["meta"].get("updated")),
+        "has_frontmatter": raw["has_frontmatter"],
+    }
+
+
+CHILDREN_MODES = ("auto", "content", "gist")
+
+
+def prepare_summary_update(kg_root: Path, path: str, children: str = "auto") -> Dict[str, Any]:
+    """Return parent and direct-child summaries for a strict parent update.
+
+    ``children`` selects the child payload: ``content`` (full bodies),
+    ``gist`` (path, title, first line, updated), or ``auto`` — content up to
+    ``MAX_DIRECT_CHILDREN`` children, gist above it. The digest is always
+    computed over full content, so a gist read still authorizes the write.
+    On the audited KB the content payload for one 119-child parent was
+    56 KB; gists cut that by 60 percent.
+    """
+    if children not in CHILDREN_MODES:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            f"children must be one of: {', '.join(CHILDREN_MODES)}",
+        )
     path = _normalize_node_path(path)
     is_valid, err_msg = _validate_node_path(path)
     if not is_valid:
@@ -1334,17 +1608,40 @@ def prepare_summary_update(kg_root: Path, path: str) -> Dict[str, Any]:
                 "out of the KB. Do not update this parent summary until it resolves."
             ),
         )
-    return {
-        "success": True,
-        "path": path,
-        "parent": _summary_update_node(parent_raw),
-        "children": [_summary_update_node(child) for child in children_raw],
-        "child_count": child_count,
-        "children_digest": digest,
-        "digest_algorithm": SUMMARY_UPDATE_DIGEST_ALGORITHM,
-        "max_direct_children": MAX_DIRECT_CHILDREN,
-        "hierarchy_hint": _hierarchy_hint(child_count),
-    }
+    mode = children
+    if mode == "auto":
+        mode = "content" if child_count <= MAX_DIRECT_CHILDREN else "gist"
+    notes: List[Dict[str, Any]] = []
+    if children == "auto" and mode == "gist":
+        notes.append(
+            nt.note(
+                "truncated",
+                f"{child_count} children returned as gists (ceiling {MAX_DIRECT_CHILDREN})",
+                detail={"child_count": child_count, "children_mode": "gist"},
+                why=(
+                    "full bodies for this many children exceed what one rollup should read; "
+                    "the digest still covers full content"
+                ),
+                next_step=(
+                    "pass children='content' for full bodies, or kvault plan to split the parent"
+                ),
+            )
+        )
+    result: Dict[str, Any] = {"success": True, "path": path}
+    if notes:
+        result["notes"] = notes
+    result["child_count"] = child_count
+    result["children_mode"] = mode
+    result["children_digest"] = digest
+    result["digest_algorithm"] = SUMMARY_UPDATE_DIGEST_ALGORITHM
+    result["max_direct_children"] = MAX_DIRECT_CHILDREN
+    result["hierarchy_hint"] = _hierarchy_hint(child_count)
+    result["parent"] = _summary_update_node(parent_raw)
+    result["children"] = [
+        _summary_update_node(child) if mode == "content" else _summary_update_gist(child)
+        for child in children_raw
+    ]
+    return result
 
 
 def write_parent_summary(
@@ -1604,8 +1901,15 @@ def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:
     }
 
 
-def move_entity(kg_root: Path, source_path: str, target_path: str) -> Dict[str, Any]:
-    """Move an entity to a new path."""
+def move_entity(
+    kg_root: Path, source_path: str, target_path: str, new_root: bool = False
+) -> Dict[str, Any]:
+    """Move an entity to a new path.
+
+    The destination chain gets stub summaries for any missing parent (a
+    ``created`` note) instead of silent ``mkdir``; a destination under a
+    root category that does not exist is refused without *new_root*.
+    """
     source_path = normalize_path(source_path)
     target_path = normalize_path(target_path)
 
@@ -1627,10 +1931,16 @@ def move_entity(kg_root: Path, source_path: str, target_path: str) -> Dict[str, 
         return error_response(ErrorCode.NOT_FOUND, f"Source doesn't exist: {source_path}")
     if target_full.exists():
         return error_response(ErrorCode.ALREADY_EXISTS, f"Target already exists: {target_path}")
+    ignore = st.load_ignore(kg_root)
+    root_err, root_notes = _root_guard(kg_root, target_path, new_root, ignore)
+    if root_err is not None:
+        return root_err
+    stub_paths = _missing_ancestor_summaries(kg_root, target_path)
 
     with KBWriteLock(kg_root) as lock:
         nodes_moved = sum(1 for _ in source_full.rglob("_summary.md"))
         target_full.parent.mkdir(parents=True, exist_ok=True)
+        stubs_written = _write_stub_summaries(kg_root, stub_paths, trigger=target_path)
         shutil.move(str(source_full), str(target_full))
 
     # BOTH ancestor chains are stale after a move: the source chain still
@@ -1645,7 +1955,10 @@ def move_entity(kg_root: Path, source_path: str, target_path: str) -> Dict[str, 
             seen_paths.add(t["path"])
             combined.append(t)
 
-    notes = [
+    notes: List[Dict[str, Any]] = list(root_notes)
+    if stubs_written:
+        notes.append(_stub_note(stubs_written))
+    notes.append(
         nt.note(
             "propagate",
             f"both ancestor chains are stale: {len(combined)} summaries to update",
@@ -1660,7 +1973,7 @@ def move_entity(kg_root: Path, source_path: str, target_path: str) -> Dict[str, 
             ),
             next_step="kvault update-summaries",
         )
-    ]
+    )
     notes.extend(_lock_notes(lock))
     return {
         "success": True,
@@ -1675,6 +1988,174 @@ def move_entity(kg_root: Path, source_path: str, target_path: str) -> Dict[str, 
         "ancestors_target": [t["path"] for t in tgt_targets],
         "ancestors": combined,
     }
+
+
+def move_entities(
+    kg_root: Path,
+    moves: Sequence[Dict[str, Any]],
+    new_root: bool = False,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Move several nodes under one lock, one confirmation, one propagation list.
+
+    All moves are validated before any runs (a bad entry means nothing
+    moves). If a move fails mid-batch the result is ``partial`` and names
+    what moved, what failed, and what was not attempted. ``dry_run`` reports
+    the plan without touching the tree.
+    """
+    if not isinstance(moves, list) or not moves:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            "moves must be a non-empty list of {from, to} objects",
+        )
+    ignore = st.load_ignore(kg_root)
+    errors: List[Dict[str, Any]] = []
+    normalized: List[Tuple[str, str]] = []
+    targets_seen: Set[str] = set()
+    for index, entry in enumerate(moves):
+        if not isinstance(entry, dict) or "from" not in entry or "to" not in entry:
+            errors.append({"index": index, "error": "each move needs 'from' and 'to'"})
+            continue
+        src = normalize_path(str(entry["from"]))
+        tgt = normalize_path(str(entry["to"]))
+        problem: Optional[str] = None
+        ok_src, msg_src = validate_entity_path(src)
+        ok_tgt, msg_tgt = validate_entity_path(tgt)
+        if not ok_src:
+            problem = f"invalid source: {msg_src}"
+        elif not ok_tgt:
+            problem = f"invalid target: {msg_tgt}"
+        elif tgt == src or tgt.startswith(src + "/"):
+            problem = "cannot move a node into its own subtree"
+        elif not (kg_root / src).exists():
+            problem = f"source doesn't exist: {src}"
+        elif (kg_root / tgt).exists():
+            problem = f"target already exists: {tgt}"
+        elif tgt in targets_seen:
+            problem = f"target used twice in this batch: {tgt}"
+        elif any(src.startswith(other + "/") for other, _ in normalized):
+            problem = "source is inside another move's source in this batch"
+        if problem is None:
+            try:
+                resolve_node_path(kg_root, src, reject_symlinks=True)
+                resolve_node_path(kg_root, tgt, reject_symlinks=True)
+            except PathSafetyError as exc:
+                problem = str(exc)
+        if problem:
+            errors.append({"index": index, "from": src, "to": tgt, "error": problem})
+            continue
+        targets_seen.add(tgt)
+        normalized.append((src, tgt))
+    if errors:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            f"{len(errors)} of {len(moves)} moves are invalid; nothing was moved",
+            details={"errors": errors},
+        )
+
+    notes: List[Dict[str, Any]] = []
+    stub_paths: List[str] = []
+    for _, tgt in normalized:
+        err, root_notes = _root_guard(kg_root, tgt, new_root, ignore)
+        if err is not None:
+            return err
+        for note in root_notes:
+            if note["detail"]["root"] not in {n["detail"]["root"] for n in notes}:
+                notes.append(note)
+        for missing in _missing_ancestor_summaries(kg_root, tgt):
+            if missing not in stub_paths:
+                stub_paths.append(missing)
+
+    if dry_run:
+        return {
+            "success": True,
+            "dry_run": True,
+            "did": f"would move {len(normalized)} nodes (dry run)",
+            "notes": notes,
+            "moves": [{"from": s_, "to": t_} for s_, t_ in normalized],
+            "stubs": stub_paths,
+            "count": len(normalized),
+        }
+
+    moved: List[Dict[str, Any]] = []
+    failed: Optional[Dict[str, Any]] = None
+    with KBWriteLock(kg_root) as lock:
+        stubs_written = _write_stub_summaries(
+            kg_root, stub_paths, trigger=f"move --batch ({len(normalized)} moves)"
+        )
+        for src, tgt in normalized:
+            source_full = kg_root / src
+            target_full = kg_root / tgt
+            try:
+                nodes_moved = sum(1 for _ in source_full.rglob("_summary.md"))
+                target_full.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(source_full), str(target_full))
+            except OSError as exc:
+                failed = {"from": src, "to": tgt, "error": str(exc)}
+                break
+            moved.append({"from": src, "to": tgt, "nodes_moved": nodes_moved})
+
+    done = {(m["from"], m["to"]) for m in moved}
+    not_attempted = [
+        {"from": s_, "to": t_}
+        for s_, t_ in normalized
+        if (s_, t_) not in done and (failed is None or (s_, t_) != (failed["from"], failed["to"]))
+    ]
+
+    combined: List[Dict[str, Any]] = []
+    seen_paths: Set[str] = set()
+    for m in moved:
+        for target in _propagation_targets(kg_root, m["from"]) + _propagation_targets(
+            kg_root, m["to"]
+        ):
+            if target["path"] not in seen_paths:
+                seen_paths.add(target["path"])
+                combined.append(target)
+
+    if stubs_written:
+        notes.append(_stub_note(stubs_written))
+    if failed is not None:
+        notes.append(
+            nt.note(
+                "partial",
+                f"{len(moved)} of {len(normalized)} moves done, then {failed['from']} failed: "
+                f"{failed['error']}; {len(not_attempted)} not attempted",
+                detail={"moved": moved, "failed": failed, "not_attempted": not_attempted},
+                why="a move failed mid-batch; earlier moves are on disk and cannot be undone here",
+                next_step="fix the cause, then re-run the batch with the remaining moves",
+            )
+        )
+    if combined:
+        notes.append(
+            nt.note(
+                "propagate",
+                f"{len(combined)} ancestor summaries are stale across {len(moved)} moves",
+                level=nt.NORMAL,
+                detail={"paths": [t["path"] for t in combined]},
+                why=(
+                    "source chains still describe subtrees that left; "
+                    "target chains do not describe them yet"
+                ),
+                next_step="kvault update-summaries",
+            )
+        )
+    notes.extend(_lock_notes(lock))
+
+    result: Dict[str, Any] = {
+        "success": True,
+        "did": f"moved {len(moved)} of {len(normalized)} nodes",
+        "notes": notes,
+    }
+    if failed is not None:
+        result["partial"] = True
+        result["failed"] = failed
+        result["not_attempted"] = not_attempted
+    result["moved"] = moved
+    result["count"] = len(moved)
+    result["propagation_required"] = len(combined) > 0
+    result["ancestor_paths"] = [t["path"] for t in combined]
+    result["ancestors"] = combined
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1837,6 +2318,24 @@ def validate_kb(kg_root: Path) -> Dict[str, Any]:
                         "fix": "Rewrite entity with kvault write to migrate to frontmatter",
                     }
                 )
+
+    # A directory with no summary is invisible to tree, search, and check —
+    # the split-brain mechanism from the 2026-09 audit. validate said "valid"
+    # on a KB with 19 of them; it does not any more. Tooling directories
+    # belong in .kvaultignore.
+    for ghost in st.ghost_dirs(kg_root, st.load_ignore(kg_root)):
+        issues.append(
+            {
+                "type": "ghost_directory",
+                "severity": "warning",
+                "path": ghost,
+                "message": "Directory has no _summary.md and is invisible to tree, search, and check",
+                "fix": (
+                    f"Write a summary with kvault write {ghost} --create, "
+                    f"or list it in {st.IGNORE_FILE}"
+                ),
+            }
+        )
 
     severity_order = {"error": 0, "warning": 1, "info": 2}
     issues.sort(key=lambda x: severity_order.get(x["severity"], 99))

@@ -174,7 +174,8 @@ Act on what the orientation pass shows:
 
 | Signal | Action |
 |--------|--------|
-| Branch with >10 children (`[N children, ...]`) | Split into subgroups — by type first, else alphabetical (`a_m`/`n_z`), else temporal. Create new parent dirs with `_summary.md` → `kvault move --confirm` each entity → update ancestor summaries → `kvault validate` |
+| Branch with >10 children (`[N children, ...]`, `BRANCH:`) | `kvault plan <path>` → run the `cluster` item's `kvault move --batch --confirm` payload → rewrite the new hub, then the chain → `kvault validate`. The cadence (session / nightly / weekly / monthly) is the `kvault-maintenance` skill |
+| `[+K ghost]` in the tree, `GHOST:` / `SIBLINGS:` / `LOOSE:` / `JOURNAL:` from `kvault check` | Ghost: write the summary or list the path in `.kvaultignore`. Siblings: merge or nest. Loose: move into `<node>/deep_context/`. Journal: fold into `journal/YYYY-MM/log.md` |
 | Branch `~updated_max` older than ~6 months | Review for stale or dead content; update, merge, or prune |
 | `SUMMARY:` warnings from `kvault check` | `too_short`/`missing_child_coverage`: rewrite the parent as a comprehensive rollup. `too_long`/`stale_history`: the parent has become a changelog — fold dated sections into current state (chronology belongs in `journal/`), never append another dated section. Real work despite exit code 0 |
 | `PENDING:` warnings from `kvault check` | Promote each stale event (`kvault write --event <id>`) or resolve it with an explicit outcome |
@@ -191,6 +192,11 @@ maintenance pass to see what has already been touched.
 - Required frontmatter: `source`, `aliases` (kvault stamps `created`/`updated`, and
   preserves them on no-op rewrites).
 - `kvault check` warnings are maintenance work even when the exit code is 0.
+- A refused create (`reason: new_root` or `reason: similar`) is information, not an
+  obstacle: read the named sibling and update it, or put the node under an existing root.
+  `--allow-similar` only after reading both; `--new-root` only with the owner's say-so.
+- A `created` note means kvault stubbed a missing parent; the stub is in `ancestor_paths`
+  and says "Placeholder" until you rewrite it in call 2.
 - Follow the KB owner's Git rules. Commit locally when appropriate; push only
   when authorized. Before a write or mirror, check the current branch, HEAD, and
   working tree so another writer's changes are preserved. Report the exact repo
@@ -202,9 +208,9 @@ maintenance pass to see what has already been touched.
 |----------|----------|
 | Capture & events | `kvault capture` (stdin, quoted heredoc), `kvault events list [--limit N\|0] [--since D]\|show\|resolve\|retract`, `kvault events import` |
 | Orient & discover | `kvault tree [path] [--depth N] [--max-children N] [--gist]`, `kvault search "<query>" [--kind K] [--path P] [--no-collapse]` |
-| Nodes | `kvault read`, `kvault write` (stdin), `kvault list`, `kvault delete --confirm`, `kvault move --confirm` (destructive — both require `--confirm`) |
+| Nodes | `kvault read`, `kvault write` (stdin) `[--new-root] [--allow-similar]`, `kvault list`, `kvault delete --confirm`, `kvault move --confirm` (destructive — both require `--confirm`), `kvault move --batch [--dry-run] --confirm` (stdin JSON) |
 | Summaries | `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors [--paths-only]` |
-| Quality | `kvault validate`, `kvault check [--summary-max-words N\|0] [--summary-max-dated-sections N\|0]` |
+| Quality | `kvault validate`, `kvault check [--summary-max-words N\|0] [--summary-max-dated-sections N\|0] [--max-children N]`, `kvault plan [PATH] [--limit N\|0]` |
 | Journal & artifacts | `kvault journal`, `kvault artifact daily`, `kvault log tail`, `kvault log summary` |
 | Lifecycle | `kvault init`, `kvault status [--root-summary]`, `kvault doctor`, `kvault --version` |
 | Output tiers | `-q/--quiet`, `--explain`, `--trace`, `--strict` — on the group (`kvault --strict write …`), or after the note-reporting subcommands (write, delete, move, write-summary, update-summaries, journal, search); rejected on `check`. `KVAULT_VERBOSITY=quiet\|normal\|explain\|trace` for hooks and cron |

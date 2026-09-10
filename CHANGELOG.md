@@ -2,6 +2,107 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.15.0 - Unreleased
+
+Structure guards, complete and bounded checks, and a maintenance engine.
+Motivated by an audit of a 1,045-node KB driven by an MCP-only agent: 119
+flat children under `projects/`, 23 root categories, `infra/` beside
+`infrastructure/` beside `tech/infrastructure/`, 12 loose root files, two
+journal layouts — while `validate` reported 0 errors and 0 warnings. Every
+symptom was a legitimate `write --create` that nothing looked at; the
+orientation tree prunes to 20 children so the agent never saw the sibling it
+duplicated; deep creates minted summary-less parents no surface could see;
+and `check` — the only command that knew about fan-out — was not exposed
+over MCP. Reproduced on a synthetic fixture before any of this was written.
+
+### Added
+
+- **Write guards on `--create`** (CLI, MCP, Python). A create is refused
+  when it would add a root category to a KB that already has roots
+  (`--new-root` / `new_root=true` to do it deliberately; a bare KB's first
+  roots are allowed and noted) or when a sibling has the same words
+  (`ai_overview` beside `ai_overviews`; `--allow-similar` /
+  `allow_similar=true` to override). Near-duplicate names (token prefix,
+  4+ character prefix on single words, stemmed Jaccard ≥ 0.5), the same
+  basename elsewhere in the tree, and a parent pushed past
+  `MAX_DIRECT_CHILDREN` are reported as **`structure` notes** — the 11th
+  note code, contract "this write changed the tree's shape in a way worth
+  a look", `detail.kind` ∈ `similar`, `over_fanout`, `new_root`.
+- **No more ghost parents.** A create or move whose path needs missing
+  intermediate parents writes a self-flagging stub summary for each
+  (`source: kvault-stub`, body says "Placeholder" so `check` keeps
+  reporting `placeholder_language` until it is rewritten), emits a
+  `created` note naming them, and lists them in `ancestor_paths` so the
+  2-call workflow rewrites them. Before: `mkdir(parents=True)` and
+  silence; the fixture root showed `[3 children]` while holding 22
+  directories.
+- **`check` sees the whole tree.** `BRANCH:` now includes the root (it
+  was exempt). Four warn-only prefixes: `GHOST:` (directory with no
+  summary), `SIBLINGS:` (near-duplicate sibling names, capped at 5 pairs
+  per parent; the same basename at more than one depth), `LOOSE:` (files
+  outside the node convention), `JOURNAL:` (files off
+  `journal/YYYY-MM/log.md`, `journal/archive`, `archive/journal`).
+  `--max-children N`. `check --json` gains `version`, `did`, a unified
+  `findings` list (`{code, path, message, level, detail, fix}`, hard
+  first), `structure_warnings`, `truncated` (hidden count per code), and
+  `ignore_patterns`; every warn-class list is capped at 50 per code.
+- **`.kvaultignore`** at the KB root: one fnmatch pattern per line
+  against the KB-relative path; a directory pattern covers its subtree.
+  Tooling directories and files (`scripts/`, `sources/`,
+  `requirements.txt`) go here so `check`, `validate`, `tree`, and the
+  guards treat them as not-nodes rather than as ghosts.
+- **`kvault plan [PATH] [--limit N] [--json]`.** An ordered, bounded
+  maintenance worklist derived from `check`: `cluster` items for every
+  parent over the ceiling (children grouped by leading word, one new
+  parent per group of 3+, with the exact `move --batch` command and a
+  `moves` list), then `ghost`, `siblings`, `loose`, `journal`, `summary`
+  items with commands. Judgment calls come back as `questions`. Never
+  applies anything. On the audit fixture it turns 119 flat children into
+  12 groups.
+- **`kvault move --batch [--dry-run] --confirm`** reads a JSON list of
+  `{from, to}` from stdin and runs it under one lock with one confirmation
+  and one combined `ancestor_paths`; every move is validated before any
+  runs, a mid-batch failure is a `partial` note naming what moved and what
+  did not. `move --new-root` for single moves.
+- **MCP**: `kvault_check` (the `check` document), `kvault_plan`,
+  `kvault_move_entities`; `new_root` and `allow_similar` on
+  `kvault_write_node` / `kvault_write_entity`; `new_root` on
+  `kvault_move_entity`; `children` on `kvault_prepare_summary_update`.
+- **`tree`** annotates directories no surface can see: `[N children, M
+  total, +K ghost]`.
+- **`kvault.core.check`**, **`kvault.core.structure`**,
+  **`kvault.core.plan`**; `run_checks`, `build_plan`, and `Finding`
+  exported from `kvault`.
+- **`skills/kvault-maintenance/SKILL.md`**: per-session, nightly, weekly,
+  and monthly procedures that execute `plan`, plus the one-time
+  consolidation recipe. Cron and systemd jobs load it alone.
+
+### Changed
+
+- **`prepare_summary_update` is bounded.** `children="auto"` (default)
+  returns full child bodies up to `MAX_DIRECT_CHILDREN` and
+  `{path, kind, title, gist, updated}` above it, with a `truncated` note
+  and `children_mode` in the result; `"content"` / `"gist"` force either.
+  The digest always covers full content. On the fixture the 119-child
+  payload drops from 56 KB to 23 KB. Notes and counts now precede the
+  `children` payload in the result.
+- **`validate` reports `ghost_directory` warnings** (`valid: false`). A
+  KB that keeps tooling directories inside the root needs a
+  `.kvaultignore` before its next green `validate`.
+- **`missing_child_coverage` messages are bounded** to eight names plus
+  `(+N more)`; `details` gain `missing_count` and `child_count`. The 0.14
+  line on a 118-child parent was 4,712 characters.
+- `kvault.cli.check` is a thin renderer over `kvault.core.check`; it
+  re-exports `check_propagation`, `check_journal`, `check_frontmatter`,
+  `check_directory_size`, `_get_updated_date` for existing importers.
+- `kvault move`'s positional arguments are optional when `--batch` is given.
+
+### Frozen
+
+- `check` human output stays tier-invariant and `--json` one document. The
+  line-prefix vocabulary is now `[KB]`, `SUMMARY:`, `PENDING:`,
+  `RETRACTED:`, `GHOST:`, `SIBLINGS:`, `LOOSE:`, `JOURNAL:`.
+
 ## 0.14.0 - 2026-09-06
 
 Bounded outputs and a version handshake. Motivated by an audit of a 191-node

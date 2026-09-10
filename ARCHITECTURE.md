@@ -33,13 +33,14 @@ AI Tool Runtime
 Primary interface. Agent-facing KB commands support `--kb-root` (auto-detected from cwd)
 and `--json`; command groups and server-launching commands may have command-specific flags.
 
-- `entity.py`: node-first read, write, list; compatibility delete/move
+- `entity.py`: node-first read, write (`--new-root`, `--allow-similar`), list; compatibility delete/move (`--batch`)
 - `search.py`: structured lexical node search
 - `summary.py`: read-summary, write-summary, update-summaries, ancestors
 - `journal.py`: journal
 - `events.py`: capture, events list/show/resolve/retract/import (capture journal)
 - `validate.py`: validate
-- `check.py`: check (propagation staleness and summary-quality warnings)
+- `check.py`: check — thin renderer over `core/check.py` (hard `[KB]` line + bounded warn groups)
+- `plan.py`: plan (ordered maintenance worklist from `core/plan.py`)
 - `doctor.py`: doctor (version, python, install location, KB binding, env — never fails)
 - `main.py`: init, status, tree, artifact daily, log tail / log summary
 - `render.py`: human rendering of result notes; verbosity-tier resolution
@@ -73,6 +74,16 @@ parent-summary helpers backed by direct-child digests.
 - `observability.py`: legacy phase logs (`logs` table) in `.kvault/logs.db`.
 - `daily_artifacts.py`: deterministic daily artifact generation.
 - `summary_quality.py`: warn-only parent-summary quality audit used by `kvault check`.
+- `structure.py`: lexical tree-shape rules shared by the write guards, `check`, and `plan` —
+  name collisions (`same_words` / `prefix` / `overlap`), leading-token clustering, ghost
+  directories, loose files, journal layout, and `.kvaultignore`. Names only, never bodies,
+  so the guard and the audit cannot disagree.
+- `check.py`: every `kvault check` finding as one stateless document (`run_checks`): hard
+  codes (`PROPAGATE`, `LOG`, `WRITE`, `BRANCH`) and bounded warn codes (`SUMMARY`,
+  `PENDING`, `RETRACTED`, `GHOST`, `SIBLINGS`, `LOOSE`, `JOURNAL`). Shared by the CLI
+  and MCP `kvault_check`.
+- `plan.py`: `build_plan` — findings → ordered worklist with exact commands and `moves`
+  payloads; never applies anything.
 - `conventions.py`: layout conventions shared by more than one rule (`BACKGROUND_CHILD_DIRS`,
   the `deep_context/` supporting-material child: budgeted as a leaf by the summary audit,
   never a reason for search to collapse its parent).

@@ -2,7 +2,7 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
-## 0.15.0 - Unreleased
+## 0.15.0 - 2026-09-10
 
 Structure guards, complete and bounded checks, and a maintenance engine.
 Motivated by an audit of a 1,045-node KB driven by an MCP-only agent: 119

@@ -226,3 +226,12 @@ def test_cli_human_output_renders_structure_notes(empty_kb):
     )
     assert result.exit_code == 0, result.output
     assert "structure" in result.output and "alice (prefix" in result.output
+
+
+def test_adopting_a_ghost_does_not_count_itself_toward_fanout(empty_kb):
+    for i in range(1, 10):
+        assert ops.write_node(empty_kb, f"projects/node{i:02d}", BODY, META, create=True)["success"]
+    (empty_kb / "projects" / "ghost_dir").mkdir()  # 10 managed children, one a ghost
+    result = ops.write_node(empty_kb, "projects/ghost_dir", BODY, META, create=True)
+    assert result["success"]
+    assert _notes(result, "structure", "over_fanout") == []  # 10, not 11

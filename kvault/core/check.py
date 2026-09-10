@@ -37,8 +37,11 @@ from kvault.core.summary_quality import (
     audit_summary_quality,
 )
 
+from kvault.core.operations import MAX_DIRECT_CHILDREN
+
 DEFAULT_THRESHOLD_MINUTES = 5
-DEFAULT_MAX_CHILDREN = 10
+#: The write guard's ceiling and check's default are one number on purpose.
+DEFAULT_MAX_CHILDREN = MAX_DIRECT_CHILDREN
 DEFAULT_MAX_FINDINGS = 50
 DEFAULT_PENDING_MAX_AGE = 7
 #: Sibling pairs reported per parent before the count takes over. A 118-child

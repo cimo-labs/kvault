@@ -242,8 +242,8 @@ def load_ignore(kg_root: Path) -> List[str]:
     """Patterns from ``<root>/.kvaultignore`` (missing file = no patterns)."""
     path = Path(kg_root) / IGNORE_FILE
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
         return []
     patterns: List[str] = []
     for line in text.splitlines():

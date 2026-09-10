@@ -67,7 +67,7 @@ parent-summary helpers backed by direct-child digests.
 - `frontmatter.py`: parse/build/merge YAML frontmatter.
 - `validation.py`: path validation, error codes, input normalization.
 - `research.py`: reusable entity matching and reconciliation suggestions.
-- `notes.py`: work-reporting vocabulary — the closed set of 10 note codes, verbosity
+- `notes.py`: work-reporting vocabulary — the closed set of 11 note codes (`structure` since 0.15), verbosity
   tiers, and the `note`/`visible`/`collapse` helpers. Builds data, never prints.
 - `oplog.py`: durable per-operation log — the `ops` table in `.kvault/logs.db`
   behind `kvault log tail`. Failure-proof appends; no WAL, ever.
@@ -161,7 +161,7 @@ kvault reports what it *decided* — invented values, deliberate no-ops,
 half-failures, hidden results, fallbacks — not what it did step by step. The
 pipeline has three stages with a hard boundary between them:
 
-1. **Vocabulary** (`kvault/core/notes.py`): a closed set of 10 note codes
+1. **Vocabulary** (`kvault/core/notes.py`): a closed set of 11 note codes
    (`autofilled`, `unchanged`, `partial`, `created`, `removed`, `truncated`,
    `skipped`, `waited`, `guessed`, `propagate`), each with a one-sentence
    contract. An unknown code raises at build time.

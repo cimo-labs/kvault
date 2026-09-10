@@ -67,7 +67,7 @@ def test_batch_rejects_nested_sources_and_reused_targets(empty_kb):
         ],
     )
     assert nested["success"] is False
-    assert "inside another move" in nested["details"]["errors"][0]["error"]
+    assert "overlaps another move's source" in nested["details"]["errors"][0]["error"]
     twice = ops.move_entities(
         empty_kb,
         [
@@ -128,3 +128,100 @@ def test_cli_move_positional_still_required_without_batch(empty_kb):
     result = runner.invoke(cli, ["move", "--confirm", "--kb-root", str(empty_kb)])
     assert result.exit_code != 0
     assert "SOURCE and TARGET are required" in result.output
+
+
+# ── review findings (ultrareview, 2026-09-10) ──────────────────────────
+
+
+def test_batch_moves_root_categories(empty_kb):
+    """A root category is one path component; consolidating roots is the point."""
+    _seed(empty_kb)
+    result = ops.move_entities(
+        empty_kb, [{"from": "projects", "to": "work/projects"}], new_root=True
+    )
+    assert result["success"] and result["count"] == 1, result
+    assert (empty_kb / "work" / "projects" / "alpha" / "_summary.md").exists()
+    assert (empty_kb / "work" / "_summary.md").exists()  # stubbed hub
+    assert not (empty_kb / "projects").exists()
+    refused = ops.move_entities(empty_kb, [{"from": ".", "to": "x/root"}])
+    assert refused["success"] is False and "root" in refused["details"]["errors"][0]["error"]
+
+
+def test_single_move_accepts_a_root_category(empty_kb):
+    _seed(empty_kb)
+    result = ops.move_entity(empty_kb, "projects", "people/projects")
+    assert result["success"], result
+    assert (empty_kb / "people" / "projects" / "bravo").exists()
+
+
+def test_batch_rejects_target_that_is_an_ancestor_of_another_target(empty_kb):
+    """Stubbing the ancestor first would make shutil.move nest the source inside it."""
+    _seed(empty_kb)
+    result = ops.move_entities(
+        empty_kb,
+        [
+            {"from": "projects/alpha", "to": "projects/hub"},
+            {"from": "projects/bravo", "to": "projects/hub/bravo"},
+        ],
+    )
+    assert result["success"] is False
+    assert "overlaps another move's target" in result["details"]["errors"][0]["error"]
+    assert (empty_kb / "projects" / "alpha").exists() and not (
+        empty_kb / "projects" / "hub"
+    ).exists()
+
+
+def test_batch_rejects_duplicate_and_overlapping_sources_in_either_order(empty_kb):
+    _seed(empty_kb)
+    dup = ops.move_entities(
+        empty_kb,
+        [
+            {"from": "projects/alpha", "to": "projects/x"},
+            {"from": "projects/alpha", "to": "projects/y"},
+        ],
+    )
+    assert dup["success"] is False and "listed twice" in dup["details"]["errors"][0]["error"]
+    ops.move_entity(empty_kb, "projects/charlie", "projects/alpha/charlie")
+    parent_last = ops.move_entities(
+        empty_kb,
+        [
+            {"from": "projects/alpha/charlie", "to": "projects/y"},
+            {"from": "projects/alpha", "to": "projects/x"},
+        ],
+    )
+    assert parent_last["success"] is False
+    assert "overlaps another move's source" in parent_last["details"]["errors"][0]["error"]
+    assert (empty_kb / "projects" / "alpha" / "charlie").exists()
+
+
+def test_batch_never_nests_into_a_target_that_appeared_mid_batch(empty_kb, monkeypatch):
+    _seed(empty_kb)
+    real_move = ops.shutil.move
+
+    def sneaky(src, dst):
+        # simulate another process creating the second target while the batch runs
+        (empty_kb / "projects" / "greek" / "bravo").mkdir(parents=True, exist_ok=True)
+        return real_move(src, dst)
+
+    monkeypatch.setattr(ops.shutil, "move", sneaky)
+    result = ops.move_entities(
+        empty_kb,
+        [
+            {"from": "projects/alpha", "to": "projects/greek/alpha"},
+            {"from": "projects/bravo", "to": "projects/greek/bravo"},
+        ],
+    )
+    assert result["success"] and result.get("partial") is True
+    assert result["count"] == 1 and "appeared before this move ran" in result["failed"]["error"]
+    assert (empty_kb / "projects" / "bravo" / "_summary.md").exists()  # not nested, not lost
+
+
+def test_cli_batch_without_confirm_says_why_instead_of_prompting(empty_kb):
+    _seed(empty_kb)
+    runner = CliRunner()
+    payload = json.dumps([{"from": "projects/alpha", "to": "projects/greek/alpha"}])
+    result = runner.invoke(cli, ["move", "--batch", "--kb-root", str(empty_kb)], input=payload)
+    assert result.exit_code != 0
+    assert "cannot prompt" in result.output and "--confirm" in result.output
+    assert "Aborted" not in result.output
+    assert (empty_kb / "projects" / "alpha").exists()

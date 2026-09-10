@@ -237,3 +237,9 @@ def test_bucket_and_facet_exemptions():
     # different depths: a split-brain candidate
     assert not st.is_facet_layout(["people", "org/people"])
     assert not st.is_facet_layout(["customers/strategic", "strategic"])
+
+
+def test_load_ignore_survives_bad_bytes(tmp_path):
+    (tmp_path / st.IGNORE_FILE).write_bytes(b"scripts\n\xff\xfe garbage\nsources\n")
+    patterns = st.load_ignore(tmp_path)
+    assert "scripts" in patterns and "sources" in patterns

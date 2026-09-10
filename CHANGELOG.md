@@ -70,11 +70,20 @@ over MCP. Reproduced on a synthetic fixture before any of this was written.
   items with commands. Judgment calls come back as `questions`. Never
   applies anything. On the audit fixture it turns 119 flat children into
   12 groups.
+- **Root categories can be moved** (`move` and `move --batch` validate node
+  paths, so a one-component source or target is fine; only `.` is refused).
+  Consolidating 23 roots into hubs is the case the batch exists for, and
+  0.14's entity-path rule made it impossible. A root cluster's batch
+  command carries `--new-root` for its hub.
 - **`kvault move --batch [--dry-run] --confirm`** reads a JSON list of
   `{from, to}` from stdin and runs it under one lock with one confirmation
   and one combined `ancestor_paths`; every move is validated before any
-  runs, a mid-batch failure is a `partial` note naming what moved and what
-  did not. `move --new-root` for single moves.
+  runs (duplicate or overlapping sources, and a target that overlaps
+  another target, reject the whole batch), a target that appears
+  mid-batch fails that move instead of nesting the source inside it, and a
+  mid-batch failure is a `partial` note naming what moved and what did
+  not. In human mode `--batch` without `--confirm` says why it cannot
+  prompt (stdin is the payload). `move --new-root` for single moves.
 - **MCP**: `kvault_check` (the `check` document), `kvault_plan`,
   `kvault_move_entities`; `new_root` and `allow_similar` on
   `kvault_write_node` / `kvault_write_entity`; `new_root` on

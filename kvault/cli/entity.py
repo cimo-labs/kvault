@@ -327,7 +327,11 @@ def _move_batch(
         if ctx.obj.get("as_json"):
             output_json(_confirmation_error("move --batch", f"move {len(moves)} nodes"))
             ctx.exit(1)
-        click.confirm(f"Move {len(moves)} nodes?", abort=True)
+        # stdin carried the payload, so there is no stream left to prompt on.
+        raise click.UsageError(
+            f"--batch would move {len(moves)} nodes and cannot prompt (stdin is the payload); "
+            "pass --confirm, or --dry-run to preview"
+        )
     started = time.monotonic()
     result = ops.move_entities(kb_root, moves, new_root=new_root, dry_run=dry_run)
     if not dry_run:

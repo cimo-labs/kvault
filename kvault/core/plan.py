@@ -16,6 +16,7 @@ initiative? are ``people`` and ``team``?) come back as ``questions``.
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -77,9 +78,13 @@ def _in_scope(path: str, scope: Optional[str]) -> bool:
     return path == scope or path.startswith(scope + "/")
 
 
-def _batch_command(root: Path, moves: List[Dict[str, str]]) -> str:
+def _batch_command(root: Path, moves: List[Dict[str, str]], new_root: bool = False) -> str:
     payload = json.dumps(moves)
-    return f"kvault move --batch --confirm --kb-root {root} <<'EOF'\n{payload}\nEOF"
+    flag = " --new-root" if new_root else ""
+    return (
+        f"kvault move --batch --confirm{flag} --kb-root {shlex.quote(str(root))} <<'EOF'\n"
+        f"{payload}\nEOF"
+    )
 
 
 def build_plan(
@@ -91,6 +96,7 @@ def build_plan(
 ) -> Dict[str, Any]:
     """Build the worklist. *path* scopes it to a subtree; *limit* bounds it."""
     root = Path(kg_root)
+    q = shlex.quote(str(root))
     ignore = st.load_ignore(root)
     scope = None
     if path is not None:
@@ -152,8 +158,10 @@ def build_plan(
                         "members_total": len(members),
                         "moves": moves,
                         "commands": [
-                            _batch_command(root, moves),
-                            f"kvault update-summaries --kb-root {root}  "
+                            # A root cluster's hub is a new root category; the
+                            # batch must say so or the guard refuses it.
+                            _batch_command(root, moves, new_root=(fpath == "." and not hub_exists)),
+                            f"kvault update-summaries --kb-root {q}  "
                             f"# rewrite {hub}, then {fpath}, then .",
                         ],
                         "then": (
@@ -216,9 +224,9 @@ def build_plan(
                     "members_total": len(members),
                     "commands": [
                         _batch_command(root, moves),
-                        f"kvault write {hub} --kb-root {root} <<'EOF' … (the current state, "
+                        f"kvault write {hub} --kb-root {q} <<'EOF' … (the current state, "
                         "written from deep_context/) EOF",
-                        f"kvault update-summaries --kb-root {root}  # then {fpath}, then up",
+                        f"kvault update-summaries --kb-root {q}  # then {fpath}, then up",
                     ],
                     "then": (
                         f"{hub} is a stub after the batch; write it as the current state of "
@@ -251,10 +259,10 @@ def build_plan(
                     "path": fpath,
                     "why": finding["message"],
                     "commands": [
-                        f"kvault write {fpath} --create --kb-root {root} "
+                        f"kvault write {fpath} --create --kb-root {q} "
                         "<<'EOF' … (frontmatter + a rollup of what is inside) EOF",
                         f"# or, if it is tooling and not knowledge: "
-                        f"echo '{fpath}/' >> {root}/{st.IGNORE_FILE}",
+                        f"echo '{fpath}/' >> {q}/{st.IGNORE_FILE}",
                     ],
                 }
             )
@@ -273,9 +281,7 @@ def build_plan(
                         "priority": PRIORITY["siblings"],
                         "path": detail["paths"][0],
                         "why": finding["message"],
-                        "commands": [
-                            f"kvault read {p} --kb-root {root}" for p in detail["paths"][:4]
-                        ]
+                        "commands": [f"kvault read {p} --kb-root {q}" for p in detail["paths"][:4]]
                         + ["# then: kvault move --confirm <loser> <winner>/<name>, or delete"],
                     }
                 )
@@ -288,8 +294,8 @@ def build_plan(
                         "path": fpath,
                         "why": finding["message"],
                         "commands": [
-                            f"kvault read {_join(fpath, a)} --kb-root {root}",
-                            f"kvault read {_join(fpath, b)} --kb-root {root}",
+                            f"kvault read {_join(fpath, a)} --kb-root {q}",
+                            f"kvault read {_join(fpath, b)} --kb-root {q}",
                             "# same thing → merge and delete one; subtopic → "
                             f"kvault move --confirm {_join(fpath, b)} {_join(fpath, a)}/{b}",
                         ],
@@ -316,9 +322,9 @@ def build_plan(
                     "path": anchor,
                     "why": finding["message"],
                     "commands": [
-                        f"kvault read-summary {anchor} --kb-root {root}",
-                        f"kvault list {anchor} --kb-root {root}",
-                        f"kvault write-summary {anchor} --kb-root {root} "
+                        f"kvault read-summary {anchor} --kb-root {q}",
+                        f"kvault list {anchor} --kb-root {q}",
+                        f"kvault write-summary {anchor} --kb-root {q} "
                         "<<'EOF' … (the rewritten rollup) EOF",
                     ],
                 }
@@ -357,8 +363,8 @@ def build_plan(
                     for g in group[:8]
                 ],
                 "commands": [
-                    f"kvault read {_join(parent, top.get('a'))} --kb-root {root}",
-                    f"kvault read {_join(parent, top.get('b'))} --kb-root {root}",
+                    f"kvault read {_join(parent, top.get('a'))} --kb-root {q}",
+                    f"kvault read {_join(parent, top.get('b'))} --kb-root {q}",
                     "# same thing → merge and delete one; subtopic → "
                     f"kvault move --confirm {_join(parent, top.get('b'))} "
                     f"{_join(parent, top.get('a'))}/{top.get('b')}",
@@ -380,8 +386,8 @@ def build_plan(
         for g in legacy[:MAX_ADOPT_COMMANDS]:
             node = g["path"][: -len(".md")]
             commands.append(
-                f"kvault write {node} --create --kb-root {root} < {root}/{g['path']} "
-                f"&& {rm} {root}/{g['path']}"
+                f"kvault write {node} --create --kb-root {q} < {q}/{g['path']} "
+                f"&& {rm} {q}/{g['path']}"
             )
         if len(legacy) > MAX_ADOPT_COMMANDS:
             commands.append(
@@ -389,19 +395,19 @@ def build_plan(
             )
         if legacy:
             commands.append(
-                f"kvault update-summaries --kb-root {root}  # rewrite {parent} to cover the adopted nodes"
+                f"kvault update-summaries --kb-root {q}  # rewrite {parent} to cover the adopted nodes"
             )
         others = [g for g in group if g["detail"].get("kind") != "legacy_node_file"]
         if others:
             mv = "git mv" if (root / ".git").exists() else "mv"
             commands.append(
-                f"mkdir -p {root}/{home} && {mv} "
-                + " ".join(f"{root}/{g['path']}" for g in others[:6])
-                + f" {root}/{home}/"
+                f"mkdir -p {q}/{home} && {mv} "
+                + " ".join(f"{q}/{g['path']}" for g in others[:6])
+                + f" {q}/{home}/"
             )
             if len(others) > 6:
                 commands.append(f"# … +{len(others) - 6} more files under {parent}")
-            commands.append(f"# or list tooling/generated files in {root}/{st.IGNORE_FILE}")
+            commands.append(f"# or list tooling/generated files in {q}/{st.IGNORE_FILE}")
         items.append(
             {
                 "kind": "loose",

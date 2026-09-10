@@ -194,3 +194,22 @@ def test_nested_series_emit_only_the_outermost_fold(empty_kb):
     result = ops.move_entities(empty_kb, series[0]["moves"])
     assert result["success"] and result["count"] == 3
     assert not [f for f in run_checks(empty_kb)["findings"] if f["code"] == "SERIES"]
+
+
+def test_plan_quotes_the_root_and_flags_root_clusters(tmp_path):
+    kb = tmp_path / "my kb"  # a space in the path
+    kb.mkdir()
+    (kb / ".kvault").mkdir()
+    (kb / "_summary.md").write_text("# Root\n\nRoot.\n")
+    for name in [f"aio_{c}" for c in "abc"] + [f"pdp_{c}" for c in "abc"] + list("uvwxyz"):
+        r = ops.write_node(kb, f"{name}/item", BODY, META, create=True, new_root=True)
+        assert r["success"], r
+    plan = build_plan(kb, limit=0)
+    clusters = [i for i in plan["items"] if i["kind"] == "cluster" and i["path"] == "."]
+    assert clusters, plan["items"][:3]
+    cmd = clusters[0]["commands"][0]
+    assert "--new-root" in cmd and "'" in cmd and "my kb" in cmd
+    assert clusters[0]["moves"][0]["from"].count("/") == 0  # a root category as source
+    # and the emitted batch actually runs
+    result = ops.move_entities(kb, clusters[0]["moves"], new_root=True)
+    assert result["success"] and result["count"] == 3

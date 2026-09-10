@@ -811,10 +811,14 @@ def _create_guard(kg_root: Path, path: str, new_root: bool, allow_similar: bool)
 
     parent_path = _parent_path(path) or "."
     parent_dir = kg_root if parent_path == "." else kg_root / parent_path
-    siblings = (
-        [d.name for d in st.child_dirs(parent_dir, kg_root, ignore)] if parent_dir.is_dir() else []
-    )
     leaf = path.split("/")[-1]
+    # Adopting a ghost directory: the directory already exists, so it must
+    # not count as its own sibling (that fired over_fanout one create early).
+    siblings = (
+        [d.name for d in st.child_dirs(parent_dir, kg_root, ignore) if d.name != leaf]
+        if parent_dir.is_dir()
+        else []
+    )
 
     collisions = st.sibling_collisions(siblings, leaf)
     hard = [c for c in collisions if c.kind == "same_words"]
@@ -1916,15 +1920,22 @@ def move_entity(
     ``created`` note) instead of silent ``mkdir``; a destination under a
     root category that does not exist is refused without *new_root*.
     """
-    source_path = normalize_path(source_path)
-    target_path = normalize_path(target_path)
-
-    is_valid, err_msg = validate_entity_path(source_path)
-    if not is_valid:
-        return error_response(ErrorCode.VALIDATION_ERROR, f"Invalid source path: {err_msg}")
-    is_valid, err_msg = validate_entity_path(target_path)
-    if not is_valid:
-        return error_response(ErrorCode.VALIDATION_ERROR, f"Invalid target path: {err_msg}")
+    source_path = _normalize_node_path(source_path)
+    target_path = _normalize_node_path(target_path)
+    # Node-path validation: a root category (one component) can be moved;
+    # only "." is refused.
+    is_valid, err_msg = _validate_node_path(source_path)
+    if source_path == "." or not is_valid:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            f"Invalid source path: {err_msg or 'the root cannot be moved'}",
+        )
+    is_valid, err_msg = _validate_node_path(target_path)
+    if target_path == "." or not is_valid:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            f"Invalid target path: {err_msg or 'the root cannot be a target'}",
+        )
     if target_path == source_path or target_path.startswith(source_path + "/"):
         return error_response(ErrorCode.VALIDATION_ERROR, "Cannot move a node into its own subtree")
     try:
@@ -2018,19 +2029,23 @@ def move_entities(
     errors: List[Dict[str, Any]] = []
     normalized: List[Tuple[str, str]] = []
     targets_seen: Set[str] = set()
+    sources_seen: Set[str] = set()
     for index, entry in enumerate(moves):
         if not isinstance(entry, dict) or "from" not in entry or "to" not in entry:
             errors.append({"index": index, "error": "each move needs 'from' and 'to'"})
             continue
-        src = normalize_path(str(entry["from"]))
-        tgt = normalize_path(str(entry["to"]))
+        src = _normalize_node_path(str(entry["from"]))
+        tgt = _normalize_node_path(str(entry["to"]))
         problem: Optional[str] = None
-        ok_src, msg_src = validate_entity_path(src)
-        ok_tgt, msg_tgt = validate_entity_path(tgt)
-        if not ok_src:
-            problem = f"invalid source: {msg_src}"
-        elif not ok_tgt:
-            problem = f"invalid target: {msg_tgt}"
+        # Node-path validation, not entity-path: a root category (one
+        # component) is a legitimate thing to move — consolidating 23 roots
+        # into hubs is the case this batch exists for. Only "." is refused.
+        ok_src, msg_src = _validate_node_path(src)
+        ok_tgt, msg_tgt = _validate_node_path(tgt)
+        if src == "." or not ok_src:
+            problem = f"invalid source: {msg_src or 'the root cannot be moved'}"
+        elif tgt == "." or not ok_tgt:
+            problem = f"invalid target: {msg_tgt or 'the root cannot be a target'}"
         elif tgt == src or tgt.startswith(src + "/"):
             problem = "cannot move a node into its own subtree"
         elif not (kg_root / src).exists():
@@ -2039,8 +2054,18 @@ def move_entities(
             problem = f"target already exists: {tgt}"
         elif tgt in targets_seen:
             problem = f"target used twice in this batch: {tgt}"
-        elif any(src.startswith(other + "/") for other, _ in normalized):
-            problem = "source is inside another move's source in this batch"
+        elif src in sources_seen:
+            problem = f"source listed twice in this batch: {src}"
+        elif any(
+            src.startswith(other + "/") or other.startswith(src + "/") for other in sources_seen
+        ):
+            problem = "source overlaps another move's source in this batch"
+        elif any(
+            tgt.startswith(other + "/") or other.startswith(tgt + "/") for other in targets_seen
+        ):
+            # A target that is an ancestor of another target would be stubbed
+            # first, and shutil.move would then nest the source inside it.
+            problem = "target overlaps another move's target in this batch"
         if problem is None:
             try:
                 resolve_node_path(kg_root, src, reject_symlinks=True)
@@ -2051,6 +2076,7 @@ def move_entities(
             errors.append({"index": index, "from": src, "to": tgt, "error": problem})
             continue
         targets_seen.add(tgt)
+        sources_seen.add(src)
         normalized.append((src, tgt))
     if errors:
         return error_response(
@@ -2093,6 +2119,11 @@ def move_entities(
             source_full = kg_root / src
             target_full = kg_root / tgt
             try:
+                if target_full.exists():
+                    # Never let shutil.move nest the source inside an existing
+                    # directory; that reports success with the subtree at the
+                    # wrong path.
+                    raise OSError(f"target appeared before this move ran: {tgt}")
                 nodes_moved = sum(1 for _ in source_full.rglob("_summary.md"))
                 target_full.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(source_full), str(target_full))

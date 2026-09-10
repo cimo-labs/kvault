@@ -2,7 +2,7 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
-## 0.15.1 - Unreleased
+## 0.15.1 - 2026-09-10
 
 Corrections that stick, and nothing that waits on a person. 0.15.0's
 maintenance loop still had a "monthly (a person)" step and a questions list

@@ -173,3 +173,24 @@ def test_adopt_commands_go_through_kvault_write(empty_kb):
     assert (empty_kb / "projects" / "landscape" / "_summary.md").exists()
     assert not (empty_kb / "projects" / "landscape.md").exists()
     assert not [f for f in run_checks(empty_kb)["findings"] if f["code"] in ("LOOSE", "WRITE")]
+
+
+def test_nested_series_emit_only_the_outermost_fold(empty_kb):
+    # month buckets that each hold day cards: a chronology at two levels
+    for month in ("june", "july", "august"):
+        for day in (1, 2, 3):
+            r = ops.write_node(
+                empty_kb,
+                f"projects/{month}_2026_boundaries/card_{month}{day}_boundary_2026_0{day}",
+                BODY,
+                META,
+                create=True,
+            )
+            assert r["success"], r
+    plan = build_plan(empty_kb, limit=0)
+    series = [i for i in plan["items"] if i["kind"] == "series"]
+    assert [i["path"] for i in series] == ["projects"]
+    assert series[0]["members_total"] == 3
+    result = ops.move_entities(empty_kb, series[0]["moves"])
+    assert result["success"] and result["count"] == 3
+    assert not [f for f in run_checks(empty_kb)["findings"] if f["code"] == "SERIES"]

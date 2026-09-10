@@ -324,6 +324,22 @@ def build_plan(
                 }
             )
 
+    # Nested chronologies (month buckets that each hold day cards) produce a
+    # series item at every level. Moving the outer members moves the inner
+    # ones, so only the outermost fold is emitted; the rest would fail with
+    # "source doesn't exist" once the outer batch ran (seen on a real KB).
+    outer_member_paths = [
+        m["from"] for i in items if i["kind"] == "series" for m in i.get("moves", [])
+    ]
+    items = [
+        i
+        for i in items
+        if not (
+            i["kind"] == "series"
+            and any(i["path"] == p or i["path"].startswith(p + "/") for p in outer_member_paths)
+        )
+    ]
+
     for parent, group in sibling_groups.items():
         top = group[0]["detail"]
         items.append(

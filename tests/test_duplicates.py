@@ -15,7 +15,7 @@ from kvault.core.plan import build_plan
 
 ROUTING = (
     "The routing model pools evidence across segments with a hierarchical prior, "
-    "shrinks small segments toward the global mean, and feeds the explorer dashboard "
+    "shrinks small segments toward the global mean, and feeds the segment dashboard "
     "that ranks candidate policies by estimated uplift with credible intervals for "
     "each segment and a weekly refresh from the experiment warehouse tables."
 )
@@ -58,7 +58,7 @@ def test_twins_in_different_folders_are_found_by_name_title_and_body(tmp_path):
     _node(
         kb, "projects/uplift_modeling", f"# Uplift modeling\n\n{ROUTING} Owned by data science.\n"
     )
-    _node(kb, "projects/causal/causal_uplift_explorer", f"# Explorer\n\n{ROUTING}\n")
+    _node(kb, "projects/causal/causal_uplift_dashboard", f"# Dashboard\n\n{ROUTING}\n")
     pairs = _pairs(kb)
     assert set(pairs[("tech/bayes_routing", "tech/models/bayes_routing")]) == {
         "similar_body",
@@ -67,7 +67,7 @@ def test_twins_in_different_folders_are_found_by_name_title_and_body(tmp_path):
     }
     assert (
         "similar_body"
-        in pairs[("projects/causal/causal_uplift_explorer", "projects/uplift_modeling")]
+        in pairs[("projects/causal/causal_uplift_dashboard", "projects/uplift_modeling")]
     )
 
 
@@ -230,3 +230,94 @@ def test_toll_free_numbers_are_identifiers_not_dates():
 
     assert _identifier("0120-12-3456") == "0120123456"
     assert _identifier("2026-09-26") is None
+
+
+# ── 0.16.1: from the first run on a ~1,000-node KB ───────────────────────
+
+PARAPHRASE_A = (
+    "The widget pricing service computes regional discounts, applies partner rebates, "
+    "caps promotional stacking, and publishes nightly price files for the storefront team "
+    "after the finance review, keeping an audit trail of every override and exception. "
+    "Escalations go to the pricing lead, who approves emergency changes within a day."
+)
+PARAPHRASE_B = (
+    "Nightly, the widget pricing service publishes price files for the storefront team: it "
+    "computes regional discounts, applies partner rebates and caps promotional stacking, "
+    "with finance review first and an audit trail of each override or exception. The "
+    "pricing lead approves emergency changes, usually within a day, and handles escalations."
+)
+
+
+def test_every_pair_reports_measured_overlap(tmp_path):
+    """0.16.0 reported jaccard/containment 0.00 unless they cleared the bar;
+    paraphrased copies share their words, not their 5-word shingles."""
+    kb = _kb(tmp_path)
+    _node(kb, "sales/widget_pricing", f"# Widget pricing\n\n{PARAPHRASE_A}\n")
+    _node(kb, "projects/causal/widget_pricing", f"# Widget pricing\n\n{PARAPHRASE_B}\n")
+    (pair,) = duplicate_pairs(kb)
+    assert pair["words"] >= 0.8 and pair["jaccard"] is not None and pair["jaccard"] < 0.5
+    from kvault.core.duplicates import describe
+
+    assert "% of words shared" in describe(pair)
+    _node(kb, "tech/models/tiny", "# Tiny\n\nShort.\n")  # two depths: not a facet layout
+    _node(kb, "sales/tiny", "# Tiny\n\nShort.\n")
+    tiny = [p for p in duplicate_pairs(kb) if p["a"].endswith("tiny")][0]
+    assert tiny["words"] is None and tiny["jaccard"] is None  # too short to measure, not 0.00
+
+
+def test_filler_title_words_do_not_make_twins_look_different(tmp_path):
+    kb = _kb(tmp_path)
+    _node(kb, "projects/northwind", "# Northwind Project\n\nThe account.\n")
+    _node(kb, "tech/models/northwind", "# Northwind Architecture\n\nThe account.\n")
+    _node(kb, "sales/northwind", "# Northwind — Category Summary\n\nThe account.\n")
+    pairs = _pairs(kb)
+    assert ("projects/northwind", "tech/models/northwind") in pairs
+    assert ("sales/northwind", "tech/models/northwind") in pairs
+
+
+def test_a_filler_word_tells_nodes_apart_when_the_texts_differ(tmp_path):
+    kb = _kb(tmp_path)
+    # one name, titles that differ only by a filler word, unrelated texts
+    _node(kb, "projects/search", f"# Search Project\n\n{PRICING}\n")
+    _node(kb, "tech/models/search", f"# Search Architecture\n\n{ROUTING}\n")
+    assert ("projects/search", "tech/models/search") not in _pairs(kb)
+    # the same titles over one text are twins again
+    _node(kb, "projects/search", f"# Search Project\n\n{PARAPHRASE_A}\n")
+    _node(kb, "tech/models/search", f"# Search Architecture\n\n{PARAPHRASE_B}\n")
+    assert "same_name" in _pairs(kb)[("projects/search", "tech/models/search")]
+
+
+def test_titles_still_match_exactly_filler_words_included(tmp_path):
+    kb = _kb(tmp_path)
+    _node(kb, "tech/billing_system", "# Billing System\n\nInvoices.\n")
+    _node(kb, "sales/billing", "# Billing System\n\nInvoices.\n")
+    # titles that differ only by a filler word are not the same title
+    _node(kb, "projects/atlas_search", "# Atlas Search Project\n\nStaffing.\n")
+    _node(kb, "tech/search_design", "# Atlas Search Architecture\n\nClusters.\n")
+    assert _pairs(kb) == {("sales/billing", "tech/billing_system"): ["same_title"]}
+
+
+def test_twins_in_a_facet_layout_pair_by_title(tmp_path):
+    """One supplier under two root categories: the title decides, as in
+    0.16.0, whether the texts are short or one is a card beside a page."""
+    kb = _kb(tmp_path)
+    _node(kb, "suppliers/acme_tooling", "# Acme Tooling\n\nMolds and dies.\n")
+    _node(kb, "sales/acme_tooling", "# Acme Tooling\n\nMolds and dies.\n")
+    assert _pairs(kb)[("sales/acme_tooling", "suppliers/acme_tooling")] == ["same_title"]
+    # a 23-word card whose words all come from a 59-word page
+    card = " ".join(PRICING.split()[:30])
+    _node(kb, "sales/acme_tooling", f"# Acme Tooling\n\n{card}\n")
+    _node(kb, "suppliers/acme_tooling", f"# Acme Tooling\n\n{PRICING} {ROUTING}\n")
+    (pair,) = duplicate_pairs(kb)
+    assert pair["signals"] == ["same_title"] and pair["words"] == 1.0
+
+
+def test_titles_with_the_same_words_in_another_order_are_both_shown(tmp_path):
+    from kvault.core.duplicates import describe
+
+    kb = _kb(tmp_path)
+    _node(kb, "sales/acme_tooling", "# Acme Tooling\n\nShort.\n")
+    _node(kb, "projects/causal/tooling_acme", "# Tooling, Acme\n\nShort.\n")
+    (pair,) = duplicate_pairs(kb)
+    text = describe(pair)
+    assert "«Acme Tooling»" in text and "«Tooling, Acme»" in text

@@ -13,21 +13,21 @@ from kvault.core import structure as st
 
 
 def test_same_words_collision():
-    c = st.compare_names("ai_overview", "ai_overviews")
+    c = st.compare_names("release_note", "release_notes")
     assert c is not None and c.kind == "same_words" and c.score == 1.0
 
 
 def test_token_prefix_collision():
-    c = st.compare_names("pdp_prompts", "pdp_prompts_concord")
+    c = st.compare_names("crm_prompts", "crm_prompts_legacy")
     assert c is not None and c.kind == "prefix"
-    c = st.compare_names("aio", "aio_architecture")
+    c = st.compare_names("atlas", "atlas_architecture")
     assert c is not None and c.kind == "prefix"
 
 
 def test_single_token_prefix_collision_needs_four_chars():
     c = st.compare_names("infra", "infrastructure")
     assert c is not None and c.kind == "prefix"
-    assert st.compare_names("ai", "aio") is None
+    assert st.compare_names("ml", "mlops") is None
 
 
 def test_overlap_collision():
@@ -42,10 +42,16 @@ def test_distinct_names_do_not_collide():
 
 
 def test_sibling_collisions_orders_strongest_first_and_limits():
-    existing = ["ai_overviews", "ai_overview_standup", "ai", "commerce_ai", "ai_overview_1_5"]
-    found = st.sibling_collisions(existing, "ai_overview", limit=3)
+    existing = [
+        "release_notes",
+        "release_note_standup",
+        "release",
+        "product_release",
+        "release_note_1_5",
+    ]
+    found = st.sibling_collisions(existing, "release_note", limit=3)
     assert [c.kind for c in found][0] == "same_words"
-    assert found[0].name == "ai_overviews"
+    assert found[0].name == "release_notes"
     assert len(found) == 3
 
 
@@ -63,22 +69,22 @@ def test_sibling_pairs_on_flat_fixture():
 
 def test_cluster_by_leading_token():
     names = [
-        "aio",
-        "aio_architecture",
-        "aio_reporting",
-        "aio_scaling",
-        "pdp_prompts",
-        "pdp_prompt_ranking",
-        "pdp_assortment_optimization",
-        "shopping_agent_ga",
-        "shopping_agents",
-        "macys_pdp_prompts",
+        "atlas",
+        "atlas_architecture",
+        "atlas_reporting",
+        "atlas_scaling",
+        "crm_prompts",
+        "crm_prompt_ranking",
+        "crm_segment_optimization",
+        "support_agent_beta",
+        "support_agents",
+        "acme_crm_prompts",
         "uplift_modeling",
     ]
     groups, leftovers = st.cluster_by_leading_token(names, min_size=3)
-    assert [(k, len(v)) for k, v in groups] == [("aio", 4), ("pdp", 3)]
+    assert [(k, len(v)) for k, v in groups] == [("atlas", 4), ("crm", 3)]
     assert leftovers == sorted(
-        ["shopping_agent_ga", "shopping_agents", "macys_pdp_prompts", "uplift_modeling"]
+        ["support_agent_beta", "support_agents", "acme_crm_prompts", "uplift_modeling"]
     )
 
 

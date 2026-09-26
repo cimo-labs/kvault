@@ -9,7 +9,7 @@ findings into concrete commands, in leverage order, so an agent on any
 runtime executes the same moves.
 
 It never applies anything. Clustering is by leading token and nothing
-smarter — the judgment calls (are ``aio`` and ``ai_overview`` the same
+smarter — the judgment calls (are ``ml`` and ``machine_learning`` the same
 initiative? are ``people`` and ``team``?) come back as ``questions``.
 """
 
@@ -193,7 +193,7 @@ def build_plan(
                         "new_parent_exists": hub_exists,
                         # The hub is named by the leading word. That is a
                         # placeholder: rename it in the `to` paths before the
-                        # batch runs ('projects/ai' is not a name).
+                        # batch runs ('projects/ml' is not a name).
                         "hub_name_is_placeholder": not hub_exists,
                         "members": member_gists,
                         "members_total": len(members),

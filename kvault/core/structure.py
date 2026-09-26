@@ -14,10 +14,10 @@ as a collision.
 Three rules keyed on names:
 
 - ``same_words``: the two names have identical stemmed token sets
-  (``ai_overview`` / ``ai_overviews``). A create is refused without
+  (``release_note`` / ``release_notes``). A create is refused without
   ``allow_similar``.
 - ``prefix``: one name's tokens are a prefix of the other's
-  (``pdp_prompts`` / ``pdp_prompts_concord``), or two single-token names
+  (``crm_prompts`` / ``crm_prompts_legacy``), or two single-token names
   share a 4+ character prefix (``infra`` / ``infrastructure``). Warned.
 - ``overlap``: stemmed token sets overlap at Jaccard >= 0.5
   (``code_reviews`` / ``reviews``). Warned.
@@ -169,8 +169,8 @@ def cluster_by_leading_token(
     Returns ``(groups, leftovers)``: groups of at least *min_size* members,
     largest first, and the names that fell into smaller groups. Dumb on
     purpose — the leading word is what agents reach for when they mint
-    ``aio_reporting`` beside ``aio_scaling`` — and the merge of two adjacent
-    groups (``aio`` with ``ai_overview``) is left to a person.
+    ``atlas_reporting`` beside ``atlas_scaling`` — and the merge of two adjacent
+    groups (``ml`` with ``machine_learning``) is left to a person.
     """
     buckets: Dict[str, List[str]] = {}
     leftovers: List[str] = []
@@ -178,8 +178,8 @@ def cluster_by_leading_token(
     for name in names:
         # A date is never a topic: six meeting notes named 2026_02_13_* are
         # a chronology, not a cluster called "2026". And the parent's own
-        # words are not a cluster either: twelve aio_* nodes under
-        # projects/aio/ are that hub's contents, not a hub called aio/aio
+        # words are not a cluster either: twelve atlas_* nodes under
+        # projects/atlas/ are that hub's contents, not a hub called atlas/atlas
         # (seen on a real KB after its first consolidation).
         tokens = [t for t in name_tokens(name) if not is_date_token(t) and stem(t) not in skip]
         if not tokens:

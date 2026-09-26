@@ -187,9 +187,9 @@ tree with the same rules, so the two never disagree.
 **At write time** (`kvault write --create`, MCP `kvault_write_node`):
 
 - A create that would add a root category is refused unless you pass `--new-root`.
-- A create whose name has the same words as a sibling (`ai_overview` beside `ai_overviews`)
-  is refused unless you pass `--allow-similar`. Near-duplicates (`pdp_prompts` beside
-  `pdp_prompts_concord`, `infra` beside `infrastructure`) and a parent pushed past 10
+- A create whose name has the same words as a sibling (`release_note` beside `release_notes`)
+  is refused unless you pass `--allow-similar`. Near-duplicates (`crm_prompts` beside
+  `crm_prompts_legacy`, `infra` beside `infrastructure`) and a parent pushed past 10
   children are reported as a `structure` note, with the node to read next.
 - Missing intermediate parents get a stub summary (a `created` note; it says "Placeholder"
   until you rewrite it) instead of becoming an invisible directory.
@@ -234,24 +234,24 @@ consolidation runs unattended and nothing waits on a person.
 **The engine**: `kvault plan` turns findings into an ordered worklist with the exact commands —
 parents over the ceiling are clustered by leading word into new parents, each with a ready
 `kvault move --batch` payload; then ghosts, date series, duplicates, sibling collisions,
-dangling references, loose files, journal drift, stale facts, and summary rewrites. It never applies anything, and the judgment calls (are `aio` and
-`ai_overview` one initiative?) come back as questions. `kvault move --batch --confirm` runs
+dangling references, loose files, journal drift, stale facts, and summary rewrites. It never applies anything, and the judgment calls (are `ml` and
+`machine_learning` one initiative?) come back as questions. `kvault move --batch --confirm` runs
 a JSON list of `{from, to}` under one lock with one combined propagation list.
 
 ```text
 $ kvault plan --limit 2
 Plan for .: 9 items (showing 2; --limit 0 for all)
-1. cluster  projects → projects/aio
-     projects has 119 direct children (ceiling 10); 13 share the leading word 'aio'
+1. cluster  projects → projects/atlas
+     projects has 46 direct children (ceiling 10); 6 share the leading word 'atlas'
      kvault move --batch --confirm --kb-root /home/me/my_kb <<'EOF'
-     [{"from": "projects/aio_architecture", "to": "projects/aio/aio_architecture"}, …]
+     [{"from": "projects/atlas_architecture", "to": "projects/atlas/atlas_architecture"}, …]
      EOF
-     then: rewrite projects/aio as a rollup of its 13 children
+     then: rewrite projects/atlas as a rollup of its 6 children
 2. ghost    infra
      no _summary.md — invisible to tree, search, and check
      …
 Questions (answer from evidence; defer only when the evidence is not there):
-  - projects: are any of these groups one initiative? aio, shopping, ai, pdp, concord, …
+  - projects: are any of these groups one initiative? atlas, billing, ml, crm, support, …
 ```
 
 The cadence — every session, nightly, weekly, monthly — lives in

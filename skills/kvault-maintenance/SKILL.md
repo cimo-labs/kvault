@@ -104,7 +104,7 @@ kvault plan --json --limit 5 --kb-root "$KB" > "$LOG/plan.json"
 
    ```bash
    kvault move --batch --confirm --kb-root "$KB" <<'EOF'
-   [{"from": "projects/aio_reporting", "to": "projects/aio/aio_reporting"}, …]
+   [{"from": "projects/atlas_reporting", "to": "projects/atlas/atlas_reporting"}, …]
    EOF
    ```
 
@@ -134,10 +134,10 @@ exact identifier match (email, phone); for topics, both summaries read and
 plainly describing one thing. Without it, nest; a nest is one move to undo.
 Every `plan` question carries a default; take the default and move on.
 
-A `cluster` item's hub is named by the leading word (`projects/ai`). That
+A `cluster` item's hub is named by the leading word (`projects/ml`). That
 is a placeholder, not a name: read the `members` gists, decide what the
 group is, and rename the hub in the `to` paths before running the batch.
-Adjacent groups that are one initiative (`aio` and `ai_overview`) are
+Adjacent groups that are one initiative (`ml` and `machine_learning`) are
 merged the same way, by pointing both groups' `to` paths at one hub.
 
 ### Corrections (whenever the owner says something is wrong)

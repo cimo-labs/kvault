@@ -572,7 +572,7 @@ def dangling_findings(kb_root: Path, ignore: Sequence[str]) -> List[Finding]:
                 },
                 fix=(
                     "point it at the node's current path"
-                    + (f" (likely {ref.moved_to[0]})" if ref.moved_to else "")
+                    + (f" (one of {', '.join(ref.moved_to)})" if ref.moved_to else "")
                     + f", or drop it: kvault write {ref.node}"
                 ),
             )

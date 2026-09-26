@@ -43,7 +43,7 @@ def kb(tmp_path):
             root,
             f"projects/routing/model_{i:02d}",
             f"Routing model {i}",
-            f"Uplift routing model number {i} feeds the explorer dashboard. " + LONG,
+            f"Uplift routing model number {i} feeds the segment dashboard. " + LONG,
         )
     return root
 

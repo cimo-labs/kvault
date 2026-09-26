@@ -2,7 +2,7 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
-## 0.16.0 - Unreleased
+## 0.16.0 - 2026-09-26
 
 What an agent could not see, and reads that stay small. The work agent (MCP
 only, ~1,000-node KB) reported eight friction points after running 0.15.2;

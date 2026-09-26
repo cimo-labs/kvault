@@ -155,3 +155,20 @@ class TestMergeFrontmatter:
         new = {"aliases": ["B"]}
         merge_frontmatter(existing, new)
         assert existing["aliases"] == ["A"]
+
+
+def test_parse_frontmatter_cache_returns_independent_copies():
+    """0.16 memoizes the YAML parse (check parsed each summary ~7 times); a
+    caller that mutates its metadata must never change what the next caller sees."""
+    from kvault.core.frontmatter import parse_frontmatter
+
+    content = "---\nsource: manual\naliases:\n- A\ncontacts:\n- name: B\n---\n# Body\n"
+    first, _ = parse_frontmatter(content)
+    first["aliases"].append("mutated")
+    first["contacts"][0]["name"] = "changed"
+    first["extra"] = True
+    second, body = parse_frontmatter(content)
+    assert second == {"source": "manual", "aliases": ["A"], "contacts": [{"name": "B"}]}
+    assert body == "# Body\n"
+    bad, raw = parse_frontmatter("---\nkey: [unclosed\n---\nbody")
+    assert bad == {} and raw.startswith("---")

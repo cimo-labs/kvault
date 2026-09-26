@@ -8,6 +8,8 @@ duplicate keys, and non-mapping payloads.
 """
 
 import yaml
+from copy import deepcopy
+from functools import lru_cache
 from typing import Any, Dict, Mapping, Tuple
 
 
@@ -46,6 +48,21 @@ def _split_frontmatter(content: str) -> Tuple[str, str, bool]:
     return content[4:end], content[end + 4 :].lstrip("\n"), True
 
 
+@lru_cache(maxsize=4096)
+def _safe_load_cached(yaml_content: str) -> Tuple[bool, Any]:
+    """``yaml.safe_load`` memoized on the exact block text.
+
+    One ``kvault check`` parses every summary's frontmatter about seven times
+    (one pass per rule), and pure-Python YAML was ~80% of check's run time on
+    a 500-node KB. The key is the text itself, so an edited file can never
+    hit a stale entry; callers get a deep copy because they mutate metadata.
+    """
+    try:
+        return True, yaml.safe_load(yaml_content)
+    except yaml.YAMLError:
+        return False, None
+
+
 def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     """Parse YAML frontmatter from markdown content, tolerantly.
 
@@ -70,15 +87,14 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     if not found:
         return {}, content
 
-    try:
-        meta = yaml.safe_load(yaml_content)
-    except yaml.YAMLError:
+    ok, meta = _safe_load_cached(yaml_content)
+    if not ok:
         return {}, content
     if meta is None:
         return {}, remaining
     if not isinstance(meta, dict):
         return {}, content
-    return meta, remaining
+    return deepcopy(meta), remaining
 
 
 def parse_frontmatter_strict(content: str) -> Tuple[Dict[str, Any], str]:

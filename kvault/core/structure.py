@@ -391,13 +391,17 @@ def loose_files(kg_root: Path, ignore: Sequence[str]) -> List[str]:
     return out
 
 
-def journal_layout_findings(kg_root: Path) -> List[Dict[str, str]]:
+def journal_layout_findings(
+    kg_root: Path, ignore: Sequence[str] = ()
+) -> List[Dict[str, str]]:
     """Files and directories under ``journal/`` that are off the canonical layout.
 
     Canonical: ``journal/YYYY-MM/log.md``. A ``_summary.md`` at ``journal/``
     or in a month directory is tolerated (some KBs treat months as nodes).
     ``journal/archive`` and ``archive/journal`` are flagged as competing
-    histories.
+    histories. A path matched by *ignore* (``.kvaultignore``) is a layout the
+    owner declared on purpose, e.g. a weekly ``journal/y2026/…`` tree kept
+    beside kvault's own monthly log, and is not reported.
     """
     root = Path(kg_root)
     findings: List[Dict[str, str]] = []
@@ -408,6 +412,8 @@ def journal_layout_findings(kg_root: Path) -> List[Dict[str, str]]:
             if any(part.startswith(".") for part in entry.relative_to(root).parts):
                 continue
             r = rel(root, entry)
+            if is_ignored(r, ignore):
+                continue
             # One finding per stray subtree: the directory, not every file in it.
             if any(r.startswith(d + "/") for d in flagged_dirs):
                 continue
@@ -431,7 +437,7 @@ def journal_layout_findings(kg_root: Path) -> List[Dict[str, str]]:
             ):
                 continue
             findings.append({"path": r, "reason": "file off the journal/YYYY-MM/log.md layout"})
-    if (root / "archive" / "journal").is_dir():
+    if (root / "archive" / "journal").is_dir() and not is_ignored("archive/journal", ignore):
         findings.append({"path": "archive/journal", "reason": "second history: archive/journal"})
     return findings
 

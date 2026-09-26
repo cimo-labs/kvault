@@ -134,6 +134,20 @@ def test_ignore_file_silences_tooling(tmp_path):
     assert doc["ignore_patterns"] == ["scripts", "*.png", "todo.md", "archive"]
 
 
+def test_ignore_file_declares_a_second_journal_layout(tmp_path):
+    """The JOURNAL fix line has always offered .kvaultignore for a layout kept on
+    purpose (a weekly journal/y2026/… tree beside kvault's monthly log); until
+    0.16 the check never read the file, so an agent following it fought the
+    owner's convention on every run."""
+    kb = _sprawl_kb(tmp_path)
+    (kb / IGNORE_FILE).write_text("journal/y2026\narchive\n")
+    journal = {f["path"] for f in run_checks(kb)["findings"] if f["code"] == "JOURNAL"}
+    assert journal == set()
+    (kb / IGNORE_FILE).write_text("archive\n")
+    journal = {f["path"] for f in run_checks(kb)["findings"] if f["code"] == "JOURNAL"}
+    assert journal == {"journal/y2026"}
+
+
 def test_findings_are_hard_first_and_bounded(tmp_path):
     kb = _sprawl_kb(tmp_path)
     doc = run_checks(kb, max_findings=2)

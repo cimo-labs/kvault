@@ -528,7 +528,7 @@ def _node_title(kb_root: Path, rel_path: str) -> str:
     return ""
 
 
-def journal_layout_findings(kb_root: Path) -> List[Finding]:
+def journal_layout_findings(kb_root: Path, ignore: Sequence[str] = ()) -> List[Finding]:
     return [
         Finding(
             code="JOURNAL",
@@ -537,10 +537,11 @@ def journal_layout_findings(kb_root: Path) -> List[Finding]:
             level="warn",
             fix=(
                 "keep one history: journal/YYYY-MM/log.md written by kvault journal; "
-                f"fold other files into it or list them in {st.IGNORE_FILE}"
+                "fold other files into it, or list a deliberate second layout in "
+                f"{st.IGNORE_FILE}"
             ),
         )
-        for f in st.journal_layout_findings(kb_root)
+        for f in st.journal_layout_findings(kb_root, ignore)
     ]
 
 
@@ -618,7 +619,7 @@ def run_checks(
         ("SERIES", series_findings(root, ignore)),
         ("SIBLINGS", sibling_findings(root, ignore)),
         ("LOOSE", loose_findings(root, ignore)),
-        ("JOURNAL", journal_layout_findings(root)),
+        ("JOURNAL", journal_layout_findings(root, ignore)),
     ):
         shown, hidden = _cap(group, max_findings)
         if hidden:

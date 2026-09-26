@@ -377,6 +377,8 @@ def build_plan(
                     "commands": [
                         "# fold its entries into journal/YYYY-MM/log.md with kvault journal, "
                         "then remove it",
+                        f"# or, if this layout is deliberate: echo '{fpath}' >> "
+                        f"{q}/{st.IGNORE_FILE}",
                     ],
                 }
             )

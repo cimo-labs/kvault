@@ -42,7 +42,8 @@ _STRUCTURE_FIX_LINE = {
     "deep_context/; new entries go to journal/",
     "SIBLINGS": "same thing → merge; subtopic → kvault move; kvault plan lists the moves",
     "LOOSE": "move into <node>/deep_context/, make it a node, or list it in .kvaultignore",
-    "JOURNAL": "one history: journal/YYYY-MM/log.md via kvault journal",
+    "JOURNAL": "one history: journal/YYYY-MM/log.md via kvault journal; a deliberate second "
+    "layout goes in .kvaultignore",
 }
 
 

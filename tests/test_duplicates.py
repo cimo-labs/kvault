@@ -156,3 +156,54 @@ def test_distinct_from_and_check_and_plan(tmp_path):
 
     ops.mark_node(kb, "tech/bayes_routing", distinct_from=["projects/routing_notes"])
     assert run_checks(kb, codes=["DUPLICATE"])["findings"] == []
+
+
+# ── review round (2026-09-26) ─────────────────────────────────────────────
+
+
+def test_twins_named_like_a_date_are_still_twins(tmp_path):
+    """same_series(x, x) is true for any name with a date-like token (phase_2,
+    late_payment_policy); identical names are one member, not a series."""
+    kb = _kb(tmp_path)
+    for rel in ("sales/late_payment_policy", "suppliers/late_payment_policy"):
+        _node(kb, rel, f"# Late payment policy\n\n{PRICING}\n")
+    assert ("sales/late_payment_policy", "suppliers/late_payment_policy") in _pairs(kb)
+
+
+def test_ghosts_and_stubs_never_pair(tmp_path):
+    kb = _kb(tmp_path)
+    _node(kb, "sales/pricing", f"# Pricing\n\n{PRICING}\n")
+    (kb / "projects" / "pricing").mkdir()  # a ghost: no summary
+    (kb / "tech" / "pricing").mkdir()
+    (kb / "tech" / "pricing" / "_summary.md").write_text(
+        "---\nsource: kvault-stub\naliases: []\n---\n# Pricing\n\nPlaceholder summary.\n"
+    )
+    assert _pairs(kb) == {}
+
+
+def test_distinct_command_for_a_root_category_resolves(tmp_path):
+    from kvault.cli.main import cli
+    from click.testing import CliRunner
+
+    kb = _kb(tmp_path)
+    _node(kb, "people", "# People\n\nEveryone.\n")
+    _node(kb, "sales/people", "# People\n\nThe sales team.\n")
+    (finding,) = run_checks(kb, codes=["DUPLICATE"])["findings"]
+    command = finding["fix"].split("different things → ")[1]
+    assert command == "kvault mark people --distinct-from sales/people"
+    args = command.split()[1:] + ["--kb-root", str(kb)]
+    assert CliRunner().invoke(cli, args).exit_code == 0
+    assert run_checks(kb, codes=["DUPLICATE"])["findings"] == []
+    selfref = ops.mark_node(kb, "sales/people", distinct_from=["people"])
+    assert selfref["success"] is False and "itself" in selfref["error"]
+
+
+def test_dates_and_addresses_are_not_phone_numbers(tmp_path):
+    kb = _kb(tmp_path)
+    _node(kb, "sales/a_note", "# Note A\n\nOne.\n", aliases=["2026-09-26"])
+    _node(kb, "suppliers/b_note", "# Note B\n\nTwo.\n", aliases=["2026-09-26"])
+    _node(kb, "sales/host", "# Host\n\nOne.\n", aliases=["192.168.1.100"])
+    _node(kb, "suppliers/box", "# Box\n\nTwo.\n", aliases=["192.168.1.100"])
+    _node(kb, "sales/ann", "# Ann\n\nBuyer.\n", aliases=["+1 (415) 555-0100"])
+    _node(kb, "suppliers/ann_lee", "# Ann Lee\n\nRep.\n", aliases=["+1 415 555 0100"])
+    assert set(_pairs(kb)) == {("sales/ann", "suppliers/ann_lee")}

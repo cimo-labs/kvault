@@ -15,6 +15,7 @@ initiative? are ``people`` and ``team``?) come back as ``questions``.
 
 from __future__ import annotations
 
+import glob
 import json
 import shlex
 from pathlib import Path
@@ -23,7 +24,7 @@ from typing import Any, Dict, List, Optional
 from kvault._version import __version__
 from kvault.core import notes as nt
 from kvault.core import structure as st
-from kvault.core.check import DEFAULT_MAX_CHILDREN, run_checks
+from kvault.core.check import DEFAULT_MAX_CHILDREN, distinct_command, run_checks
 from kvault.core.frontmatter import parse_frontmatter
 
 #: Members listed with a gist per cluster item; past this the count stands in.
@@ -69,6 +70,13 @@ PRIORITY = {
     "stale": 9,
     "summary": 10,
 }
+
+
+def _ignore_line(root: Path, rel_path: str) -> str:
+    """``echo <pattern> >> <root>/.kvaultignore`` for exactly *rel_path*: the pattern
+    is fnmatch-escaped (a ``[1]`` in a name is not a character class) and shell-quoted."""
+    pattern = shlex.quote(glob.escape(rel_path))
+    return f"echo {pattern} >> {shlex.quote(str(root / st.IGNORE_FILE))}"
 
 
 def _join(parent: str, name: str) -> str:
@@ -341,8 +349,7 @@ def build_plan(
                     "commands": [
                         f"kvault write {fpath} --create --kb-root {q} "
                         "<<'EOF' … (frontmatter + a rollup of what is inside) EOF",
-                        f"# or, if it is tooling and not knowledge: "
-                        f"echo '{fpath}/' >> {q}/{st.IGNORE_FILE}",
+                        f"# or, if it is tooling and not knowledge: {_ignore_line(root, fpath)}",
                     ],
                 }
             )
@@ -350,6 +357,11 @@ def build_plan(
             d = finding["detail"]
             a, b = d["a"], d["b"]
             other = b.rsplit("/", 1)[-1]
+            parked = other
+            for n in range(2, 100):
+                if not (root / a / "deep_context" / parked).exists():
+                    break
+                parked = f"{other}_{n}"
             items.append(
                 {
                     "kind": "duplicate",
@@ -363,8 +375,8 @@ def build_plan(
                         f"kvault read {b} --kb-root {q}",
                         "# same thing → fold the unique facts of one into the other "
                         "(kvault write <keeper>), then park the other where one move undoes it:",
-                        f"kvault move --confirm {b} {a}/deep_context/{other} --kb-root {q}",
-                        f"# different things → kvault mark {a} --distinct-from {b} --kb-root {q}"
+                        f"kvault move --confirm {b} {a}/deep_context/{parked} --kb-root {q}",
+                        f"# different things → {distinct_command(a, b)} --kb-root {q}"
                         "  (the finding stops)",
                     ],
                 }
@@ -379,8 +391,7 @@ def build_plan(
                     "commands": [
                         "# fold its entries into journal/YYYY-MM/log.md with kvault journal, "
                         "then remove it",
-                        f"# or, if this layout is deliberate: echo '{fpath}' >> "
-                        f"{q}/{st.IGNORE_FILE}",
+                        f"# or, if this layout is deliberate: {_ignore_line(root, fpath)}",
                     ],
                 }
             )
@@ -395,7 +406,8 @@ def build_plan(
                         f"kvault read {fpath} --kb-root {q}",
                         "# re-check the time-sensitive facts it records; rewrite what changed:",
                         f"kvault write {fpath} --kb-root {q} <<'EOF' … (the updated node) EOF",
-                        f"kvault mark {fpath} --verify-by +14d --kb-root {q}  # the next check-in",
+                        f"kvault mark {fpath} --verify-by +14d --kb-root {q}  # still time-sensitive",
+                        f"# settled: kvault mark {fpath} --verify-by none --kb-root {q}",
                     ],
                 }
             )
@@ -435,12 +447,37 @@ def build_plan(
     items = [
         i for i in items if not (i["kind"] in ("cluster", "series") and _under_another_batch(i))
     ]
+    # Every other item names paths as they are now; one under a batch's
+    # source would act on a path the batch moves (a duplicate item could
+    # park a node under a stub left at the old path). Defer them: the next
+    # plan, run after the batch, computes them against the moved tree.
+    moved_sources = [
+        mv["from"] for i in items if i["kind"] in ("cluster", "series") for mv in i.get("moves", [])
+    ]
+
+    def _moves_under(path: Optional[str]) -> bool:
+        return bool(path) and any(
+            path == src or str(path).startswith(src + "/") for src in moved_sources
+        )
+
+    deferred = [
+        i
+        for i in items
+        if i["kind"] not in ("cluster", "series")
+        and (_moves_under(i.get("path")) or _moves_under(i.get("other")))
+    ]
+    items = [i for i in items if i not in deferred]
     for item in items:
         question = item.pop("_question", None)
         if question:
             questions.append(question)
 
     for parent, group in sibling_groups.items():
+        if _moves_under(parent) or any(
+            _moves_under(_join(parent, str(g["detail"].get(k)))) for g in group for k in ("a", "b")
+        ):
+            deferred.append({"kind": "siblings", "path": parent})
+            continue
         top = group[0]["detail"]
         items.append(
             {
@@ -468,6 +505,9 @@ def build_plan(
             }
         )
     for parent, group in loose_groups.items():
+        if _moves_under(parent):
+            deferred.append({"kind": "loose", "path": parent})
+            continue
         kinds = {
             k: sum(1 for g in group if g["detail"].get("kind") == k)
             for k in ("legacy_node_file", "supporting_doc", "artifact")
@@ -521,6 +561,9 @@ def build_plan(
         )
 
     for node, group in dangling_groups.items():
+        if _moves_under(node):
+            deferred.append({"kind": "dangling", "path": node})
+            continue
         items.append(
             {
                 "kind": "dangling",
@@ -551,6 +594,15 @@ def build_plan(
     total = len(items)
     shown = items[:limit] if limit and limit > 0 else items
     notes: List[Dict[str, Any]] = []
+    if deferred:
+        notes.append(
+            nt.note(
+                "truncated",
+                f"{len(deferred)} item(s) name paths a batch above moves; re-run kvault plan "
+                "after the batches to get them against the moved tree",
+                detail={"deferred": [{"kind": d["kind"], "path": d.get("path")} for d in deferred]},
+            )
+        )
     if len(shown) < total:
         notes.append(
             nt.note(

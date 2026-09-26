@@ -209,3 +209,93 @@ def test_moves_without_references_stay_quiet(tmp_path):
     result = ops.move_entity(kb, "tech/models/bayes_routing", "projects/causal/bayes_routing")
     assert result["referrer_paths"] == []
     assert not [n for n in result["notes"] if (n.get("detail") or {}).get("kind") == "references"]
+
+
+# ── review round (2026-09-26) ─────────────────────────────────────────────
+
+
+def test_background_links_do_not_make_a_summary_a_child_list(tmp_path):
+    """The usual "[deep_context/](deep_context/)" line (or an ignored tooling dir)
+    used to count as listing children, so every snake_case bullet became DANGLING."""
+    kb = _kb(tmp_path)
+    (kb / "projects" / "hub" / "deep_context").mkdir()
+    (kb / "projects" / "hub" / "scripts").mkdir()
+    (kb / ".kvaultignore").write_text("projects/hub/scripts\n")
+    _node(
+        kb,
+        "projects/hub",
+        "# Hub\n\n**Background:** [deep_context/](deep_context/) and `scripts/`\n\n"
+        "- max_children: 12\n- review_cadence — weekly\n",
+    )
+    assert [r for r in rf.dangling_references(kb) if r.node == "projects/hub"] == []
+
+
+def test_bold_underscore_entries_and_fences(tmp_path):
+    kb = _kb(tmp_path)
+    _node(
+        kb,
+        "projects/hub",
+        "# Hub\n\n- __weekly_reporting__ — the pipeline\n\n"
+        "````\n```\nprojects/inside/four_tick_fence\n```\n````\n\n"
+        "- step:\n\n      ```bash\n      kvault move projects/old_thing tech/old_thing\n      ```\n\n"
+        "Inline ``` x ``` is code, and projects/causal/after_inline is a real path.\n",
+    )
+    found = {(r.kind, r.target) for r in rf.dangling_references(kb) if r.node == "projects/hub"}
+    assert found == {("path", "projects/causal/after_inline")}
+
+
+def test_existing_files_and_symlinked_dirs_are_not_nothing(tmp_path):
+    kb = _kb(tmp_path)
+    (kb / "LICENSE").write_text("MIT")
+    outside = tmp_path / "shared"
+    (outside / "guide").mkdir(parents=True)
+    (kb / "tech" / "shared").symlink_to(outside, target_is_directory=True)
+    _node(kb, "tech", "# Tech\n\nSee [license](../LICENSE) and [guide](shared/guide/).\n")
+    assert [r for r in rf.dangling_references(kb) if r.node == "tech"] == []
+
+
+def test_summaries_symlinked_out_of_the_kb_are_never_read(tmp_path):
+    kb = _kb(tmp_path)
+    secret = tmp_path / "secret_summary.md"
+    secret.write_text("---\nsource: x\n---\n# S\n\n[k](sk_live_abc123/)\n")
+    (kb / "tech" / "leak").mkdir()
+    (kb / "tech" / "leak" / "_summary.md").symlink_to(secret)
+    assert not [r for r in rf.dangling_references(kb) if "sk_live" in r.raw]
+
+
+def test_root_moves_still_report_path_references(tmp_path):
+    kb = _kb(tmp_path)
+    _node(kb, "people", "# People\n\nPipeline: `projects/hub/weekly_reporting`.\n")
+    _node(kb, "projects", "# Projects\n\nSee `hub/weekly_reporting` for the pipeline.\n")
+    moved = ops.move_entity(kb, "projects/hub", "tech/hub")
+    assert moved["referrer_paths"] == ["people", "projects"]
+    ref = [n for n in moved["notes"] if (n.get("detail") or {}).get("kind") == "references"][0]
+    homes = {r["node"]: r["now_at"] for r in ref["detail"]["references"]}
+    assert homes == {"people": "tech/hub/weekly_reporting", "projects": "tech/hub/weekly_reporting"}
+    rooted = ops.move_entity(kb, "people", "tech/people")
+    assert rooted["success"] is True
+
+
+def test_now_at_is_only_given_when_the_new_path_exists(tmp_path):
+    kb = _kb(tmp_path)
+    _node(
+        kb,
+        "people",
+        "# People\n\nSee `projects/hub/never_existed` and `projects/hub/weekly_reporting`.\n",
+    )
+    moved = ops.move_entity(kb, "projects/hub", "tech/hub")
+    ref = [n for n in moved["notes"] if (n.get("detail") or {}).get("kind") == "references"][0]
+    homes = {r["target"]: r["now_at"] for r in ref["detail"]["references"]}
+    assert homes["projects/hub/weekly_reporting"] == "tech/hub/weekly_reporting"
+    assert homes["projects/hub/never_existed"] is None
+
+
+def test_an_impossible_date_never_fails_a_move_that_already_happened(tmp_path):
+    kb = _kb(tmp_path)
+    (kb / "people" / "_summary.md").write_text(
+        "---\nsource: manual\naliases: []\nupdated: 2026-02-30\n---\n# People\n\n"
+        "See `projects/causal/uplift_routing`.\n"
+    )
+    moved = ops.move_entity(kb, "projects/causal/uplift_routing", "tech/uplift_routing")
+    assert moved["success"] is True and moved["referrer_paths"] == ["people"]
+    assert run_checks(kb, codes=["DANGLING", "DUPLICATE"])["success"] is True

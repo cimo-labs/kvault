@@ -1278,8 +1278,13 @@ def write_node(
     new_root: bool = False,
     allow_similar: bool = False,
     drop_meta_keys: Optional[Sequence[str]] = None,
+    preserve_dates: bool = False,
 ) -> Dict[str, Any]:
     """Write any node summary with YAML frontmatter.
+
+    *preserve_dates* keeps an existing node's ``created``/``updated`` (used by
+    ``mark``: a recorded decision is not a content change, and stamping
+    today made the parent look stale).
 
     A create runs the structure guards first (0.15): it is refused when it
     would mint a root category without *new_root* or collide with a sibling
@@ -1445,7 +1450,7 @@ def write_node(
                     noop_dates[key] = existing["meta"][key]
                 else:
                     meta.pop(key, None)
-        else:
+        elif not preserve_dates:
             meta["updated"] = today
 
     # Write
@@ -2188,14 +2193,25 @@ def _reference_notes(
     if not moved:
         return [], []
     new_home = dict(moved)
+    anchors = {
+        "/".join(src.split("/")[: i + 1]) for src, _ in moved for i in range(src.count("/") + 1)
+    }
     try:
         refs = rf.dangling_references(
             kg_root,
             contains=[src.rsplit("/", 1)[-1] for src, _ in moved],
             under=[dst for _, dst in moved if dst],
+            anchors=anchors,
         )
-    except OSError:
-        return [], []
+    except Exception as exc:  # the tree already changed; the report must never fail it
+        return [
+            nt.note(
+                "skipped",
+                f"could not scan for references to what moved: {type(exc).__name__}",
+                detail={"error": str(exc)[:200]},
+                next_step="kvault check --code DANGLING",
+            )
+        ], []
     hits: List[Dict[str, Any]] = []
     for ref in refs:
         src = next((s for s, _ in moved if ref.target == s or ref.target.startswith(s + "/")), None)
@@ -2208,7 +2224,9 @@ def _reference_notes(
         entry.pop("exists", None)
         if src is not None:
             dst = new_home[src]
-            entry["now_at"] = dst + ref.target[len(src) :] if dst else None
+            now_at = dst + ref.target[len(src) :] if dst else None
+            # a reference that already pointed at nothing has no new home
+            entry["now_at"] = now_at if now_at and (kg_root / now_at).exists() else None
         hits.append(entry)
     if not hits:
         return [], []
@@ -2582,10 +2600,14 @@ def mark_node(
     clear: bool = False,
     verify_by: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Record a structure decision in a node's frontmatter (see core.decisions).
+    """Record a decision in a node's frontmatter (see core.decisions).
 
     Goes through ``write_node`` so it is validated, no-op aware, and logged.
-    *verify_by* takes ``YYYY-MM-DD``, ``+14d``/``+2w``, or ``none`` to clear.
+    *verify_by* takes ``YYYY-MM-DD``, ``+14d``/``+2w``, or ``none`` to clear;
+    *clear* drops the structure decisions (not ``verify_by``). The node's
+    ``updated`` date is kept, because a decision is not a content change
+    (0.16: stamping today made its parent PROPAGATE), and the decision is
+    journaled, so marking a node never leaves ``check`` red.
     """
     path = _normalize_node_path(path)
     if not (
@@ -2597,8 +2619,8 @@ def mark_node(
     ):
         return error_response(
             ErrorCode.VALIDATION_ERROR,
-            "nothing to record: pass --distinct-from, --max-children, --series-ok, "
-            "--verify-by, or --clear",
+            "nothing to record: pass distinct_from, max_children, series_ok, verify_by, "
+            "or clear",
         )
     due: Optional[str] = None
     if verify_by is not None:
@@ -2609,6 +2631,13 @@ def mark_node(
     raw = _read_node_raw(kg_root, path)
     if raw is None:
         return error_response(ErrorCode.NOT_FOUND, f"Node doesn't exist: {path}")
+    selves = [d for d in distinct_from or [] if dc.normalize_rel(d, path) == path]
+    if selves:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            f"distinct_from {selves[0]!r} names {path} itself (a bare name means a sibling)",
+            hint="Name the other node by its KB path, or mark the root-level node instead",
+        )
     meta = dc.merge_decisions(
         raw["meta"] or {},
         path,
@@ -2619,15 +2648,33 @@ def mark_node(
         verify_by=due,
     )
     drops = [key for key in dc.DECISION_KEYS if key not in meta and key in (raw["meta"] or {})]
+    recorded = [
+        label
+        for label, given in (
+            ("cleared structure decisions", clear),
+            (f"distinct_from {', '.join(distinct_from or [])}", bool(distinct_from)),
+            (f"max_children {max_children}", max_children is not None),
+            (f"series_ok {series_ok}", series_ok is not None),
+            (f"verify_by {due or 'cleared'}", due is not None),
+        )
+        if given
+    ]
     result = write_node(
-        kg_root, path, raw["content"], meta=meta, create=False, drop_meta_keys=drops or None
+        kg_root,
+        path,
+        raw["content"],
+        meta=meta,
+        create=False,
+        drop_meta_keys=drops or None,
+        preserve_dates=True,
+        reasoning="decision recorded with kvault mark: " + "; ".join(recorded),
     )
     if not result.get("success"):
         return result
     decisions = dc.read_decisions(kg_root, path)
     parts: List[str] = []
     if clear:
-        parts.append("cleared")
+        parts.append("cleared structure decisions")
     if distinct_from:
         parts.append(
             "distinct_from += " + ", ".join(decisions["distinct_from"][-len(distinct_from) :])
@@ -2768,18 +2815,22 @@ def validate_kb(kg_root: Path) -> Dict[str, Any]:
         if any(part.startswith(".") for part in rel_parts):
             continue
         try:
-            parse_frontmatter_strict(summary_file.read_text(encoding="utf-8"))
+            text = summary_file.read_text(encoding="utf-8")
+            parse_frontmatter_strict(text)
         except FrontmatterError as exc:
+            # An impossible date (2026-09-31) is still read, with its dates as
+            # text; anything else malformed is read as empty.
+            how = "read with its dates as text" if parse_frontmatter(text)[0] else "read as empty"
             issues.append(
                 {
                     "type": "malformed_frontmatter",
                     "severity": "warning",
                     "path": str(Path(*rel_parts)) if rel_parts else ".",
-                    "message": f"Frontmatter is malformed and read as empty: {exc}",
+                    "message": f"Frontmatter is malformed and {how}: {exc}",
                     "fix": "Rewrite the node with kvault write to repair its frontmatter",
                 }
             )
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
 
     for entity in entities:

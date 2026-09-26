@@ -38,6 +38,22 @@ _StrictLoader.add_constructor(
 )
 
 
+class _DatesAsTextLoader(yaml.SafeLoader):
+    """SafeLoader that leaves timestamps as strings.
+
+    An impossible date (``verify_by: 2026-09-31``) passes the YAML parser and
+    then fails in the date constructor with ``ValueError``, which is not a
+    ``YAMLError``: one such value used to crash every command that read the
+    node. The tolerant parser falls back to this loader instead.
+    """
+
+
+_DatesAsTextLoader.yaml_implicit_resolvers = {
+    first: [(tag, rx) for tag, rx in resolvers if tag != "tag:yaml.org,2002:timestamp"]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+
+
 def _split_frontmatter(content: str) -> Tuple[str, str, bool]:
     """Return (yaml_block, remaining, found); found is False when no block."""
     if not content.startswith("---"):
@@ -60,6 +76,13 @@ def _safe_load_cached(yaml_content: str) -> Tuple[bool, Any]:
     try:
         return True, yaml.safe_load(yaml_content)
     except yaml.YAMLError:
+        return False, None
+    except (ValueError, TypeError):
+        try:
+            return True, yaml.load(yaml_content, Loader=_DatesAsTextLoader)
+        except (yaml.YAMLError, ValueError, TypeError, RecursionError):
+            return False, None
+    except RecursionError:
         return False, None
 
 
@@ -116,7 +139,8 @@ def parse_frontmatter_strict(content: str) -> Tuple[Dict[str, Any], str]:
         meta = yaml.load(yaml_content, Loader=_StrictLoader)
     except FrontmatterError:
         raise
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, ValueError, TypeError) as exc:
+        # ValueError: an impossible date such as 2026-09-31
         raise FrontmatterError(f"Invalid YAML frontmatter: {exc}") from exc
     if meta is None:
         return {}, remaining

@@ -437,7 +437,12 @@ def _move_batch(
         "from today, or 'none' to clear. check reports STALE: once it passes."
     ),
 )
-@click.option("--clear", is_flag=True, help="Drop all recorded decisions on PATH first")
+@click.option(
+    "--clear",
+    is_flag=True,
+    help="Drop PATH's structure decisions first (distinct_from, max_children, series_ok; "
+    "verify_by has --verify-by none)",
+)
 @verbosity_options
 @common_options
 @click.pass_context

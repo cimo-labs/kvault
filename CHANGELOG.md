@@ -83,8 +83,29 @@ one was worse than reported (`parents="all"` on search added 510-640 KB).
 - **The `propagate` note contract**: "summaries are stale because of this
   operation" — ancestors, or referrers of a moved or deleted path.
 - `plan` priorities renumbered for the new kinds (cluster, ghost, series,
-  duplicate, siblings, dangling, loose, journal, stale, summary).
-- `mark` results carry `verify_by` in `decisions`.
+  duplicate, siblings, dangling, loose, journal, stale, summary). Items
+  that name a path an earlier batch in the same plan moves are deferred to
+  the next plan run (a `truncated` note counts them): run in order, a
+  duplicate item could otherwise park a node under the stub a batch left.
+- **`--summary-max-warnings 0` / `--max-lines 0` print every line.** In
+  0.15 a 0 printed only the "(+N more)" counts.
+- `mark` results carry `verify_by` in `decisions`; `mark --clear` drops the
+  structure decisions only (`distinct_from`, `max_children`, `series_ok`),
+  never `verify_by`, which clears with `--verify-by none`.
+
+### Fixed
+
+- **`mark` no longer makes the parent stale.** It stamped today's
+  `updated` on the node, so the parent reported `PROPAGATE` (and a leaf
+  `LOG`) while the result said `propagation_required: false`; a nightly
+  job that ran its own marks finished red. A decision now keeps the node's
+  dates and is journaled.
+- **An impossible frontmatter date no longer crashes kvault.** An unquoted
+  `2026-09-31` passes the YAML parser and fails in its date constructor
+  with `ValueError`, which escaped from `check`, `plan`, `read`, `move` and
+  the MCP tools, and `validate` crashed on it. The tolerant parser now
+  reads such a block with its dates as text (`STALE:` reports an impossible
+  `verify_by`), and `validate` reports it as `malformed_frontmatter`.
 
 ### Performance
 

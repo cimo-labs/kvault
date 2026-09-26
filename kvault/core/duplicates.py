@@ -53,7 +53,8 @@ MAX_GROUP = 5
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[a-z]{2,}$", re.IGNORECASE)
-_PHONE_RE = re.compile(r"^\+?[\d\s().\-]{7,}$")
+_PHONE_RE = re.compile(r"^\+?[\d\s().\-]{10,}$")
+_NOT_PHONE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}|^\d{1,3}(?:\.\d{1,3}){3}$|^\d{4}\s*[-–]\s*\d{4}$")
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 
 
@@ -93,9 +94,9 @@ def _identifier(alias: str) -> Optional[str]:
     alias = alias.strip()
     if _EMAIL_RE.match(alias):
         return alias.lower()
-    if _PHONE_RE.match(alias):
+    if _PHONE_RE.match(alias) and not _NOT_PHONE_RE.match(alias):
         digits = re.sub(r"\D", "", alias)
-        return digits if len(digits) >= 7 else None
+        return digits if 10 <= len(digits) <= 15 else None
     return None
 
 
@@ -183,6 +184,9 @@ def duplicate_pairs(kg_root: Path, ignore: Optional[Sequence[str]] = None) -> Li
         return pairs.setdefault(key, _Pair())
 
     for name, paths in st.basename_duplicates(root, patterns).items():
+        # Ghost directories and kvault's stubs are GHOST:/SUMMARY: work, not
+        # twins: a pair needs two nodes an agent can read, mark, and move.
+        paths = [p for p in paths if p in docs]
         if st.is_bucket_name(name) or len(paths) > MAX_GROUP:
             continue
         for a, b in combinations(sorted(paths), 2):
@@ -230,7 +234,10 @@ def duplicate_pairs(kg_root: Path, ignore: Optional[Sequence[str]] = None) -> Li
 
     out: List[Dict[str, Any]] = []
     for (a, b), p in pairs.items():
-        if _related(a, b) or st.same_series(a.rsplit("/", 1)[-1], b.rsplit("/", 1)[-1]):
+        name_a, name_b = a.rsplit("/", 1)[-1], b.rsplit("/", 1)[-1]
+        # Two members of one date series differ by their dates; the same name
+        # twice (acme_meeting_2026_05_13 in two folders) is a twin, not a series.
+        if _related(a, b) or (name_a != name_b and st.same_series(name_a, name_b)):
             continue
         da, db = docs.get(a), docs.get(b)
         mutual = bool(da and db and da.title_norm in db.aliases and db.title_norm in da.aliases)

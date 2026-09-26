@@ -110,7 +110,10 @@ def test_sibling_collisions_and_same_name_elsewhere(tmp_path):
     }
     assert ("org/people", "people") in same_name
     assert ("models", "tech/models") in same_name
-    assert ("infrastructure", "tech/infrastructure") in same_name  # a ghost twin counts
+    # a summary-less twin is GHOST: work (write it or ignore it), not a pair an
+    # agent could read, mark, or move
+    assert ("infrastructure", "tech/infrastructure") not in same_name
+    assert "tech/infrastructure" in {f["path"] for f in doc["findings"] if f["code"] == "GHOST"}
     # semantic pairs are out of scope by design
     assert ("people", "team") not in pairs and ("customers", "partners") not in pairs
 

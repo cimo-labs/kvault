@@ -60,7 +60,7 @@ from kvault.core.search import KINDS
 @click.option(
     "--compact",
     is_flag=True,
-    help="Path, title, kind, date, and a one-line snippet per hit (about a quarter the size).",
+    help="Path, title, kind, date, and a one-line snippet per hit (about a third the size).",
 )
 @click.option(
     "--snippet-chars",

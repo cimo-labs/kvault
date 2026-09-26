@@ -188,12 +188,12 @@ Act on what the orientation pass shows:
 | `[+K ghost]` / `[+K loose]` in the tree, `GHOST:` / `SERIES:` / `SIBLINGS:` / `LOOSE:` / `JOURNAL:` from `kvault check` | Ghost: write the summary or list the path in `.kvaultignore`. Series: dated nodes are a chronology — fold into one current-state node, timeline to `journal/`. Siblings: merge or nest. Loose: adopt a legacy node file as a node, move supporting docs into `<node>/deep_context/`. Journal: fold into `journal/YYYY-MM/log.md`, or list a deliberate second layout in `.kvaultignore` |
 | `DUPLICATE:` from `kvault check` | The same thing in two places. Read both: same thing → fold the unique facts into one node, then park the other under its `deep_context/` (`kvault move --confirm <other> <keeper>/deep_context/<name>`); different things → `kvault mark <a> --distinct-from <b>` |
 | `DANGLING:` from `kvault check` | A summary points at a path with nothing there. Point it at the node's current path (the finding names same-name nodes elsewhere) or drop it |
-| `STALE:` from `kvault check` | The node's `verify_by` date passed. Re-check its time-sensitive facts, rewrite what changed, then `kvault mark <path> --verify-by +14d` |
+| `STALE:` from `kvault check` | The node's `verify_by` date passed. Re-check its time-sensitive facts and rewrite what changed; still time-sensitive → `kvault mark <path> --verify-by +14d`; settled → `--verify-by none` |
 | Branch `~updated_max` older than ~6 months | Review for stale or dead content; update, merge, or prune |
 | `SUMMARY:` warnings from `kvault check` | `too_short`/`missing_child_coverage`: rewrite the parent as a comprehensive rollup. `too_long`/`stale_history`: the parent has become a changelog — fold dated sections into current state (chronology belongs in `journal/`), never append another dated section. Real work despite exit code 0 |
 | `PENDING:` warnings from `kvault check` | Promote each stale event (`kvault write --event <id>`) or resolve it with an explicit outcome |
 | `RETRACTED:` warnings from `kvault check` | The node cites an event whose text was retracted — rewrite it, then `write --event <superseding-id>` |
-| Near-duplicate titles/aliases | Verify identifiers exactly (email/phone) → merge into the canonical entity → delete the duplicate |
+| Near-duplicate titles/aliases | Verify identifiers exactly (email/phone) → fold the facts into the canonical entity → park the other under its `deep_context/` (a move, not a delete, so it can be undone) |
 
 `kvault log tail` shows what recent sessions did (op, path, notes) — check it before a
 maintenance pass to see what has already been touched.
@@ -208,7 +208,7 @@ maintenance pass to see what has already been touched.
   preserves them on no-op rewrites).
 - When you record a fact that goes stale (pending, in review, awaiting a reply, deployed to
   staging), set when to re-check it: `kvault mark <path> --verify-by +14d`. `check` reports
-  `STALE:` once the date passes.
+  `STALE:` once the date passes; when the fact settles, `--verify-by none`.
 - `kvault check` warnings are maintenance work even when the exit code is 0.
 - A refused create (`reason: new_root` or `reason: similar`) is information, not an
   obstacle: read the named sibling and update it, or put the node under an existing root.
@@ -231,7 +231,7 @@ are what keep a session inside a client's output limits:
 | Step | Tool | Keep it small |
 |------|------|---------------|
 | Orient | `kvault_tree` | `path=` + `depth=` to zoom; `gist=true` for one line per node |
-| Research | `kvault_search` | compact hits are the default; `parents="gist"` adds where each hit sits (~2 KB for the whole result); never `parents="all"` (full documents per hit) |
+| Research | `kvault_search` | compact hits are the default; `parents="gist"` adds where each hit sits (~2 KB for the whole result); avoid `parents="all"` (full documents per hit, cut off by `total_max_chars`) |
 | Read | `kvault_read_nodes` | the hits you picked, up to 25 per call, one character budget; `kvault_read_node` for one node, `parents="gist"` for its ancestry |
 | Write | `kvault_write_node` | `ancestors="paths"` (the default) |
 | Propagate | `kvault_prepare_summary_update` → `kvault_write_parent_summary`, or `kvault_update_summaries` | at most 10 ancestors per `kvault_update_summaries` call |

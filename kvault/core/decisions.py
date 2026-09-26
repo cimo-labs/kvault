@@ -9,9 +9,9 @@ evaporates. So a decision is written into the tree, next to the thing it is
 about, where the deterministic rules read it:
 
 - ``distinct_from: [path, ...]`` on a node — these are different things.
-  The sibling-collision finding, the same-name-elsewhere finding, and the
-  write-time similarity guard skip the pair; ``plan`` never proposes merging
-  them. Either side may carry the entry.
+  The sibling-collision finding, the duplicate finding, and the write-time
+  similarity guard skip the pair; ``plan`` never proposes merging them.
+  Either side may carry the entry.
 - ``max_children: N`` on a parent — its own child ceiling. ``BRANCH:``, the
   over-fanout note, ``plan`` clustering, and the strict-path gist switch use
   it for that parent.
@@ -37,6 +37,11 @@ from typing import Any, Dict, List, Optional
 from kvault.core.frontmatter import parse_frontmatter
 
 DECISION_KEYS = ("distinct_from", "max_children", "series_ok", "verify_by")
+#: What ``--clear`` drops. ``verify_by`` is not a structure call and has its
+#: own clear (``--verify-by none``): a correction to the tree must not
+#: silently disarm a re-check date.
+STRUCTURE_DECISION_KEYS = ("distinct_from", "max_children", "series_ok")
+_DATE_TEXT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ][0-9:.]+(?:Z|[+-]\d{2}:?\d{2})?)?$")
 _RELATIVE_RE = re.compile(r"^\+(\d{1,4})([dw])$")
 _CLEAR_WORDS = ("", "none", "clear", "0", "no", "false")
 
@@ -61,8 +66,10 @@ def as_date(value: Any) -> Optional[date]:
     if isinstance(value, date):
         return value
     text = str(value).strip().strip("'\"") if value is not None else ""
+    if not _DATE_TEXT_RE.match(text):
+        return None  # "2026-09-201" is not 2026-09-20
     try:
-        return datetime.strptime(text[:10], "%Y-%m-%d").date() if len(text) >= 10 else None
+        return datetime.strptime(text[:10], "%Y-%m-%d").date()
     except ValueError:
         return None
 
@@ -170,14 +177,14 @@ def merge_decisions(
     clear: bool = False,
     verify_by: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Return *meta* with the decision keys updated (``clear`` drops them all first).
+    """Return *meta* with the decision keys updated (``clear`` drops the structure keys first).
 
     *verify_by* is already normalized by ``parse_verify_by``: a date string
     sets it, ``""`` removes it.
     """
     updated = dict(meta)
     if clear:
-        for key in DECISION_KEYS:
+        for key in STRUCTURE_DECISION_KEYS:
             updated.pop(key, None)
     if distinct_from:
         existing = updated.get("distinct_from")
@@ -211,6 +218,7 @@ def merge_decisions(
 
 __all__ = [
     "DECISION_KEYS",
+    "STRUCTURE_DECISION_KEYS",
     "as_date",
     "parse_verify_by",
     "normalize_rel",

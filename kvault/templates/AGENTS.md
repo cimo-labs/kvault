@@ -23,6 +23,7 @@
    `created` and `updated` are set automatically by kvault. When you record a fact that goes
    stale (pending, in review, awaiting a reply, deployed to staging), also set when to re-check
    it: `kvault mark <path> --verify-by +14d`; `kvault check` reports `STALE:` once it passes.
+   When the fact is settled, `kvault mark <path> --verify-by none`.
 
 5. **CHECK BEFORE WRITE.** Always browse the tree and read parent summaries before creating new nodes.
    Use `kvault search` and native tools such as `rg` before creating. Never create duplicates.
@@ -141,8 +142,9 @@ ops log groups one task's commands — review with `kvault log tail`.
 
 MCP clients keep reads small: `kvault_search` returns compact hits by default, `parents="gist"`
 adds where each hit sits (path, title, one line per ancestor), `kvault_read_nodes` reads the
-hits you pick in one call, and `kvault_check` with `codes=[...]` returns one code's full list.
-Avoid `parents="all"`: it attaches every ancestor's full document to every hit.
+hits you pick in one call, and `kvault_check` with `codes=[...]` and `max_findings=0` returns
+one code's full list. Avoid `parents="all"` on search: it attaches every ancestor's full document
+to each hit until `total_max_chars` runs out, usually after one or two hits.
 
 MCP clients should use strict parent-summary tools when available:
 
@@ -172,10 +174,10 @@ counts, descendant totals, and most-recent activity (`~date`) per branch. Act on
 | `SERIES:` / `SIBLINGS:` / `LOOSE:` / `JOURNAL:` from `kvault check` | Fold dated nodes with the `series` item from `kvault plan` (they become one current-state node's `deep_context/`; new timeline entries go to `journal/`); merge or nest the twins; adopt legacy node files as nodes and move supporting files into `<node>/deep_context/`; fold stray journal files into `journal/YYYY-MM/log.md`, or list a deliberate second layout in `.kvaultignore` |
 | `DUPLICATE:` from `kvault check` | The same thing in two places (same name, title, aliases, or text). Read both: same thing → fold the unique facts into one node and park the other under its `deep_context/`; different things → `kvault mark <a> --distinct-from <b>` |
 | `DANGLING:` from `kvault check` | A summary points at a path with nothing there. Point it at the node's current path (the finding names same-name nodes elsewhere) or drop it |
-| `STALE:` from `kvault check` | The node's `verify_by` date passed. Re-check its time-sensitive facts, rewrite what changed, then `kvault mark <path> --verify-by +14d` |
+| `STALE:` from `kvault check` | The node's `verify_by` date passed. Re-check its time-sensitive facts and rewrite what changed; still time-sensitive → `kvault mark <path> --verify-by +14d`; settled → `--verify-by none` |
 | Branch `~updated_max` older than ~6 months | Review for stale or dead content; update, merge, or prune |
 | `SUMMARY:` warnings from `kvault check` | Rewrite the flagged parent summaries as comprehensive rollups — this is real maintenance work even though the command exits 0. `too_long`/`stale_history`: fold, never split into sub-files |
-| Near-duplicate titles or aliases | Verify identifiers exactly (email/phone) → merge into the canonical entity → delete the duplicate |
+| Near-duplicate titles or aliases | Verify identifiers exactly (email/phone) → fold the facts into the canonical entity → park the other under its `deep_context/` (a move, not a delete, so it can be undone) |
 
 Before creating any node: `kvault search "<name/topic>" --json` and `kvault tree <target-branch>`.
 Update beats create; journal-only beats trivial create.

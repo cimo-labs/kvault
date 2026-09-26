@@ -110,3 +110,82 @@ def test_mcp_mark_verify_by(kb):
         else json.loads(result[0].text)
     )
     assert doc["success"] and doc["decisions"]["verify_by"]
+
+
+# ── review round (2026-09-26) ─────────────────────────────────────────────
+
+
+def _dated(kb: Path, rel: str, updated: str = "2026-08-20") -> None:
+    d = kb / rel
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "_summary.md").write_text(
+        f"---\nsource: manual\naliases: []\ncreated: '{updated}'\nupdated: '{updated}'\n---\n"
+        f"# {rel.rsplit('/', 1)[-1]}\n\nA fact about {rel}.\n"
+    )
+
+
+def test_mark_keeps_dates_and_journals_so_check_stays_green(tmp_path):
+    """Before: mark stamped today, the parent went PROPAGATE (and LOG for a leaf),
+    while the result said propagation_required: false."""
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / ".kvault").mkdir()
+    for rel in ("people", "people/contacts", "people/contacts/carol"):
+        _dated(kb, rel)
+    (kb / "_summary.md").write_text(
+        "---\nsource: manual\naliases: []\nupdated: '2026-08-20'\n---\n# Root\n\nRoot.\n"
+    )
+    result = ops.mark_node(kb, "people/contacts/carol", verify_by="+14d")
+    assert result["success"] and result["propagation_required"] is False
+    assert result["journal_logged"] is True
+    assert "updated: '2026-08-20'" in (kb / "people/contacts/carol/_summary.md").read_text()
+    doc = run_checks(kb, codes=["PROPAGATE", "LOG"])
+    assert doc["success"] is True, doc["warnings"]
+
+
+def test_impossible_dates_never_crash_and_are_reported(kb):
+    _node(kb, "projects/impossible", "verify_by: 2026-09-31\n", "# Impossible\n\nPending.\n")
+    doc = run_checks(kb, codes=["STALE"])  # used to raise ValueError from PyYAML
+    msg = {f["path"]: f["message"] for f in doc["findings"]}
+    assert "not a date" in msg["projects/impossible"]
+    assert ops.read_node(kb, "projects/impossible")["meta"]["verify_by"] == "2026-09-31"
+    refused = ops.write_node(
+        kb,
+        "projects/impossible",
+        "# Impossible\n\nStill pending.\n",
+        meta={"source": "manual", "aliases": [], "verify_by": "2026-02-30"},
+    )
+    assert refused["success"] is True or "date" in str(refused)  # meta dicts are not YAML text
+    assert dc.as_date("2026-09-201") is None and dc.as_date("2026-09-20T10:00:00Z")
+
+
+def test_stale_walks_only_nodes_mark_can_address(kb, tmp_path):
+    past = "verify_by: 2026-01-01\n"
+    _node(kb, "projects/deep_context/parked", past)
+    _node(kb, "journal/2026-03", past)
+    _node(kb, "projects/_archive/old", past)
+    (kb / "projects" / "Big Deal").mkdir()
+    (kb / "projects" / "Big Deal" / "_summary.md").write_text(f"---\nsource: x\n{past}---\n# B\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "_summary.md").write_text("---\nsource: x\nverify_by: secret-token\n---\n# S\n")
+    (kb / "projects" / "linked").symlink_to(outside, target_is_directory=True)
+    paths = {f.path for f in stale_findings(kb, load_ignore(kb), today=date(2026, 9, 26))}
+    assert paths == {"projects/release", "projects/typo"}
+
+
+def test_clear_keeps_verify_by(kb):
+    ops.mark_node(kb, "projects/launch", max_children=5)
+    cleared = ops.mark_node(kb, "projects/launch", clear=True)
+    assert cleared["decisions"]["max_children"] is None
+    assert cleared["decisions"]["verify_by"] == "2999-01-01"
+    assert "cleared structure decisions" in cleared["did"]
+
+
+def test_validate_reports_an_impossible_date_instead_of_crashing(kb):
+    (kb / "projects" / "release" / "_summary.md").write_text(
+        "---\nsource: manual\naliases: []\nupdated: 2026-09-31\n---\n# Release\n\nPending.\n"
+    )
+    issues = ops.validate_kb(kb)["issues"]
+    bad = [i for i in issues if i["type"] == "malformed_frontmatter"]
+    assert bad and "dates as text" in bad[0]["message"]

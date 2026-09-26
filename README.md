@@ -207,7 +207,7 @@ tree with the same rules, so the two never disagree.
 | `DANGLING:` | A summary links to, or lists as a child, a path with nothing there (moved, deleted, or never created) | Point it at the node's current path (the finding names same-name nodes elsewhere) or drop it |
 | `LOOSE:` | A file outside the node convention: a legacy node file (Markdown with frontmatter, invisible to search), a supporting doc, or an artifact | Adopt it as a node (`plan` emits `kvault write <node> --create < file && git rm file`), move it into `<node>/deep_context/`, or ignore it |
 | `JOURNAL:` | Files off `journal/YYYY-MM/log.md`, or a second history | Fold into the canonical log, or list a deliberate second layout in `.kvaultignore` |
-| `STALE:` | A node's `verify_by` date has passed: it records facts that go stale (a pending change, an open review) | Re-check them, rewrite what changed, `kvault mark <path> --verify-by +14d` |
+| `STALE:` | A node's `verify_by` date has passed: it records facts that go stale (a pending change, an open review) | Re-check them and rewrite what changed; still time-sensitive → `kvault mark <path> --verify-by +14d`; settled → `--verify-by none` |
 | `PENDING:` / `RETRACTED:` | Captured events never promoted; nodes citing retracted events | Promote or resolve; rewrite and re-link |
 
 `.kvaultignore` at the KB root (one fnmatch pattern per line; a directory pattern covers
@@ -319,7 +319,7 @@ mature KB; pass `"content"` to inline it. Set
 [ARCHITECTURE.md](https://github.com/cimo-labs/kvault/blob/main/ARCHITECTURE.md).
 
 Every signal above is on the MCP surface too: `kvault_check` returns the `check` document
-(`codes=[...]` for one code's full list), `kvault_plan` the worklist, `kvault_move_entities`
+(`codes=[...]` with `max_findings=0` for one code's full list), `kvault_plan` the worklist, `kvault_move_entities`
 runs a batch, `kvault_mark` records a decision (`verify_by` included), `kvault_write_node`
 takes `new_root` and `allow_similar`, and `kvault_prepare_summary_update` returns child gists
 past the ceiling (`children="content"` for full bodies). `kvault_validate_kb` is integrity

@@ -119,7 +119,7 @@ def create_server(kb_root: Path | str) -> Any:
             "Keep reads small: kvault_search returns compact hits by default "
             "(parents='gist' adds where each hit sits for about 2 KB); read the "
             "hits you picked with one kvault_read_nodes call; kvault_check with "
-            "codes=[...] returns one finding code's full list."
+            "codes=[...] and max_findings=0 returns one finding code's full list."
         ),
     )
 
@@ -611,9 +611,11 @@ def create_server(kb_root: Path | str) -> Any:
         for that pair), `max_children` (this parent's own ceiling), `series_ok`
         (a deliberate chronology). Use `verify_by` whenever you record a fact
         that goes stale (pending, in review, awaiting a reply, deployed to
-        staging): YYYY-MM-DD, "+14d" or "+2w", or "none" to clear; check
-        reports STALE once it passes. Written through the normal write path,
-        so it is logged.
+        staging): YYYY-MM-DD, "+14d" or "+2w", or "none" to clear once the
+        fact is settled; check reports STALE once it passes. `clear` drops
+        the structure decisions, not verify_by. A mark keeps the node's
+        `updated` date and journals itself. Written through the normal write
+        path, so it is logged.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -781,8 +783,9 @@ def create_server(kb_root: Path | str) -> Any:
         PENDING, RETRACTED, GHOST, SERIES, SIBLINGS, DUPLICATE, DANGLING,
         LOOSE, JOURNAL and STALE are warn-only maintenance work. Lists are capped at `max_findings` per
         code (0 = all) with the hidden counts in `truncated`. `codes` (e.g.
-        ["SIBLINGS"]) runs and reports only those checks: the way to get
-        one code's full list without the rest of the document.
+        ["SIBLINGS"]) runs and reports only those checks; with
+        max_findings=0 that is one code's full list without the rest of
+        the document.
         `kvault_validate_kb` checks integrity only; this is the one that
         says whether the tree is rotting.
         """

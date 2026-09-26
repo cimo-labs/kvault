@@ -57,12 +57,13 @@ _CODE_DIR_RE = re.compile(rf"({_COMP})/")
 # A sentence may end right after a path ("… lives at a/b_c."); a dot that
 # continues into a word ("plan.md", "example.com") means it is not a node path.
 _BARE_PATH_RE = re.compile(rf"(?<![\w./:@`\-])((?:{_COMP}/)+{_COMP})/?(?![\w/@`\-]|\.[\w/])")
+_ENTRY_NAME = r"[a-z0-9](?:[a-z0-9_\-]*[a-z0-9])?"  # never ends in _ or -: __bold__ closes
 _ENTRY_RE = re.compile(
     rf"^\s{{0,3}}(?:#{{1,6}}\s+|[-*+]\s+|\d+[.)]\s+)"
-    rf"(?:\*\*|__)?\[?`?(?P<name>{_COMP})/?`?\]?(?:\([^)\n]*\))?(?:\*\*|__)?"
+    rf"(?:\*\*|__)?\[?`?(?P<name>{_ENTRY_NAME})/?`?\]?(?:\([^)\n]*\))?(?:\*\*|__)?"
     r"(?=\s*(?:[:—–(\-]|\*\*|$))"
 )
-_FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
+_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 _SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.\-]*:", re.IGNORECASE)
 
 
@@ -102,6 +103,9 @@ class _Tree:
     children: Dict[str, Set[str]] = field(default_factory=dict)
     #: Directories that carry a summary and are not ignored: the nodes scanned.
     nodes: List[str] = field(default_factory=list)
+    #: Paths that count as KB directories though they are gone: what a move or
+    #: delete just took away, so references into it still resolve to "nothing".
+    anchors: Set[str] = field(default_factory=set)
 
 
 def _walk(kg_root: Path, ignore: Sequence[str]) -> _Tree:
@@ -121,6 +125,7 @@ def _walk(kg_root: Path, ignore: Sequence[str]) -> _Tree:
             st.SUMMARY_NAME in filenames
             and not st.is_ignored(rel, ignore)
             and not any(st.is_reserved_name(part) for part in rel.split("/") if rel != ".")
+            and st.inside_root(Path(current) / st.SUMMARY_NAME, root)
         ):
             tree.nodes.append(rel)
     return tree
@@ -148,7 +153,7 @@ def _norm(path: Path) -> Path:
 
 
 def _exists(tree: _Tree, rel: str) -> bool:
-    return rel == "." or rel in tree.dirs
+    return rel == "." or rel in tree.dirs or (tree.root / rel).exists()
 
 
 def _file_like(target: str) -> bool:
@@ -174,15 +179,30 @@ def _clean_link(raw: str) -> Optional[str]:
 
 
 def _unfenced(body: str) -> str:
+    """*body* without fenced code blocks.
+
+    A fence opens with 3+ backticks or tildes at any indent (list items
+    indent them); it closes on a line of the same character, at least as
+    long, with nothing after it. A backtick line whose info string holds a
+    backtick ("``` x ```") is inline code, not a fence. An unclosed fence
+    runs to the end, as in CommonMark.
+    """
     out: List[str] = []
     fence: Optional[str] = None
     for line in body.splitlines():
         m = _FENCE_RE.match(line)
-        if m:
-            fence = None if fence == m.group(1) else (fence or m.group(1))
-            continue
         if fence is None:
+            if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+                fence = m.group(1)
+                continue
             out.append(line)
+        elif (
+            m
+            and m.group(1)[0] == fence[0]
+            and len(m.group(1)) >= len(fence)
+            and not m.group(2).strip()
+        ):
+            fence = None
     return "\n".join(out)
 
 
@@ -239,7 +259,8 @@ def _resolve_anchored(tree: _Tree, node: str, raw: str) -> Optional[Tuple[str, b
     first = target.split("/", 1)[0]
     candidates: List[str] = []
     for base in (_node_dir(tree, node), tree.root):
-        if (base / first).is_dir():
+        anchored = _inside(tree, _norm(base / first)) in tree.anchors
+        if (base / first).is_dir() or anchored:
             rel = _inside(tree, _norm(base / target))
             if rel is not None and rel not in candidates:
                 candidates.append(rel)
@@ -273,7 +294,15 @@ def _is_child(node: str, rel: str) -> bool:
 def _node_refs(tree: _Tree, node: str, body: str) -> List[Reference]:
     raw = extract_refs(body)
     prefix = "" if node == "." else node + "/"
-    children = tree.children.get(node, set())
+    everything = tree.children.get(node, set())
+    # Only managed children show that a summary lists its children: the usual
+    # "[deep_context/](deep_context/)" line or an ignored tooling dir must not
+    # turn every snake_case bullet into a dangling child.
+    children = {
+        c
+        for c in everything
+        if not st.is_reserved_name(c) and not st.is_ignored(f"{prefix}{c}", tree.ignore)
+    }
     own_names = set(node.split("/")) if node != "." else set()
     out: List[Reference] = []
     seen: Set[str] = set()
@@ -292,7 +321,12 @@ def _node_refs(tree: _Tree, node: str, body: str) -> List[Reference]:
     link_children = False
     for text in raw["link"]:
         resolved = _resolve_link(tree, node, text)
-        if resolved and resolved[1] and _is_child(node, resolved[0]):
+        if (
+            resolved
+            and resolved[1]
+            and _is_child(node, resolved[0])
+            and resolved[0].rsplit("/", 1)[-1] in children
+        ):
             link_children = True
         add("link", text, resolved)
     for text in raw["code"]:
@@ -305,7 +339,7 @@ def _node_refs(tree: _Tree, node: str, body: str) -> List[Reference]:
     if listed:
         for name in names:
             # the node's own name or an ancestor's is a heading, not a child
-            if name in children or name in own_names or st.is_reserved_name(name):
+            if name in everything or name in own_names or st.is_reserved_name(name):
                 continue
             target = f"{prefix}{name}"
             if target in seen:
@@ -339,16 +373,20 @@ def scan_references(
     ignore: Optional[Sequence[str]] = None,
     contains: Optional[Iterable[str]] = None,
     under: Optional[Iterable[str]] = None,
+    anchors: Optional[Iterable[str]] = None,
 ) -> List[Reference]:
     """Every KB-internal reference in the KB's summaries, resolved.
 
     With *contains* and/or *under* only some nodes are scanned: those whose
     summary text contains one of the *contains* strings, and those at or
     under one of the *under* paths. ``move`` and ``delete`` use this to look
-    only where a reference to what they touched can be.
+    only where a reference to what they touched can be, and pass what they
+    took away as *anchors*: a code span naming ``projects/hub`` after the
+    ``projects`` root moved still counts as a KB path.
     """
     patterns = list(ignore) if ignore is not None else st.load_ignore(Path(kg_root))
     tree = _walk(Path(kg_root), patterns)
+    tree.anchors = {a.strip("/") for a in (anchors or []) if a and a.strip("/")}
     needles = [c for c in (contains or []) if c]
     scopes = [u.strip("/") for u in (under or []) if u]
     filtered = contains is not None or under is not None
@@ -370,9 +408,10 @@ def dangling_references(
     ignore: Optional[Sequence[str]] = None,
     contains: Optional[Iterable[str]] = None,
     under: Optional[Iterable[str]] = None,
+    anchors: Optional[Iterable[str]] = None,
 ) -> List[Reference]:
     """References that resolve inside the KB to nothing, sorted by node."""
-    refs = [r for r in scan_references(kg_root, ignore, contains, under) if not r.exists]
+    refs = [r for r in scan_references(kg_root, ignore, contains, under, anchors) if not r.exists]
     refs.sort(key=lambda r: (r.node, r.target))
     return refs
 

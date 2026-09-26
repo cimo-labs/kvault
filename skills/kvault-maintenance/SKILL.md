@@ -38,7 +38,7 @@ are on the `[KB]` line; everything else is warn-only maintenance work.
 | `DANGLING:` | A summary links to, or lists as a child, a path with nothing there | Point it at the node's current path (the finding names same-name nodes elsewhere) or drop it |
 | `LOOSE:` | A file outside the node convention. `legacy_node_file` = Markdown with frontmatter that search cannot see; `supporting_doc`; `artifact` | Adopt legacy node files as nodes (`plan` emits `kvault write <node> --create < file && git rm file`); supporting docs into `<node>/deep_context/`; artifacts ignored |
 | `JOURNAL:` | Files off the `journal/YYYY-MM/log.md` layout, or a second history | Fold into the canonical log with `kvault journal`, then remove. A second layout the owner keeps on purpose (a weekly journal tree) goes in `.kvaultignore` instead |
-| `STALE:` | A node's `verify_by` date passed: it records facts that go stale | Re-check them, rewrite what changed, then `kvault mark <path> --verify-by +14d` |
+| `STALE:` | A node's `verify_by` date passed: it records facts that go stale | Re-check them and rewrite what changed; still time-sensitive → `kvault mark <path> --verify-by +14d`; settled → `--verify-by none` |
 | `PENDING:` / `RETRACTED:` | Captured events never promoted; nodes citing retracted events | Promote or resolve; rewrite and re-link |
 
 Write-time notes you will see in the ops log (`kvault log tail`): a
@@ -83,8 +83,11 @@ kvault check --json --kb-root "$KB" > "$LOG/check.json"
    another agent created today — rewrite it as a rollup now; do not leave
    stubs overnight twice.
 4. `STALE:` — re-check each overdue node's time-sensitive facts from the
-   evidence you can reach, rewrite what changed, and set the next date
-   (`kvault mark <path> --verify-by +14d`). `DANGLING:` on a node you touched
+   evidence you can reach and rewrite what changed; set the next date
+   (`kvault mark <path> --verify-by +14d`) while the fact is still
+   time-sensitive, or clear it (`--verify-by none`) once it is settled. A
+   mark keeps the node's `updated` date and journals itself, so it never
+   leaves `check` red. `DANGLING:` on a node you touched
    today — point the reference at the current path.
 5. Finish with `kvault check --strict`-equivalent discipline: log the exit
    code and the `did` line. **No restructuring at night.** Moves are weekly.
@@ -188,7 +191,7 @@ roots), do this once, one batch at a time:
 | Worklist | `kvault plan [PATH] [--json] [--limit N\|0]` |
 | Batch move | `kvault move --batch [--dry-run] --confirm` (stdin: JSON list of `{from, to}`) |
 | Guards on create | `kvault write <path> --create [--new-root] [--allow-similar]` |
-| Record a correction | `kvault mark <path> [--distinct-from <other>]… [--max-children N] [--series-ok] [--verify-by DATE] [--clear]` |
+| Record a correction | `kvault mark <path> [--distinct-from <other>]… [--max-children N] [--series-ok] [--verify-by DATE\|+14d\|none] [--clear]` (`--clear` drops the structure decisions, not `verify_by`) |
 | Ignore tooling | `.kvaultignore` at the KB root, one fnmatch pattern per line; a directory pattern covers its subtree |
 | Runtime handshake | `kvault doctor`, `kvault --version` |
 | What ran recently | `kvault log tail [--session ID]`, `kvault log summary` |

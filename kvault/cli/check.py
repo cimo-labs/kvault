@@ -52,7 +52,7 @@ _STRUCTURE_FIX_LINE = {
     "JOURNAL": "one history: journal/YYYY-MM/log.md via kvault journal; a deliberate second "
     "layout goes in .kvaultignore",
     "STALE": "re-check the node's time-sensitive facts, rewrite what changed, then "
-    "kvault mark <path> --verify-by <next date>",
+    "kvault mark <path> --verify-by +14d (still time-sensitive) or --verify-by none (settled)",
 }
 #: Warn codes printed as one bounded group each, after SUMMARY/PENDING/RETRACTED.
 GROUPED_CODES = STRUCTURE_CODES + ("STALE",)

@@ -43,6 +43,7 @@ from kvault.core.summary_quality import (
 )
 
 from kvault.core.operations import MAX_DIRECT_CHILDREN
+from kvault.core.validation import NODE_COMPONENT_RE
 
 DEFAULT_THRESHOLD_MINUTES = 5
 #: The write guard's ceiling and check's default are one number on purpose.
@@ -507,12 +508,24 @@ def _child(parent: str, name: str) -> str:
     return name if parent == "." else f"{parent}/{name}"
 
 
+def distinct_command(a: str, b: str) -> str:
+    """``kvault mark`` that records *a* and *b* as different things.
+
+    ``--distinct-from`` reads a bare name as a sibling, so a root category
+    cannot be named from a nested node; mark the root one instead.
+    """
+    if "/" not in b and "/" in a:
+        a, b = b, a
+    return f"kvault mark {a} --distinct-from {b}"
+
+
 def duplicate_findings(kb_root: Path, ignore: Sequence[str]) -> List[Finding]:
     """The same thing filed in two places, anywhere in the KB (see core.duplicates)."""
     out: List[Finding] = []
     for pair in du.duplicate_pairs(kb_root, ignore):
         a, b = pair["a"], pair["b"]
         other = b.rsplit("/", 1)[-1]
+        mark = distinct_command(a, b)
         out.append(
             Finding(
                 code="DUPLICATE",
@@ -523,8 +536,7 @@ def duplicate_findings(kb_root: Path, ignore: Sequence[str]) -> List[Finding]:
                 fix=(
                     "read both; same thing → keep the richer node, fold the other's unique "
                     f"facts into it, then park the other under its deep_context/ (kvault move "
-                    f"--confirm {b} {a}/deep_context/{other}); different things → kvault mark "
-                    f"{a} --distinct-from {b}"
+                    f"--confirm {b} {a}/deep_context/{other}); different things → {mark}"
                 ),
             )
         )
@@ -570,16 +582,20 @@ def stale_findings(
 
     The date is the writer's own promise to re-check facts that go stale
     (a pending change, an open review). An unparseable value is reported
-    too: it would otherwise never come due.
+    too: it would otherwise never come due. Only nodes ``kvault mark`` can
+    address are walked: journal/ and deep_context/ are history and parked
+    material, internal and ignored paths are not nodes, and a summary that
+    resolves outside the KB is never read.
     """
     day = today or date.today()
+    root = Path(kb_root)
     out: List[Finding] = []
-    for summary in sorted(Path(kb_root).rglob(st.SUMMARY_NAME)):
-        rel_path = st.rel(kb_root, summary.parent)
-        if rel_path != "." and (
-            any(part.startswith(".") for part in rel_path.split("/"))
-            or st.is_ignored(rel_path, ignore)
-        ):
+    for node_dir in [root] + [d for d in st.walk_dirs(root, ignore) if st.has_summary(d)]:
+        rel_path = st.rel(root, node_dir)
+        summary = node_dir / st.SUMMARY_NAME
+        if rel_path != "." and not all(NODE_COMPONENT_RE.match(p) for p in rel_path.split("/")):
+            continue
+        if not summary.is_file() or not st.inside_root(summary, root):
             continue
         try:
             if "verify_by" not in summary.read_text(encoding="utf-8", errors="replace"):
@@ -599,7 +615,10 @@ def stale_findings(
                     message=f"verify_by {raw!r} is not a date (YYYY-MM-DD), so it never comes due",
                     level="warn",
                     detail={"verify_by": raw, "days_overdue": None},
-                    fix=f"kvault mark {rel_path} --verify-by +14d (or a YYYY-MM-DD date)",
+                    fix=(
+                        f"kvault mark {rel_path} --verify-by +14d (or a YYYY-MM-DD date); "
+                        "--verify-by none if nothing in it goes stale"
+                    ),
                 )
             )
             continue
@@ -614,8 +633,9 @@ def stale_findings(
                 level="warn",
                 detail={"verify_by": due, "days_overdue": days},
                 fix=(
-                    "re-check the node's time-sensitive facts and rewrite what changed, then "
-                    f"kvault mark {rel_path} --verify-by +14d (or --verify-by none)"
+                    "re-check the node's time-sensitive facts and rewrite what changed; still "
+                    f"time-sensitive → kvault mark {rel_path} --verify-by +14d, settled → "
+                    f"kvault mark {rel_path} --verify-by none"
                 ),
             )
         )
@@ -714,10 +734,11 @@ def run_checks(
     Lists of warn-class findings are capped at *max_findings* per code
     (0 = no cap) with the hidden count in ``truncated``.
 
-    *codes* limits which checks run and are reported (0.16): a maintenance
-    agent working one code at a time gets that code's full list without the
-    rest of the document, and ``success`` reflects only the hard codes it
-    selected. The selection is echoed as ``codes``.
+    *codes* limits which checks run and are reported (0.16): with
+    ``max_findings=0`` a maintenance agent working one code at a time gets
+    that code's full list without the rest of the document, and ``success``
+    reflects only the hard codes it selected. The selection is echoed as
+    ``codes``.
     """
     root = Path(kb_root)
     ignore = st.load_ignore(root)
@@ -828,6 +849,7 @@ __all__ = [
     "loose_findings",
     "sibling_findings",
     "duplicate_findings",
+    "distinct_command",
     "dangling_findings",
     "stale_findings",
     "journal_layout_findings",

@@ -16,7 +16,12 @@ import click
 
 from kvault.core import notes as nt
 from kvault.core import operations as ops
-from kvault.core.check import DEFAULT_MAX_CHILDREN, DEFAULT_MAX_FINDINGS, run_checks
+from kvault.core.check import (
+    DEFAULT_MAX_CHILDREN,
+    DEFAULT_MAX_FINDINGS,
+    normalize_codes,
+    run_checks,
+)
 from kvault.core.plan import DEFAULT_LIMIT, build_plan
 from kvault.core.summary_quality import DEFAULT_MAX_DATED_SECTIONS
 from kvault.core.search import KINDS
@@ -722,21 +727,29 @@ def create_server(kb_root: Path | str) -> Any:
         max_findings: int = DEFAULT_MAX_FINDINGS,
         summary_max_words: Optional[int] = None,
         summary_max_dated_sections: int = DEFAULT_MAX_DATED_SECTIONS,
+        codes: Optional[List[str]] = None,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the maintenance checks (the CLI's `kvault check`, one document).
 
         `success` is false only for hard findings (PROPAGATE, LOG, WRITE,
         BRANCH). `findings` is the unified list, hard first; SUMMARY,
-        PENDING, RETRACTED, GHOST, SIBLINGS, LOOSE and JOURNAL are warn-only
-        maintenance work. Lists are capped at `max_findings` per code with
-        the hidden counts in `truncated`. `kvault_validate_kb` checks
-        integrity only; this is the one that says whether the tree is rotting.
+        PENDING, RETRACTED, GHOST, SERIES, SIBLINGS, LOOSE and JOURNAL are
+        warn-only maintenance work. Lists are capped at `max_findings` per
+        code (0 = all) with the hidden counts in `truncated`. `codes` (e.g.
+        ["SIBLINGS"]) runs and reports only those checks: the way to get
+        one code's full list without the rest of the document.
+        `kvault_validate_kb` checks integrity only; this is the one that
+        says whether the tree is rotting.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
+        try:
+            selected = normalize_codes(codes)
+        except ValueError as exc:
+            return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
         return run_checks(
             root,
             threshold_minutes=threshold_minutes,
@@ -746,6 +759,7 @@ def create_server(kb_root: Path | str) -> Any:
             max_findings=max_findings,
             max_words=summary_max_words,
             max_dated_sections=summary_max_dated_sections,
+            codes=selected,
         )
 
     @server.tool(name="kvault_plan")

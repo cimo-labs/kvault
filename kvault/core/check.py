@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from kvault._version import __version__
 from kvault.core import decisions as dc
@@ -52,6 +52,7 @@ MAX_SIBLING_PAIRS_PER_PARENT = 5
 HARD_CODES = ("PROPAGATE", "LOG", "WRITE", "BRANCH")
 WARN_CODES = ("SUMMARY", "PENDING", "RETRACTED", "GHOST", "SERIES", "SIBLINGS", "LOOSE", "JOURNAL")
 STRUCTURE_CODES = ("GHOST", "SERIES", "SIBLINGS", "LOOSE", "JOURNAL")
+ALL_CODES = HARD_CODES + WARN_CODES
 
 _SUMMARY_FIX = {
     "too_short": "rewrite the parent as a comprehensive rollup of its children",
@@ -567,10 +568,36 @@ def check_directory_size(kb_root: Path, max_children: int = DEFAULT_MAX_CHILDREN
 # -- the document ------------------------------------------------------------
 
 
-def _cap(findings: List[Finding], limit: int) -> tuple[List[Finding], int]:
+def _cap(findings: List[Finding], limit: int) -> Tuple[List[Finding], int]:
     if limit <= 0 or len(findings) <= limit:
         return findings, 0
     return findings[:limit], len(findings) - limit
+
+
+def normalize_codes(codes: Optional[Iterable[str]]) -> Optional[List[str]]:
+    """``["siblings,ghost", "LOOSE:"]`` → ``["SIBLINGS", "GHOST", "LOOSE"]``.
+
+    ``None`` or nothing usable means "every check". An unknown code raises
+    ``ValueError`` naming the valid ones: a typo'd filter that silently
+    matched nothing would report a clean KB.
+    """
+    if codes is None:
+        return None
+    if isinstance(codes, str):
+        codes = [codes]
+    out: List[str] = []
+    for item in codes:
+        for part in str(item).split(","):
+            code = part.strip().rstrip(":").upper()
+            if not code:
+                continue
+            if code not in ALL_CODES:
+                raise ValueError(
+                    f"unknown check code '{part.strip()}'; valid codes: {', '.join(ALL_CODES)}"
+                )
+            if code not in out:
+                out.append(code)
+    return out or None
 
 
 def run_checks(
@@ -582,54 +609,70 @@ def run_checks(
     pending_max_age: int = DEFAULT_PENDING_MAX_AGE,
     max_children: int = DEFAULT_MAX_CHILDREN,
     max_findings: int = DEFAULT_MAX_FINDINGS,
+    codes: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
-    """Run every check and return one document.
+    """Run every check (or the *codes* named) and return one document.
 
     ``success`` is false only for hard findings. The legacy keys
     (``warnings`` as strings, ``summary_warnings``, ``pending_events``,
     ``retracted_refs``) are unchanged; ``findings`` is the unified structured
-    list hard-first, and ``structure_warnings`` holds the 0.15 codes. Lists
-    of warn-class findings are capped at *max_findings* per code with the
-    hidden count in ``truncated``.
+    list hard-first, and ``structure_warnings`` holds the structural codes.
+    Lists of warn-class findings are capped at *max_findings* per code
+    (0 = no cap) with the hidden count in ``truncated``.
+
+    *codes* limits which checks run and are reported (0.16): a maintenance
+    agent working one code at a time gets that code's full list without the
+    rest of the document, and ``success`` reflects only the hard codes it
+    selected. The selection is echoed as ``codes``.
     """
     root = Path(kb_root)
     ignore = st.load_ignore(root)
+    selected = normalize_codes(codes)
+
+    def wanted(code: str) -> bool:
+        return selected is None or code in selected
 
     hard: List[Finding] = []
-    hard.extend(propagation_findings(root, threshold_minutes))
-    hard.extend(journal_findings(root))
-    hard.extend(frontmatter_findings(root))
-    hard.extend(branching_findings(root, max_children, ignore))
+    if wanted("PROPAGATE"):
+        hard.extend(propagation_findings(root, threshold_minutes))
+    if wanted("LOG"):
+        hard.extend(journal_findings(root))
+    if wanted("WRITE"):
+        hard.extend(frontmatter_findings(root))
+    if wanted("BRANCH"):
+        hard.extend(branching_findings(root, max_children, ignore))
 
     issues = (
         audit_summary_quality(root, max_words=max_words, max_dated_sections=max_dated_sections)
-        if summary_quality
+        if summary_quality and wanted("SUMMARY")
         else []
     )
-    pending = pending_event_findings(root, max_age_days=pending_max_age)
-    retracted = retracted_reference_findings(root)
+    pending = (
+        pending_event_findings(root, max_age_days=pending_max_age) if wanted("PENDING") else []
+    )
+    retracted = retracted_reference_findings(root) if wanted("RETRACTED") else []
 
+    producers: List[Tuple[str, Callable[[], List[Finding]]]] = [
+        ("SUMMARY", lambda: summary_findings(issues)),
+        ("PENDING", lambda: pending_findings(pending)),
+        ("RETRACTED", lambda: retracted_findings(retracted)),
+        ("GHOST", lambda: ghost_findings(root, ignore)),
+        ("SERIES", lambda: series_findings(root, ignore)),
+        ("SIBLINGS", lambda: sibling_findings(root, ignore)),
+        ("LOOSE", lambda: loose_findings(root, ignore)),
+        ("JOURNAL", lambda: journal_layout_findings(root, ignore)),
+    ]
     truncated: Dict[str, int] = {}
-    warn_groups: List[List[Finding]] = []
-    for code, group in (
-        ("SUMMARY", summary_findings(issues)),
-        ("PENDING", pending_findings(pending)),
-        ("RETRACTED", retracted_findings(retracted)),
-        ("GHOST", ghost_findings(root, ignore)),
-        ("SERIES", series_findings(root, ignore)),
-        ("SIBLINGS", sibling_findings(root, ignore)),
-        ("LOOSE", loose_findings(root, ignore)),
-        ("JOURNAL", journal_layout_findings(root, ignore)),
-    ):
-        shown, hidden = _cap(group, max_findings)
+    warn: List[Finding] = []
+    for code, produce in producers:
+        if not wanted(code):
+            continue
+        shown, hidden = _cap(produce(), max_findings)
         if hidden:
             truncated[code] = hidden
-        warn_groups.append(shown)
-    warn = [f for group in warn_groups for f in group]
+        warn.extend(shown)
     structure = [f for f in warn if f.code in STRUCTURE_CODES]
-    structure_total = sum(len(g) for g in warn_groups[3:]) + sum(
-        truncated.get(c, 0) for c in STRUCTURE_CODES
-    )
+    structure_total = len(structure) + sum(truncated.get(c, 0) for c in STRUCTURE_CODES)
 
     warn_total = len(warn) + sum(truncated.values())
     doc: Dict[str, Any] = {
@@ -662,6 +705,8 @@ def run_checks(
         "truncated": truncated,
         "ignore_patterns": list(ignore),
     }
+    if selected is not None:
+        doc["codes"] = selected
     return doc
 
 
@@ -673,7 +718,9 @@ __all__ = [
     "HARD_CODES",
     "WARN_CODES",
     "STRUCTURE_CODES",
+    "ALL_CODES",
     "Finding",
+    "normalize_codes",
     "propagation_findings",
     "journal_findings",
     "frontmatter_findings",

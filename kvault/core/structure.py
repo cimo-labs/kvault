@@ -391,9 +391,7 @@ def loose_files(kg_root: Path, ignore: Sequence[str]) -> List[str]:
     return out
 
 
-def journal_layout_findings(
-    kg_root: Path, ignore: Sequence[str] = ()
-) -> List[Dict[str, str]]:
+def journal_layout_findings(kg_root: Path, ignore: Sequence[str] = ()) -> List[Dict[str, str]]:
     """Files and directories under ``journal/`` that are off the canonical layout.
 
     Canonical: ``journal/YYYY-MM/log.md``. A ``_summary.md`` at ``journal/``

@@ -102,7 +102,7 @@ def _identifier(alias: str) -> Optional[str]:
 def _load(root: Path, ignore: Sequence[str]) -> Dict[str, _Doc]:
     docs: Dict[str, _Doc] = {}
     for d in st.walk_dirs(root, ignore):  # managed dirs: no reserved, hidden, or ignored subtrees
-        if not st.has_summary(d):
+        if not st.has_summary(d) or not st.inside_root(d / st.SUMMARY_NAME, root):
             continue
         try:
             raw = (d / st.SUMMARY_NAME).read_text(encoding="utf-8", errors="replace")

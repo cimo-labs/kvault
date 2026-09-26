@@ -325,6 +325,20 @@ def walk_dirs(kg_root: Path, ignore: Sequence[str]) -> Iterator[Path]:
         stack.extend(reversed(child_dirs(current, Path(kg_root), ignore)))
 
 
+def inside_root(path: Path, kg_root: Path) -> bool:
+    """True when *path* resolves (symlinks followed) inside the KB root.
+
+    The tree walk follows symlinked directories, which is harmless for
+    names; anything that *reads content* checks this first, so a symlink
+    in the KB cannot make a root-bound server read files outside it.
+    """
+    try:
+        Path(path).resolve().relative_to(Path(kg_root).resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def has_summary(dir_path: Path) -> bool:
     return (dir_path / SUMMARY_NAME).is_file()
 
@@ -467,6 +481,7 @@ __all__ = [
     "rel",
     "child_dirs",
     "walk_dirs",
+    "inside_root",
     "has_summary",
     "is_ghost",
     "ghost_dirs",

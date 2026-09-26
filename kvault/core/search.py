@@ -325,6 +325,8 @@ def _loose_markdown(
     wanted = set(query_tokens)
     matching: List[str] = []
     for f in files:
+        if not st.inside_root(root / f, root):
+            continue  # a symlink out of the KB: counted, never read
         try:
             text = (root / f).read_text(encoding="utf-8", errors="replace")
         except OSError:

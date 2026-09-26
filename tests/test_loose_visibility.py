@@ -78,3 +78,19 @@ def test_tree_counts_loose_files_beside_ghosts(tmp_path):
     assert background["loose_count"] == 0  # background material belongs there
     text = ops.render_outline_text(outline)
     assert "+1 loose" in text and "+3 loose" in text
+
+
+def test_symlinks_out_of_the_kb_are_never_read(tmp_path):
+    kb = _kb(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("uplift password hunter2\n")
+    (outside / "_summary.md").write_text("---\nsource: x\naliases: []\n---\n# Secret\n\nuplift\n")
+    (kb / "projects" / "linked").symlink_to(outside, target_is_directory=True)
+    (kb / "projects" / "secret_link.md").symlink_to(outside / "secret.md")
+    (note,) = _not_indexed(ops.search_nodes(kb, "hunter2"))
+    assert note["detail"]["matching"] == []  # counted as loose, never opened
+
+    from kvault.core.duplicates import duplicate_pairs
+
+    assert not any("linked" in p["a"] + p["b"] for p in duplicate_pairs(kb))

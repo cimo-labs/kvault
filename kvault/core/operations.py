@@ -75,7 +75,12 @@ MAX_DIRECT_CHILDREN = 10
 #: line per ancestor; ``immediate``/``all`` are full documents.
 PARENTS_MODES = ("none", "gist", "immediate", "all")
 READ_NODES_MAX_PATHS = 25
-READ_NODES_MAX_CHARS = 60000
+#: read_nodes' shared budget in characters of compact JSON (whole nodes, not
+#: just content). MCP defaults lower: its first user inlines ~10 KB.
+READ_NODES_MAX_CHARS = 20000
+READ_NODES_MCP_MAX_CHARS = 8000
+#: Child paths listed per node in read_nodes; past this, children_count says how many.
+READ_NODES_MAX_CHILDREN = 50
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +527,8 @@ def _read_node_raw(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
     summary_path = _summary_path_for_node(kg_root, path)
     if not summary_path.exists():
         return None
+    if not st.inside_root(summary_path, kg_root):
+        return None  # a _summary.md symlinked out of the KB is not a node of it
     raw = summary_path.read_text()
     meta, body = parse_frontmatter(raw)
     if not meta:
@@ -543,7 +550,11 @@ def _read_node_raw(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
 
 
 def _node_handle(kg_root: Path, path: str) -> Dict[str, Any]:
-    raw = _read_node_raw(kg_root, path) or {}
+    # A child that cannot be decoded must not make its parent unreadable.
+    try:
+        raw = _read_node_raw(kg_root, path) or {}
+    except (OSError, UnicodeDecodeError):
+        raw = {}
     return {
         "path": path,
         "kind": _node_kind(kg_root, path),
@@ -1019,8 +1030,11 @@ def read_entity(kg_root: Path, path: str, parents: str = "immediate") -> Optiona
 
 
 def _gist_handle(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
-    """``{path, title, gist}``: where a node sits, in one line."""
-    raw = _read_node_raw(kg_root, path)
+    """``{path, title, gist}``: where a node sits, in one line (None if unreadable)."""
+    try:
+        raw = _read_node_raw(kg_root, path)
+    except (OSError, UnicodeDecodeError):
+        return None
     if raw is None:
         return None
     return {"path": path, "title": raw["title"], "gist": _extract_gist(raw["content"])}
@@ -1074,10 +1088,15 @@ def read_nodes(
 
     For an agent that has picked five hits from a search and wants their
     bodies: one call instead of five, and a bounded one. Each node carries
-    its content, metadata, and child *paths*; ``parents`` is ``none`` or
-    ``gist`` (full parent documents belong to ``read_node``, one at a time).
-    A node past the budget comes back cut, with ``content_truncated`` and a
-    ``truncated`` note; paths that are not nodes are listed in ``missing``.
+    its content, metadata, and child *paths* (at most
+    ``READ_NODES_MAX_CHILDREN``; ``children_count`` past that); ``parents``
+    is ``none`` or ``gist`` (full parent documents belong to ``read_node``,
+    one at a time). The budget counts whole nodes as compact JSON, not just
+    content: a node past it comes back with its content cut
+    (``content_truncated``), a node whose metadata alone does not fit is
+    listed in ``omitted``, and a ``truncated`` note says so. Paths that are
+    not nodes are listed in ``missing``, files that cannot be decoded in
+    ``unreadable`` (a ``skipped`` note).
     """
     if isinstance(paths, str):
         paths = [paths]
@@ -1102,31 +1121,60 @@ def read_nodes(
     remaining = budget
     nodes: List[Dict[str, Any]] = []
     missing: List[str] = []
+    unreadable: List[str] = []
+    omitted: List[str] = []
     cut: List[str] = []
     for path in wanted:
-        node = read_node(kg_root, path, parents=parents)
+        try:
+            node = read_node(kg_root, path, parents=parents)
+        except (OSError, UnicodeDecodeError):
+            unreadable.append(path)
+            continue
         if node is None:
             missing.append(path)
             continue
         node.pop("parent", None)
-        node["children"] = [c["path"] for c in node.get("children", [])]
+        kids = [c["path"] for c in node.get("children", [])]
+        node["children"] = kids[:READ_NODES_MAX_CHILDREN]
+        if len(kids) > READ_NODES_MAX_CHILDREN:
+            node["children_count"] = len(kids)
         content = node.get("content", "")
-        if len(content) > remaining:
-            node["content"] = content[: max(0, remaining)]
+        node["content"] = ""
+        overhead = len(json.dumps(node, default=str))
+        room = remaining - overhead
+        if room < 0:
+            omitted.append(path)
+            continue
+        if len(content) > room:
+            node["content"] = content[:room]
             node["content_truncated"] = True
             cut.append(path)
-        remaining = max(0, remaining - len(node["content"]))
+        else:
+            node["content"] = content
+        remaining -= overhead + len(node["content"])
         nodes.append(node)
 
     notes: List[Dict[str, Any]] = []
-    if cut:
-        shown = ", ".join(cut[:3]) + (f" (+{len(cut) - 3} more)" if len(cut) > 3 else "")
+    if cut or omitted:
+        short = cut + omitted
+        shown = ", ".join(short[:3]) + (f" (+{len(short) - 3} more)" if len(short) > 3 else "")
         notes.append(
             nt.note(
                 "truncated",
-                f"the {budget:,}-character budget ran out: {len(cut)} node(s) cut short: {shown}",
-                detail={"paths": cut, "total_max_chars": budget},
-                next_step="read the cut nodes on their own, or raise total_max_chars",
+                f"the {budget:,}-character budget ran out: {len(cut)} node(s) cut short, "
+                f"{len(omitted)} left out: {shown}",
+                detail={"cut": cut, "omitted": omitted, "total_max_chars": budget},
+                next_step="read those nodes on their own, or raise total_max_chars",
+            )
+        )
+    if unreadable:
+        notes.append(
+            nt.note(
+                "skipped",
+                f"{len(unreadable)} node(s) could not be decoded as UTF-8: "
+                + ", ".join(unreadable[:5]),
+                detail={"paths": unreadable},
+                next_step="re-encode the listed _summary.md files as UTF-8",
             )
         )
     did = f"read {len(nodes)} of {len(wanted)} node(s)"
@@ -1136,10 +1184,11 @@ def read_nodes(
     if notes:
         result["notes"] = notes
     result["missing"] = missing
-    result["budget"] = {
-        "total_max_chars": budget,
-        "content_chars_returned": budget - remaining,
-    }
+    if unreadable:
+        result["unreadable"] = unreadable
+    if omitted:
+        result["omitted"] = omitted
+    result["budget"] = {"total_max_chars": budget, "chars_returned": budget - remaining}
     result["nodes"] = nodes
     return result
 
@@ -2061,6 +2110,8 @@ def search_nodes(
     """
     from kvault.core.search import search_nodes as _search_nodes
 
+    if parents not in PARENTS_MODES:
+        raise ValueError("parents must be one of: " + ", ".join(PARENTS_MODES))
     result = _search_nodes(
         kg_root,
         query=query,
@@ -2074,8 +2125,10 @@ def search_nodes(
         compact=compact,
         snippet_chars=snippet_chars,
     )
-    if parents and parents != "none":
-        _attach_search_parents(kg_root, result, parents, total_max_chars)
+    if parents != "none":
+        # One budget for the whole result: what include_content used is gone.
+        spent = (result.get("budget") or {}).get("content_chars_returned", 0)
+        _attach_search_parents(kg_root, result, parents, max(0, total_max_chars - spent))
     return result
 
 
@@ -2100,7 +2153,10 @@ def _attach_search_parents(
     used = 0
     omitted = 0
     for item in items:
-        node = read_node(kg_root, item["path"], parents=parents)
+        try:
+            node = read_node(kg_root, item["path"], parents=parents)
+        except (OSError, UnicodeDecodeError):
+            node = None
         size = len(json.dumps(node, default=str)) if node is not None else 0
         if used + size > budget:
             item["node_omitted_reason"] = "total_budget_exhausted"
@@ -2108,6 +2164,8 @@ def _attach_search_parents(
             continue
         item["node"] = node
         used += size
+    if "budget" in result:
+        result["budget"]["parent_chars_returned"] = used
     if omitted:
         result.setdefault("notes", []).append(
             nt.note(

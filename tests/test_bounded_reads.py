@@ -74,15 +74,18 @@ def test_read_nodes_reads_several_under_one_budget(kb):
     assert [n["path"] for n in result["nodes"]] == [
         "projects/routing/model_01",
         "projects/routing/model_02",
-        "projects",
     ]
     assert result["missing"] == ["nope/missing"]
+    assert result["omitted"] == ["projects"]  # its metadata alone did not fit what was left
     assert result["nodes"][0].get("content_truncated") is None
     assert result["nodes"][1]["content_truncated"] is True
-    assert result["nodes"][2]["content"] == "" and result["nodes"][2]["content_truncated"]
     assert result["notes"][0]["code"] == "truncated"
-    assert result["nodes"][2]["children"] == ["projects/routing"]  # paths, not handles
+    # the budget counts whole nodes, not just content
+    assert len(json.dumps(result["nodes"])) <= 6000 + 50
     assert list(result)[-1] == "nodes"  # the bulk payload is read last
+    wide = ops.read_nodes(kb, ["projects/routing"], total_max_chars=10**6)
+    assert len(wide["nodes"][0]["children"]) == 10  # paths, not handles
+    assert "children_count" not in wide["nodes"][0]
 
 
 def test_read_nodes_limits(kb):
@@ -190,5 +193,83 @@ def test_mcp_surface(kb):
     assert many["count"] == 2
     node = call("kvault_read_node", {"path": "projects/routing", "parents": "gist"})
     assert [p["path"] for p in node["parents"]] == ["projects", "."]
-    bad = call("kvault_read_node", {"path": "projects", "parents": "everything"})
-    assert bad["success"] is False and "gist" in bad["error"]
+    # the schema lists the allowed values, so a bad one never reaches the tool
+    with pytest.raises(Exception, match="gist"):
+        call("kvault_read_node", {"path": "projects", "parents": "everything"})
+    tools_by_name = {t.name: t for t in asyncio.run(server.list_tools())}
+    schema = tools_by_name["kvault_search"].inputSchema["properties"]["parents"]
+    assert "gist" in json.dumps(schema)
+
+
+# ── review round (2026-09-26) ─────────────────────────────────────────────
+
+
+def test_symlink_loops_never_hang_or_crash_search(kb):
+    (kb / "projects" / "routing" / "model_00" / "loop").symlink_to(kb, target_is_directory=True)
+    (kb / "projects" / "a").symlink_to(kb, target_is_directory=True)
+    (kb / "projects" / "b").symlink_to(kb / "projects", target_is_directory=True)
+    (kb / "memo.md").write_text("routing memo\n")
+    started = time.time()
+    result = ops.search_nodes(kb, "routing", limit=3)
+    assert time.time() - started < 5
+    (note,) = [n for n in result["notes"] if n["detail"].get("kind") == "not_indexed"]
+    assert note["detail"]["loose_markdown"] == 1
+    from kvault.core.check import run_checks
+
+    run_checks(kb, codes=["GHOST", "LOOSE", "DUPLICATE", "DANGLING", "SIBLINGS"])  # terminates
+
+
+def test_one_undecodable_summary_does_not_break_reads(kb):
+    (kb / "projects" / "routing" / "_summary.md").write_bytes(
+        b"---\nsource: manual\naliases: []\n---\n# Routing\n\nCaf\xe9 notes.\n"
+    )
+    gist = ops.search_nodes(kb, "uplift routing", limit=3, compact=True, parents="gist")
+    assert "projects" in gist["parents"] and "projects/routing" not in gist["parents"]
+    batch = ops.read_nodes(kb, ["projects", "projects/routing", "projects/routing/model_01"])
+    assert batch["unreadable"] == ["projects/routing"]
+    assert [n["path"] for n in batch["nodes"]] == ["projects", "projects/routing/model_01"]
+    assert any(n["code"] == "skipped" for n in batch["notes"])
+    runner = CliRunner()
+    out = runner.invoke(cli, ["--kb-root", str(kb), "--json", "read", "projects/routing"])
+    assert out.exit_code == 1 and "UTF-8" in json.loads(out.output)["error"]
+
+
+def test_content_and_parents_share_one_search_budget(kb):
+    result = ops.search_nodes(
+        kb,
+        "uplift routing",
+        limit=10,
+        include_content=True,
+        parents="immediate",
+        total_max_chars=20000,
+    )
+    content = result["budget"]["content_chars_returned"]
+    parents = result["budget"]["parent_chars_returned"]
+    assert content + parents <= 20000
+
+
+def test_read_nodes_caps_child_lists(kb):
+    for i in range(60):
+        (kb / "projects" / "routing" / f"extra_{i:02d}").mkdir()
+        (kb / "projects" / "routing" / f"extra_{i:02d}" / "_summary.md").write_text("# E\n\nE.\n")
+    node = ops.read_nodes(kb, ["projects/routing"], total_max_chars=10**6)["nodes"][0]
+    assert len(node["children"]) == 50 and node["children_count"] == 70
+
+
+def test_summaries_symlinked_out_of_the_kb_are_not_nodes(kb, tmp_path):
+    secret = tmp_path / "secret.md"
+    secret.write_text("---\nsource: x\n---\n# Secret\n\nhunter2 uplift routing\n")
+    (kb / "projects" / "leak").mkdir()
+    (kb / "projects" / "leak" / "_summary.md").symlink_to(secret)
+    assert ops.read_node(kb, "projects/leak") is None
+    result = ops.search_nodes(kb, "hunter2", limit=5)
+    assert result["results"] == []
+    assert any("outside_kb" in json.dumps(n) for n in result.get("notes", []))
+
+
+def test_snippets_respect_their_length_and_parents_are_validated(kb):
+    for width in (8, 50, 120):
+        hits = ops.search_nodes(kb, "uplift", limit=5, compact=True, snippet_chars=width)
+        assert all(len(r["snippet"]) <= width for r in hits["results"])
+    with pytest.raises(ValueError, match="gist"):
+        ops.search_nodes(kb, "uplift", parents="Gist")

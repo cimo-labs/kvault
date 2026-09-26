@@ -70,7 +70,7 @@ def _read_several(
     type=int,
     default=ops.READ_NODES_MAX_CHARS,
     show_default=True,
-    help="With several paths: content budget shared by all of them.",
+    help="With several paths: one budget in characters of compact JSON, shared by all of them.",
 )
 @common_options
 @click.pass_context
@@ -93,7 +93,14 @@ def read_entity(
         _read_several(ctx, kb_root, paths, parents, max_total_chars)
         return
     path = paths[0]
-    result = ops.read_node(kb_root, path, parents=parents)
+    try:
+        result = ops.read_node(kb_root, path, parents=parents)
+    except UnicodeDecodeError:
+        message = f"{path} is not valid UTF-8; re-encode its _summary.md"
+        if ctx.obj.get("as_json"):
+            output_json({"success": False, "error_code": "validation_error", "error": message})
+            ctx.exit(1)
+        raise click.ClickException(message)
     if result is None:
         if ctx.obj.get("as_json"):
             output_json({"success": False, "error": f"Node not found: {path}"})

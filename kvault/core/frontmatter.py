@@ -64,6 +64,17 @@ def _split_frontmatter(content: str) -> Tuple[str, str, bool]:
     return content[4:end], content[end + 4 :].lstrip("\n"), True
 
 
+#: Blocks longer than this parse uncached, so the memo stays small (a few MB)
+#: even in a long-running MCP server; typical frontmatter is a few hundred bytes.
+_MEMO_MAX_BLOCK = 4096
+
+
+def _safe_load(yaml_content: str) -> Tuple[bool, Any]:
+    if len(yaml_content) > _MEMO_MAX_BLOCK:
+        return _safe_load_cached.__wrapped__(yaml_content)
+    return _safe_load_cached(yaml_content)
+
+
 @lru_cache(maxsize=4096)
 def _safe_load_cached(yaml_content: str) -> Tuple[bool, Any]:
     """``yaml.safe_load`` memoized on the exact block text.
@@ -110,7 +121,7 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     if not found:
         return {}, content
 
-    ok, meta = _safe_load_cached(yaml_content)
+    ok, meta = _safe_load(yaml_content)
     if not ok:
         return {}, content
     if meta is None:

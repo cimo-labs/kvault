@@ -50,8 +50,11 @@ one was worse than reported (`parents="all"` on search added 510-640 KB).
 - **`parents="gist"`** on `read`, `read_entity` and search: each ancestor as
   `{path, title, gist}`; on search one shared map for all hits (about 2 KB).
 - **`read_nodes` / `kvault read a b c` / MCP `kvault_read_nodes`**: up to 25
-  nodes in one call, one shared content budget (`--max-total-chars`,
-  default 60,000), child paths, `missing` listed.
+  nodes in one call under one budget that counts whole nodes as compact
+  JSON (`--max-total-chars`, default 20,000; 8,000 over MCP, sized for a
+  client that inlines ~10 KB). Up to 50 child paths per node
+  (`children_count` past that); `missing`, `omitted` (did not fit) and
+  `unreadable` (not UTF-8, a `skipped` note) are listed.
 - **Compact search** (`--compact`; `compact=true` over MCP): path, title,
   kind, `last_updated` and a 120-character snippet, without the
   collapsed-path lists; `--snippet-chars N`. MCP `kvault_search` also takes
@@ -65,8 +68,19 @@ one was worse than reported (`parents="all"` on search added 510-640 KB).
 
 - **MCP `kvault_search` returns compact hits by default** (3.2-3.5 KB for
   10 hits on real KBs, from 8.7-9.9 KB); pass `compact=false` for `score`,
-  `matched_fields`, `summary_path` and the long snippet. The CLI default is
-  unchanged.
+  `matched_fields`, `summary_path`, the long snippet, and the
+  `collapsed_paths` / `collapsed_by` lists (compact keeps the `collapsed`
+  count). The CLI default is unchanged.
+- **MCP `parents` parameters are enums in the tool schemas** (`none`,
+  `gist`, `immediate`, `all`; `none`/`gist` for `kvault_read_nodes`), so an
+  invalid value is refused by the schema before the tool runs.
+- **Symlinks.** The tree walk behind `check`, `plan`, `tree` and the search
+  note follows a symlinked directory only when it resolves inside the KB,
+  and visits each real directory once (a symlink loop made 0.15 `check`
+  recurse until the path was too long). A `_summary.md` that resolves
+  outside the KB is not a node: `read` does not return it and search lists
+  it as skipped (`outside_kb`).
+- `kvault_tree` JSON nodes carry `loose_count`.
 - **`parents="immediate"|"all"` on search are bounded**: full documents are
   attached only while they fit in `total_max_chars` (the first hit
   included), with a `truncated` note naming `gist` and `read_nodes`.
@@ -78,8 +92,8 @@ one was worse than reported (`parents="all"` on search added 510-640 KB).
   file for a deliberate second layout since 0.15.0, but the check never
   read it.
 - **Search `last_updated` is the frontmatter date** (`updated`, then
-  `created`), not the file time — on a git clone the file time is the clone
-  date.
+  `created`, then the file time), not the file time first — on a git clone
+  the file time is the clone date.
 - **The `propagate` note contract**: "summaries are stale because of this
   operation" — ancestors, or referrers of a moved or deleted path.
 - `plan` priorities renumbered for the new kinds (cluster, ghost, series,
@@ -100,6 +114,14 @@ one was worse than reported (`parents="all"` on search added 510-640 KB).
   `LOG`) while the result said `propagation_required: false`; a nightly
   job that ran its own marks finished red. A decision now keeps the node's
   dates and is journaled.
+- **Search and batch reads survive what they could not before**: a
+  symlink loop (the search note's tree walk recursed until the path was
+  too long, or hung the MCP server), one non-UTF-8 summary (gist parents
+  skip it, `read_nodes` lists it as `unreadable`, `read` returns an error
+  instead of a traceback), and `include_content` plus full `parents`,
+  which spent `total_max_chars` twice (now one budget;
+  `parent_chars_returned` is reported). `snippet_chars` counts the `...`
+  markers, and each loose file is read only up to 1 MB to test the query.
 - **An impossible frontmatter date no longer crashes kvault.** An unquoted
   `2026-09-31` passes the YAML parser and fails in its date constructor
   with `ValueError`, which escaped from `check`, `plan`, `read`, `move` and

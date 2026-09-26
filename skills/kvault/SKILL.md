@@ -232,7 +232,7 @@ are what keep a session inside a client's output limits:
 |------|------|---------------|
 | Orient | `kvault_tree` | `path=` + `depth=` to zoom; `gist=true` for one line per node |
 | Research | `kvault_search` | compact hits are the default; `parents="gist"` adds where each hit sits (~2 KB for the whole result); avoid `parents="all"` (full documents per hit, cut off by `total_max_chars`) |
-| Read | `kvault_read_nodes` | the hits you picked, up to 25 per call, one character budget; `kvault_read_node` for one node, `parents="gist"` for its ancestry |
+| Read | `kvault_read_nodes` | the hits you picked, up to 25 per call, one budget over whole nodes (8,000 characters by default; `omitted` and `content_truncated` say what did not fit); `kvault_read_node` for one node, `parents="gist"` for its ancestry |
 | Write | `kvault_write_node` | `ancestors="paths"` (the default) |
 | Propagate | `kvault_prepare_summary_update` → `kvault_write_parent_summary`, or `kvault_update_summaries` | at most 10 ancestors per `kvault_update_summaries` call |
 | Health | `kvault_check` | `codes=["DUPLICATE"]` for one code; `max_findings=0` for its full list |

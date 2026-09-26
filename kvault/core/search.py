@@ -23,6 +23,8 @@ _H_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 _SNIPPET_MAX_CHARS = 440
 #: Snippet length in compact results: one line, enough to recognise the hit.
 COMPACT_SNIPPET_CHARS = 120
+#: Characters of each loose Markdown file read to test the query.
+_LOOSE_READ_CHARS = 1_000_000
 KINDS = ("root", "category", "entity")
 #: Fields whose match on an ancestor is usually a propagated copy of a
 #: descendant's fact. A match on path/title/aliases anchors the node itself.
@@ -215,7 +217,10 @@ def search_nodes(
                 next_step="repair or re-encode the listed files (UTF-8), then re-run",
             )
         )
-    loose = _loose_markdown(kg_root, query_tokens, prefix)
+    try:
+        loose = _loose_markdown(kg_root, query_tokens, prefix)
+    except (OSError, RuntimeError):
+        loose = None  # the blind-spot report is best effort; it never fails a search
     if loose is not None:
         count, matching = loose
         text = f"{count} Markdown file(s) outside the node layout are not searched"
@@ -229,8 +234,8 @@ def search_nodes(
                 text,
                 detail={"kind": "not_indexed", "loose_markdown": count, "matching": matching[:5]},
                 why="search indexes node summaries; a loose file is invisible to it and to tree",
-                next_step="kvault plan adopts legacy node files as nodes; until then, read a "
-                "matching file directly",
+                next_step="read a matching file with kvault read-summary <file> (MCP "
+                "kvault_read_summary); kvault plan adopts legacy node files as nodes",
             )
         )
     if total_matched > len(results):
@@ -328,7 +333,8 @@ def _loose_markdown(
         if not st.inside_root(root / f, root):
             continue  # a symlink out of the KB: counted, never read
         try:
-            text = (root / f).read_text(encoding="utf-8", errors="replace")
+            with open(root / f, "r", encoding="utf-8", errors="replace") as handle:
+                text = handle.read(_LOOSE_READ_CHARS)  # a 33 MB file must not slow every search
         except OSError:
             continue
         if wanted <= set(_tokens(text)):
@@ -443,6 +449,10 @@ def _scan_documents(kg_root: Path) -> Tuple[List[SearchDocument], List[Dict[str,
         node_path = (
             "." if summary_path.parent == kg_root else str(summary_path.parent.relative_to(kg_root))
         )
+        if not st.inside_root(summary_path, kg_root):
+            # a _summary.md symlinked out of the KB is never read
+            unreadable.append({"path": str(rel_summary), "error": "outside_kb"})
+            continue
         try:
             raw = summary_path.read_text()
         except (OSError, UnicodeDecodeError) as exc:
@@ -566,9 +576,15 @@ def _snippet(
         ]
         idx = min(token_positions) if token_positions else 0
 
-    start = max(0, idx - max_chars // 3)
-    end = min(len(text), start + max_chars)
-    start = max(0, end - max_chars)
+    if len(text) <= max_chars:
+        return text
+    if max_chars < 8:
+        return text[:max_chars]
+    # The "..." markers count toward max_chars: a 120-character snippet is 120.
+    width = max_chars - 6
+    start = max(0, idx - width // 3)
+    end = min(len(text), start + width)
+    start = max(0, end - width)
     snippet = text[start:end].strip()
     if start > 0:
         snippet = "..." + snippet

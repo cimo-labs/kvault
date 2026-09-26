@@ -79,7 +79,7 @@ kvault status --json                       # Health, entity count, compact hiera
 rg -n "search phrase" .                    # Raw filesystem search
 kvault search "search phrase" --compact --json  # Structured node search, one line per hit
 kvault read <path> --json                  # The node; --parents gist adds where it sits
-kvault read <a> <b> <c> --json             # Several nodes in one call, one shared budget
+kvault read <a> <b> <c> --json             # Several nodes in one call, one shared budget (--max-total-chars)
 kvault list [path] --json                  # List child nodes
 ```
 

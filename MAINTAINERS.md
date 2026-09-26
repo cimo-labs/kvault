@@ -57,7 +57,7 @@ from kvault.core import operations as ops
 
 # Stateless — all functions take kg_root: Path as first arg
 ops.read_node(kg_root, path, parents="immediate")   # none | gist | immediate | all
-ops.read_nodes(kg_root, paths, parents="none", total_max_chars=60000)
+ops.read_nodes(kg_root, paths, parents="none", total_max_chars=20000)   # budget counts whole nodes
 ops.write_node(kg_root, path, content, meta=..., create=...)
 ops.list_nodes(kg_root, path=".", recursive=False)
 ops.search_nodes(kg_root, query, limit=10, compact=False, parents="none")

@@ -331,7 +331,8 @@ and long snippets). `parents="gist"` on search and reads gives each ancestor's p
 and first line, about 2 KB for a whole result, where `parents="all"` used to attach every
 ancestor's full document to every hit (500+ KB on a mature KB; it is now capped by
 `total_max_chars`). `kvault_read_nodes` reads up to 25 picked hits in one call under one
-character budget.
+budget that counts whole nodes (8,000 characters by default over MCP; raise it when the
+client can take more).
 
 ## It's just files
 

@@ -10,7 +10,7 @@ import os
 import time
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import click
 
@@ -36,6 +36,10 @@ except ImportError:  # pragma: no cover - exercised when optional extra is absen
     FastMCP = None
 
 KVAULT_KB_ROOT_ENV = "KVAULT_KB_ROOT"
+#: Enums in the tool schemas, so an MCP-only agent sees the allowed values.
+ParentsMode = Literal["none", "gist", "immediate", "all"]
+BatchParentsMode = Literal["none", "gist"]
+_NOT_UTF8 = "is not valid UTF-8; re-encode its _summary.md"
 
 
 def resolve_bound_root(kb_root: Optional[Path | str] = None) -> Path:
@@ -187,7 +191,7 @@ def create_server(kb_root: Path | str) -> Any:
 
     @server.tool(name="kvault_read_entity")
     def kvault_read_entity(
-        path: str, parents: str = "none", kg_root: Optional[str] = None
+        path: str, parents: ParentsMode = "none", kg_root: Optional[str] = None
     ) -> Dict[str, Any]:
         """Read an entity; parents='gist' adds each ancestor's path, title, and one line;
         'immediate' adds the parent's full summary."""
@@ -197,7 +201,10 @@ def create_server(kb_root: Path | str) -> Any:
         assert root is not None
         if parents not in ops.PARENTS_MODES:
             return error_response(ErrorCode.VALIDATION_ERROR, _PARENTS_ERROR)
-        result = ops.read_entity(root, path, parents=parents)
+        try:
+            result = ops.read_entity(root, path, parents=parents)
+        except UnicodeDecodeError:
+            return error_response(ErrorCode.VALIDATION_ERROR, f"{path} {_NOT_UTF8}")
         if result is None:
             return error_response(ErrorCode.NOT_FOUND, f"Entity not found: {path}")
         return success_response(result)
@@ -205,7 +212,7 @@ def create_server(kb_root: Path | str) -> Any:
     @server.tool(name="kvault_read_node")
     def kvault_read_node(
         path: str,
-        parents: str = "none",
+        parents: ParentsMode = "none",
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Read a node. parents='gist' adds every ancestor as {path, title, gist} (a few
@@ -217,7 +224,10 @@ def create_server(kb_root: Path | str) -> Any:
         assert root is not None
         if parents not in ops.PARENTS_MODES:
             return error_response(ErrorCode.VALIDATION_ERROR, _PARENTS_ERROR)
-        result = ops.read_node(root, path, parents=parents)
+        try:
+            result = ops.read_node(root, path, parents=parents)
+        except UnicodeDecodeError:
+            return error_response(ErrorCode.VALIDATION_ERROR, f"{path} {_NOT_UTF8}")
         if result is None:
             return error_response(ErrorCode.NOT_FOUND, f"Node not found: {path}")
         return success_response(result)
@@ -225,17 +235,22 @@ def create_server(kb_root: Path | str) -> Any:
     @server.tool(name="kvault_read_nodes")
     def kvault_read_nodes(
         paths: List[str],
-        parents: str = "none",
-        total_max_chars: int = ops.READ_NODES_MAX_CHARS,
+        parents: BatchParentsMode = "none",
+        total_max_chars: int = ops.READ_NODES_MCP_MAX_CHARS,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Read up to 25 nodes in one call, content under one shared character budget.
+        """Read up to 25 nodes in one call, under one shared budget (default 8,000).
 
-        Each node: path, kind, title, meta, content, child paths (and `parents`
-        as {path, title, gist} with parents='gist'). Paths that are not nodes
-        are listed in `missing`; a node past the budget comes back cut
-        (`content_truncated`) with a `truncated` note. Use it after a search:
-        pick the hits, read them together.
+        The budget counts whole nodes as compact JSON (content, meta, child
+        paths), sized for clients that inline about 10 KB; raise it when you
+        can take more. A node past the budget comes back cut
+        (`content_truncated`); one whose metadata alone does not fit is listed
+        in `omitted`; a `truncated` note names both. Each node: path, kind,
+        title, meta, content, up to 50 child paths (`children_count` past
+        that), and with parents='gist' its ancestors as {path, title, gist}.
+        Full parent documents ('immediate'|'all') are one node at a time:
+        kvault_read_node. Paths that are not nodes are listed in `missing`.
+        Use it after a search: pick the hits, read them together.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -430,7 +445,7 @@ def create_server(kb_root: Path | str) -> Any:
         query: str,
         limit: int = 10,
         compact: bool = True,
-        parents: str = "none",
+        parents: ParentsMode = "none",
         include_content: bool = False,
         content_max_chars: int = 6000,
         total_max_chars: int = 20000,
@@ -455,11 +470,12 @@ def create_server(kb_root: Path | str) -> Any:
 
         The result reports its own blind spots: `total_matched` vs `count`
         when `limit` cut the list, per-result `content_omitted_reason`,
-        `collapsed` / `collapsed_paths` for ancestor hits that only repeated
-        a descendant's match (collapse=False keeps them), and `notes` for
-        skipped files and loose Markdown files that are not searched. `kind`
-        is a comma-separated subset of root,category,entity; `path_prefix`
-        restricts to a subtree.
+        `collapsed` (ancestor hits that only repeated a descendant's match;
+        compact=False also lists them in `collapsed_paths`, collapse=False
+        keeps them), and `notes` for skipped files and for loose Markdown
+        files that are not searched. include_content and full parents share
+        one total_max_chars budget. `kind` is a comma-separated subset of
+        root,category,entity; `path_prefix` restricts to a subtree.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:

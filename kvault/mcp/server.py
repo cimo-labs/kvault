@@ -115,7 +115,11 @@ def create_server(kb_root: Path | str) -> Any:
             "Root-bound kvault compatibility tools. This server can only access "
             f"{bound_root}. Results carry a `notes` array reporting decisions "
             "kvault made on your behalf (autofilled metadata, no-op writes, "
-            "half-failures, truncation); read it before acting on the payload."
+            "half-failures, truncation); read it before acting on the payload. "
+            "Keep reads small: kvault_search returns compact hits by default "
+            "(parents='gist' adds where each hit sits for about 2 KB); read the "
+            "hits you picked with one kvault_read_nodes call; kvault_check with "
+            "codes=[...] returns one finding code's full list."
         ),
     )
 
@@ -179,20 +183,20 @@ def create_server(kb_root: Path | str) -> Any:
         assert root is not None
         return _status_payload(root, include_root_summary=include_root_summary)
 
+    _PARENTS_ERROR = "parents must be one of: " + ", ".join(ops.PARENTS_MODES)
+
     @server.tool(name="kvault_read_entity")
     def kvault_read_entity(
         path: str, parents: str = "none", kg_root: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Read an entity; parents='immediate' adds the parent summary for sibling context."""
+        """Read an entity; parents='gist' adds each ancestor's path, title, and one line;
+        'immediate' adds the parent's full summary."""
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        if parents not in {"none", "immediate", "all"}:
-            return error_response(
-                ErrorCode.VALIDATION_ERROR,
-                "parents must be one of: none, immediate, all",
-            )
+        if parents not in ops.PARENTS_MODES:
+            return error_response(ErrorCode.VALIDATION_ERROR, _PARENTS_ERROR)
         result = ops.read_entity(root, path, parents=parents)
         if result is None:
             return error_response(ErrorCode.NOT_FOUND, f"Entity not found: {path}")
@@ -204,20 +208,40 @@ def create_server(kb_root: Path | str) -> Any:
         parents: str = "none",
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Read a node; parents='immediate'|'all' adds parent context (off by default since 0.14)."""
+        """Read a node. parents='gist' adds every ancestor as {path, title, gist} (a few
+        hundred bytes); 'immediate'|'all' add full parent documents (can be tens of KB).
+        To read several nodes use kvault_read_nodes."""
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        if parents not in {"none", "immediate", "all"}:
-            return error_response(
-                ErrorCode.VALIDATION_ERROR,
-                "parents must be one of: none, immediate, all",
-            )
+        if parents not in ops.PARENTS_MODES:
+            return error_response(ErrorCode.VALIDATION_ERROR, _PARENTS_ERROR)
         result = ops.read_node(root, path, parents=parents)
         if result is None:
             return error_response(ErrorCode.NOT_FOUND, f"Node not found: {path}")
         return success_response(result)
+
+    @server.tool(name="kvault_read_nodes")
+    def kvault_read_nodes(
+        paths: List[str],
+        parents: str = "none",
+        total_max_chars: int = ops.READ_NODES_MAX_CHARS,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Read up to 25 nodes in one call, content under one shared character budget.
+
+        Each node: path, kind, title, meta, content, child paths (and `parents`
+        as {path, title, gist} with parents='gist'). Paths that are not nodes
+        are listed in `missing`; a node past the budget comes back cut
+        (`content_truncated`) with a `truncated` note. Use it after a search:
+        pick the hits, read them together.
+        """
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        return ops.read_nodes(root, paths, parents=parents, total_max_chars=total_max_chars)
 
     def _strip_ancestors(result: Dict[str, Any], ancestors: str) -> Dict[str, Any]:
         """ancestors='paths' (the default since 0.14.0) keeps ancestor_paths and
@@ -405,8 +429,12 @@ def create_server(kb_root: Path | str) -> Any:
     def kvault_search(
         query: str,
         limit: int = 10,
-        include_content: bool = False,
+        compact: bool = True,
         parents: str = "none",
+        include_content: bool = False,
+        content_max_chars: int = 6000,
+        total_max_chars: int = 20000,
+        snippet_chars: Optional[int] = None,
         collapse: bool = True,
         kind: Optional[str] = None,
         path_prefix: Optional[str] = None,
@@ -414,26 +442,31 @@ def create_server(kb_root: Path | str) -> Any:
     ) -> Dict[str, Any]:
         """Search visible node summaries.
 
+        Hits are compact by default over MCP (0.16): path, title, kind,
+        last_updated (frontmatter date), and a one-line snippet — about
+        3-4 KB for 10 hits. compact=False adds score, matched_fields,
+        summary_path, a 440-character snippet, and the collapsed-path
+        lists (~9-10 KB). parents='gist' adds one shared `parents` map from
+        every ancestor path of the hits to {title, gist} (~2-3 KB; a hit's
+        ancestors are the prefixes of its path); 'immediate'|'all' attach
+        full documents per hit only while they fit in total_max_chars (a
+        `truncated` note says when). Read the hits you pick with
+        kvault_read_nodes.
+
         The result reports its own blind spots: `total_matched` vs `count`
-        when `limit` cut the list, per-result `content_omitted_reason`
-        (content_max_chars | total_budget_exhausted | empty_node), `collapsed`
-        / `collapsed_paths` for ancestor hits that only repeated a descendant's
-        match (collapse=False keeps them), and `notes` for unreadable files
-        that were skipped. `kind` is a comma-separated subset of
-        root,category,entity; `path_prefix` restricts to a subtree. CAUTION:
-        the char budget applies only to `content` — `parents != "none"`
-        attaches full parent documents OUTSIDE any budget and can dwarf the
-        results.
+        when `limit` cut the list, per-result `content_omitted_reason`,
+        `collapsed` / `collapsed_paths` for ancestor hits that only repeated
+        a descendant's match (collapse=False keeps them), and `notes` for
+        skipped files and loose Markdown files that are not searched. `kind`
+        is a comma-separated subset of root,category,entity; `path_prefix`
+        restricts to a subtree.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        if parents not in {"none", "immediate", "all"}:
-            return error_response(
-                ErrorCode.VALIDATION_ERROR,
-                "parents must be one of: none, immediate, all",
-            )
+        if parents not in ops.PARENTS_MODES:
+            return error_response(ErrorCode.VALIDATION_ERROR, _PARENTS_ERROR)
         kinds = [k.strip() for k in (kind or "").split(",") if k.strip()] or None
         if kinds and any(k not in KINDS for k in kinds):
             return error_response(
@@ -445,13 +478,15 @@ def create_server(kb_root: Path | str) -> Any:
             query=query,
             limit=limit,
             include_content=include_content,
+            content_max_chars=content_max_chars,
+            total_max_chars=total_max_chars,
             collapse=collapse,
             kinds=kinds,
             path_prefix=path_prefix,
+            compact=compact,
+            snippet_chars=snippet_chars,
+            parents=parents,
         )
-        if parents != "none":
-            for item in result["results"]:
-                item["node"] = ops.read_node(root, item["path"], parents=parents)
         return success_response(result)
 
     @server.tool(name="kvault_delete_entity")

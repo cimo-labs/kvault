@@ -71,6 +71,11 @@ _PLACEHOLDER_LINE_RE = re.compile(
 )
 SUMMARY_UPDATE_DIGEST_ALGORITHM = "direct-child-summary-sha256-v1"
 MAX_DIRECT_CHILDREN = 10
+#: Parent context a read can carry. ``gist`` (0.16) is path, title, and one
+#: line per ancestor; ``immediate``/``all`` are full documents.
+PARENTS_MODES = ("none", "gist", "immediate", "all")
+READ_NODES_MAX_PATHS = 25
+READ_NODES_MAX_CHARS = 60000
 
 
 # ---------------------------------------------------------------------------
@@ -461,6 +466,11 @@ def _ancestor_node_paths(path: str) -> List[str]:
         ancestors.append(current)
         current = _parent_path(current)
     return ancestors
+
+
+def ancestor_paths(path: str) -> List[str]:
+    """Ancestors of a node path, nearest first, ending with the root ``"."``."""
+    return _ancestor_node_paths(_normalize_node_path(path))
 
 
 def _node_kind(kg_root: Path, path: str) -> str:
@@ -989,20 +999,43 @@ def read_entity(kg_root: Path, path: str, parents: str = "immediate") -> Optiona
     if parent:
         entity_data["parent_summary"] = parent.get("content", "")
         entity_data["parent_path"] = parent.get("path")
+    if parents == "gist" and node.get("parents"):
+        entity_data["parent_path"] = node["parents"][0]["path"]
+        entity_data["parents"] = node["parents"]
     return entity_data
 
 
+def _gist_handle(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
+    """``{path, title, gist}``: where a node sits, in one line."""
+    raw = _read_node_raw(kg_root, path)
+    if raw is None:
+        return None
+    return {"path": path, "title": raw["title"], "gist": _extract_gist(raw["content"])}
+
+
 def read_node(kg_root: Path, path: str, parents: str = "immediate") -> Optional[Dict[str, Any]]:
-    """Read any node summary, with parent context by default."""
+    """Read any node summary, with parent context by default.
+
+    ``parents="gist"`` (0.16) adds ``parents``: every ancestor nearest first
+    as ``{path, title, gist}`` — the orientation ``all`` gave, at a few
+    hundred bytes instead of every ancestor's full document.
+    """
     path = _normalize_node_path(path)
     node = _read_node_shallow(kg_root, path)
     if node is None:
         return None
 
-    if parents not in {"none", "immediate", "all"}:
+    if parents not in PARENTS_MODES:
         return None
 
     node["parent"] = None
+    if parents == "gist":
+        node["parents"] = [
+            handle
+            for ancestor in _ancestor_node_paths(path)
+            if (handle := _gist_handle(kg_root, ancestor)) is not None
+        ]
+        return node
     if parents in {"immediate", "all"}:
         parent_path = _parent_path(path)
         if parent_path is not None:
@@ -1016,6 +1049,86 @@ def read_node(kg_root: Path, path: str, parents: str = "immediate") -> Optional[
         ]
 
     return node
+
+
+def read_nodes(
+    kg_root: Path,
+    paths: Sequence[str],
+    parents: str = "none",
+    total_max_chars: int = READ_NODES_MAX_CHARS,
+) -> Dict[str, Any]:
+    """Read several nodes in one call, under one shared character budget.
+
+    For an agent that has picked five hits from a search and wants their
+    bodies: one call instead of five, and a bounded one. Each node carries
+    its content, metadata, and child *paths*; ``parents`` is ``none`` or
+    ``gist`` (full parent documents belong to ``read_node``, one at a time).
+    A node past the budget comes back cut, with ``content_truncated`` and a
+    ``truncated`` note; paths that are not nodes are listed in ``missing``.
+    """
+    if isinstance(paths, str):
+        paths = [paths]
+    if not isinstance(paths, (list, tuple)) or not paths:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR, "paths must be a non-empty list of node paths"
+        )
+    if len(paths) > READ_NODES_MAX_PATHS:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            f"at most {READ_NODES_MAX_PATHS} paths per call ({len(paths)} given)",
+            hint="Split the list, or narrow it with search first",
+        )
+    if parents not in ("none", "gist"):
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            "parents must be none or gist when reading several nodes",
+            hint="Read one node with parents='immediate' or 'all' for full parent documents",
+        )
+    wanted = list(dict.fromkeys(_normalize_node_path(str(p)) for p in paths))
+    budget = max(0, int(total_max_chars))
+    remaining = budget
+    nodes: List[Dict[str, Any]] = []
+    missing: List[str] = []
+    cut: List[str] = []
+    for path in wanted:
+        node = read_node(kg_root, path, parents=parents)
+        if node is None:
+            missing.append(path)
+            continue
+        node.pop("parent", None)
+        node["children"] = [c["path"] for c in node.get("children", [])]
+        content = node.get("content", "")
+        if len(content) > remaining:
+            node["content"] = content[: max(0, remaining)]
+            node["content_truncated"] = True
+            cut.append(path)
+        remaining = max(0, remaining - len(node["content"]))
+        nodes.append(node)
+
+    notes: List[Dict[str, Any]] = []
+    if cut:
+        shown = ", ".join(cut[:3]) + (f" (+{len(cut) - 3} more)" if len(cut) > 3 else "")
+        notes.append(
+            nt.note(
+                "truncated",
+                f"the {budget:,}-character budget ran out: {len(cut)} node(s) cut short: {shown}",
+                detail={"paths": cut, "total_max_chars": budget},
+                next_step="read the cut nodes on their own, or raise total_max_chars",
+            )
+        )
+    did = f"read {len(nodes)} of {len(wanted)} node(s)"
+    if missing:
+        did += f"; not found: {', '.join(missing[:5])}"
+    result: Dict[str, Any] = {"success": True, "did": did, "count": len(nodes)}
+    if notes:
+        result["notes"] = notes
+    result["missing"] = missing
+    result["budget"] = {
+        "total_max_chars": budget,
+        "content_chars_returned": budget - remaining,
+    }
+    result["nodes"] = nodes
+    return result
 
 
 def read_summary(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
@@ -1915,11 +2028,22 @@ def search_nodes(
     collapse: bool = True,
     kinds: Optional[Sequence[str]] = None,
     path_prefix: Optional[str] = None,
+    compact: bool = False,
+    snippet_chars: Optional[int] = None,
+    parents: str = "none",
 ) -> Dict[str, Any]:
-    """Search visible kvault node summaries."""
+    """Search visible kvault node summaries.
+
+    ``parents`` (0.16, CLI and MCP alike): ``gist`` adds one shared
+    ``parents`` map from every ancestor path of the hits to ``{title,
+    gist}`` (a hit's ancestors are the prefixes of its path) — about 2 KB
+    for 10 hits. ``immediate``/``all`` attach full documents per hit
+    (``node``) while they fit in ``total_max_chars``; unbounded they cost
+    100–640 KB per search on real KBs.
+    """
     from kvault.core.search import search_nodes as _search_nodes
 
-    return _search_nodes(
+    result = _search_nodes(
         kg_root,
         query=query,
         limit=limit,
@@ -1929,7 +2053,56 @@ def search_nodes(
         collapse=collapse,
         kinds=kinds,
         path_prefix=path_prefix,
+        compact=compact,
+        snippet_chars=snippet_chars,
     )
+    if parents and parents != "none":
+        _attach_search_parents(kg_root, result, parents, total_max_chars)
+    return result
+
+
+def _attach_search_parents(
+    kg_root: Path, result: Dict[str, Any], parents: str, budget: int
+) -> None:
+    items = result.pop("results", [])
+    if parents == "gist":
+        ancestry: Dict[str, Dict[str, Any]] = {}
+        for item in items:
+            for ancestor in _ancestor_node_paths(item["path"]):
+                if ancestor not in ancestry:
+                    handle = _gist_handle(kg_root, ancestor)
+                    if handle is not None:
+                        ancestry[ancestor] = {"title": handle["title"], "gist": handle["gist"]}
+        result["parents"] = ancestry
+        result["results"] = items
+        return
+    # Full documents share the budget, the first hit included: a mature
+    # root summary alone can exceed it, and unbounded, 10 hits with
+    # parents="all" were ~600 KB.
+    used = 0
+    omitted = 0
+    for item in items:
+        node = read_node(kg_root, item["path"], parents=parents)
+        size = len(json.dumps(node, default=str)) if node is not None else 0
+        if used + size > budget:
+            item["node_omitted_reason"] = "total_budget_exhausted"
+            omitted += 1
+            continue
+        item["node"] = node
+        used += size
+    if omitted:
+        result.setdefault("notes", []).append(
+            nt.note(
+                "truncated",
+                f"parents={parents!r} attached full documents to {len(items) - omitted} of "
+                f"{len(items)} results before the {budget:,}-character budget ran out",
+                detail={"omitted": omitted, "total_max_chars": budget},
+                why="full ancestor documents repeat across hits and dwarf the search itself",
+                next_step="use parents='gist' (path, title, one line per ancestor), or read the "
+                "hits with read_nodes",
+            )
+        )
+    result["results"] = items
 
 
 def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:

@@ -20,6 +20,8 @@ from kvault.core.frontmatter import parse_frontmatter
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _H_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 _SNIPPET_MAX_CHARS = 440
+#: Snippet length in compact results: one line, enough to recognise the hit.
+COMPACT_SNIPPET_CHARS = 120
 KINDS = ("root", "category", "entity")
 #: Fields whose match on an ancestor is usually a propagated copy of a
 #: descendant's fact. A match on path/title/aliases anchors the node itself.
@@ -60,17 +62,29 @@ class SearchResult:
     content_truncated: Optional[bool] = None
     content_omitted_reason: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        data: Dict[str, Any] = {
-            "path": self.path,
-            "kind": self.kind,
-            "title": self.title,
-            "score": self.score,
-            "matched_fields": self.matched_fields,
-            "snippet": self.snippet,
-            "summary_path": self.summary_path,
-            "last_updated": self.last_updated,
-        }
+    def to_dict(self, compact: bool = False) -> Dict[str, Any]:
+        data: Dict[str, Any]
+        if compact:
+            # About a quarter of the full shape: what an agent needs to pick
+            # the hit worth reading (0.16; a 10-hit full result is ~9 KB).
+            data = {
+                "path": self.path,
+                "title": self.title,
+                "kind": self.kind,
+                "last_updated": self.last_updated,
+                "snippet": self.snippet,
+            }
+        else:
+            data = {
+                "path": self.path,
+                "kind": self.kind,
+                "title": self.title,
+                "score": self.score,
+                "matched_fields": self.matched_fields,
+                "snippet": self.snippet,
+                "summary_path": self.summary_path,
+                "last_updated": self.last_updated,
+            }
         if self.content is not None:
             data["content"] = self.content
             data["content_truncated"] = bool(self.content_truncated)
@@ -93,8 +107,16 @@ def search_nodes(
     collapse: bool = True,
     kinds: Optional[Sequence[str]] = None,
     path_prefix: Optional[str] = None,
+    compact: bool = False,
+    snippet_chars: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Search visible kvault nodes and return ranked results.
+
+    ``compact`` returns ``path``, ``title``, ``kind``, ``last_updated`` and a
+    one-line snippet per hit (``COMPACT_SNIPPET_CHARS`` unless
+    ``snippet_chars`` says otherwise). ``last_updated`` is the node's
+    frontmatter ``updated`` date, falling back to ``created`` and then the
+    file time (on a git clone the file time is the clone date).
 
     The result reports its own blind spots: ``total_matched`` vs ``count``
     when ``limit`` cut the list, a ``truncated`` note when the shared content
@@ -111,6 +133,11 @@ def search_nodes(
     query = query.strip()
     if not query:
         return {"query": query, "count": 0, "total_matched": 0, "results": []}
+    snippet_max = (
+        max(0, snippet_chars)
+        if snippet_chars is not None
+        else (COMPACT_SNIPPET_CHARS if compact else _SNIPPET_MAX_CHARS)
+    )
 
     documents, unreadable = _scan_documents(kg_root)
     query_tokens = _tokens(query)
@@ -164,7 +191,7 @@ def search_nodes(
                 title=doc.title,
                 score=round(score, 3),
                 matched_fields=sorted(matched_fields),
-                snippet=_snippet(doc, query, query_tokens),
+                snippet=_snippet(doc, query, query_tokens, max_chars=snippet_max),
                 summary_path=doc.summary_path,
                 last_updated=doc.last_updated,
                 content=content,
@@ -208,16 +235,18 @@ def search_nodes(
     if collapsed_paths:
         shown = ", ".join(collapsed_paths[:3])
         more = f" (+{len(collapsed_paths) - 3} more)" if len(collapsed_paths) > 3 else ""
+        # Compact results carry the count only: the path lists were ~2 KB of a
+        # 5 KB compact result, and the note text already names the first three.
+        collapse_detail: Dict[str, Any] = {"collapsed": len(collapsed_paths)}
+        if not compact:
+            collapse_detail["collapsed_paths"] = collapsed_paths[:10]
+            collapse_detail["collapsed_by"] = {p: collapsed_by[p] for p in collapsed_paths[:10]}
         notes.append(
             nt.note(
                 "truncated",
                 f"collapsed {len(collapsed_paths)} ancestor hit(s) that only repeat a "
                 f"descendant's match: {shown}{more}",
-                detail={
-                    "collapsed": len(collapsed_paths),
-                    "collapsed_paths": collapsed_paths[:10],
-                    "collapsed_by": {p: collapsed_by[p] for p in collapsed_paths[:10]},
-                },
+                detail=collapse_detail,
                 why="a propagated fact appears in every ancestor summary; the deepest node is canonical",
                 next_step=f'kvault search "{query}" --no-collapse',
             )
@@ -231,13 +260,15 @@ def search_nodes(
         "limit": limit,
         "collapsed": len(collapsed_paths),
     }
-    if collapsed_paths:
+    if collapsed_paths and not compact:
         out["collapsed_paths"] = collapsed_paths[:10]
         out["collapsed_by"] = {p: collapsed_by[p] for p in collapsed_paths[:10]}
     if wanted_kinds:
         out["kinds"] = sorted(wanted_kinds)
     if prefix is not None:
         out["path_prefix"] = prefix
+    if compact:
+        out["compact"] = True
     if notes:
         out["notes"] = notes
     if include_content:
@@ -248,7 +279,7 @@ def search_nodes(
             "exhausted": budget_exhausted,
         }
     # Bulk payload last: over MCP, key order is reading order.
-    out["results"] = [result.to_dict() for result in results]
+    out["results"] = [result.to_dict(compact=compact) for result in results]
     return out
 
 
@@ -376,7 +407,7 @@ def _scan_documents(kg_root: Path) -> Tuple[List[SearchDocument], List[Dict[str,
                 headings=_headings(content),
                 content=content,
                 summary_path=str(rel_summary),
-                last_updated=_mtime_date(summary_path),
+                last_updated=_meta_date(meta) or _mtime_date(summary_path),
             )
         )
     return documents, unreadable
@@ -469,6 +500,8 @@ def _snippet(
     max_chars: int = _SNIPPET_MAX_CHARS,
 ) -> str:
     text = re.sub(r"\s+", " ", doc.content).strip()
+    if max_chars <= 0:
+        return ""
     if not text:
         return doc.title
     haystack = text.lower()
@@ -554,6 +587,17 @@ def _is_hidden(parts: Sequence[str]) -> bool:
     return any(part.startswith(".") for part in parts)
 
 
+def _meta_date(meta: Dict[str, Any]) -> str:
+    """Frontmatter ``updated`` (else ``created``) as YYYY-MM-DD, or ""."""
+    for key in ("updated", "created"):
+        value = meta.get(key) if meta else None
+        if value:
+            text = str(value).strip().strip("'\"")[:10]
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+                return text
+    return ""
+
+
 def _mtime_date(path: Path) -> str:
     try:
         return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
@@ -563,6 +607,7 @@ def _mtime_date(path: Path) -> str:
 
 __all__ = [
     "KINDS",
+    "COMPACT_SNIPPET_CHARS",
     "SearchDocument",
     "SearchResult",
     "scan_search_documents",

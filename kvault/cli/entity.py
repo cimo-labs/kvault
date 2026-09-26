@@ -24,27 +24,75 @@ from kvault.cli.render import render_notes
 from kvault.core import operations as ops
 
 
+def _echo_gist_parents(parents: list) -> None:
+    if parents:
+        chain = " › ".join(f"{p['title']} ({p['path']})" for p in parents)
+        click.echo(f"Under: {chain}")
+
+
+def _read_several(
+    ctx: click.Context, kb_root: Path, paths: tuple, parents: str, max_total_chars: int
+) -> None:
+    result = ops.read_nodes(kb_root, list(paths), parents=parents, total_max_chars=max_total_chars)
+    if ctx.obj.get("as_json"):
+        output_json(result)
+        if not result.get("success"):
+            ctx.exit(1)
+        return
+    if not result.get("success"):
+        raise click.ClickException(result.get("error", "read failed"))
+    for node in result["nodes"]:
+        click.echo(f"== {node['path']}  ({node['title']}, {node['kind']})")
+        _echo_gist_parents(node.get("parents") or [])
+        click.echo(node.get("content", "").rstrip())
+        if node.get("content_truncated"):
+            click.echo("[content cut: the shared --max-total-chars budget ran out]")
+        click.echo()
+    if result["missing"]:
+        click.echo(f"Not found: {', '.join(result['missing'])}")
+    render_notes(result, get_tier(ctx))
+
+
 @click.command("read")
-@click.argument("path")
+@click.argument("paths", nargs=-1, required=True)
 @click.option(
     "--parents",
-    type=click.Choice(["none", "immediate", "all"]),
+    type=click.Choice(["none", "gist", "immediate", "all"]),
     default="none",
     show_default=True,
-    help="Parent context to include (immediate = parent summary for sibling context).",
+    help=(
+        "Parent context: gist = path, title, one line per ancestor; immediate = the "
+        "parent's full summary; all = every ancestor's full summary."
+    ),
+)
+@click.option(
+    "--max-total-chars",
+    type=int,
+    default=ops.READ_NODES_MAX_CHARS,
+    show_default=True,
+    help="With several paths: content budget shared by all of them.",
 )
 @common_options
 @click.pass_context
 def read_entity(
     ctx: click.Context,
-    path: str,
+    paths: tuple,
     parents: str,
+    max_total_chars: int,
     kb_root: Optional[Path],
     as_json: bool,
 ) -> None:
-    """Read a node (add --parents immediate for the parent summary)."""
+    """Read a node, or several (kvault read a b c: one call, one budget).
+
+    --parents gist adds where each node sits; immediate/all add full parent
+    summaries (one node at a time).
+    """
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
+    if len(paths) > 1:
+        _read_several(ctx, kb_root, paths, parents, max_total_chars)
+        return
+    path = paths[0]
     result = ops.read_node(kb_root, path, parents=parents)
     if result is None:
         if ctx.obj.get("as_json"):
@@ -64,6 +112,8 @@ def read_entity(
             click.echo(f"Aliases: {', '.join(str(a) for a in meta['aliases'])}")
         if meta.get("source"):
             click.echo(f"Source: {meta['source']}")
+        if parents == "gist":
+            _echo_gist_parents(result.get("parents") or [])
         if result.get("parent"):
             parent = result["parent"]
             click.echo(f"Parent: {parent['path']}")

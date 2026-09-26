@@ -600,15 +600,20 @@ def create_server(kb_root: Path | str) -> Any:
         distinct_from: Optional[List[str]] = None,
         max_children: Optional[int] = None,
         series_ok: Optional[bool] = None,
+        verify_by: Optional[str] = None,
         clear: bool = False,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Record a structure decision on a node so check, plan, and the guards honor it.
+        """Record a decision on a node so check, plan, and the guards honor it.
 
         Use it when a person corrects you: `distinct_from` (these are different
-        things; the SIBLINGS finding and the create guard stop for that pair),
-        `max_children` (this parent's own ceiling), `series_ok` (a deliberate
-        chronology). Written through the normal write path, so it is logged.
+        things; the SIBLINGS and DUPLICATE findings and the create guard stop
+        for that pair), `max_children` (this parent's own ceiling), `series_ok`
+        (a deliberate chronology). Use `verify_by` whenever you record a fact
+        that goes stale (pending, in review, awaiting a reply, deployed to
+        staging): YYYY-MM-DD, "+14d" or "+2w", or "none" to clear; check
+        reports STALE once it passes. Written through the normal write path,
+        so it is logged.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -622,6 +627,7 @@ def create_server(kb_root: Path | str) -> Any:
             max_children=max_children,
             series_ok=series_ok,
             clear=clear,
+            verify_by=verify_by,
         )
         _record("mark", result, started)
         return result
@@ -772,8 +778,8 @@ def create_server(kb_root: Path | str) -> Any:
 
         `success` is false only for hard findings (PROPAGATE, LOG, WRITE,
         BRANCH). `findings` is the unified list, hard first; SUMMARY,
-        PENDING, RETRACTED, GHOST, SERIES, SIBLINGS, LOOSE and JOURNAL are
-        warn-only maintenance work. Lists are capped at `max_findings` per
+        PENDING, RETRACTED, GHOST, SERIES, SIBLINGS, DUPLICATE, DANGLING,
+        LOOSE, JOURNAL and STALE are warn-only maintenance work. Lists are capped at `max_findings` per
         code (0 = all) with the hidden counts in `truncated`. `codes` (e.g.
         ["SIBLINGS"]) runs and reports only those checks: the way to get
         one code's full list without the rest of the document.

@@ -2580,17 +2580,32 @@ def mark_node(
     max_children: Optional[int] = None,
     series_ok: Optional[bool] = None,
     clear: bool = False,
+    verify_by: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Record a structure decision in a node's frontmatter (see core.decisions).
 
     Goes through ``write_node`` so it is validated, no-op aware, and logged.
+    *verify_by* takes ``YYYY-MM-DD``, ``+14d``/``+2w``, or ``none`` to clear.
     """
     path = _normalize_node_path(path)
-    if not (distinct_from or max_children is not None or series_ok is not None or clear):
+    if not (
+        distinct_from
+        or max_children is not None
+        or series_ok is not None
+        or verify_by is not None
+        or clear
+    ):
         return error_response(
             ErrorCode.VALIDATION_ERROR,
-            "nothing to record: pass --distinct-from, --max-children, --series-ok, or --clear",
+            "nothing to record: pass --distinct-from, --max-children, --series-ok, "
+            "--verify-by, or --clear",
         )
+    due: Optional[str] = None
+    if verify_by is not None:
+        try:
+            due = dc.parse_verify_by(verify_by)
+        except ValueError as exc:
+            return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
     raw = _read_node_raw(kg_root, path)
     if raw is None:
         return error_response(ErrorCode.NOT_FOUND, f"Node doesn't exist: {path}")
@@ -2601,6 +2616,7 @@ def mark_node(
         max_children=max_children,
         series_ok=series_ok,
         clear=clear,
+        verify_by=due,
     )
     drops = [key for key in dc.DECISION_KEYS if key not in meta and key in (raw["meta"] or {})]
     result = write_node(
@@ -2620,8 +2636,10 @@ def mark_node(
         parts.append(f"max_children={decisions['max_children']}")
     if series_ok is not None:
         parts.append(f"series_ok={str(decisions['series_ok']).lower()}")
+    if due is not None:
+        parts.append(f"verify_by={due}" if due else "verify_by cleared")
     result["did"] = f"marked {path}: " + "; ".join(parts)
-    result["decisions"] = decisions
+    result["decisions"] = {k: v for k, v in decisions.items() if k != "verify_by_raw"}
     result.pop("ancestors", None)  # a decision does not change what the parent should say
     result["ancestor_paths"] = []
     result["propagation_required"] = False

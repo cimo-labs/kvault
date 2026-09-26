@@ -121,7 +121,12 @@ def test_mark_is_idempotent_and_clearable(empty_kb):
     assert first["changed"] and not second["changed"]
     assert any(n["code"] == "unchanged" for n in second["notes"])
     cleared = ops.mark_node(empty_kb, "people/a", clear=True)
-    assert cleared["decisions"] == {"distinct_from": [], "max_children": None, "series_ok": False}
+    assert cleared["decisions"] == {
+        "distinct_from": [],
+        "max_children": None,
+        "series_ok": False,
+        "verify_by": None,
+    }
     assert ops.mark_node(empty_kb, "people/nope", series_ok=True)["success"] is False
     assert ops.mark_node(empty_kb, "people/a")["success"] is False  # nothing to record
 

@@ -5,7 +5,7 @@ warn-class findings print one bounded group per prefix. The human output is
 tier-invariant and ``--json`` is one document (frozen since 0.13). The
 prefix vocabulary is ``[KB]``, ``SUMMARY:``, ``PENDING:``, ``RETRACTED:``,
 since 0.15 ``GHOST:``, ``SERIES:``, ``SIBLINGS:``, ``LOOSE:``, ``JOURNAL:``,
-and since 0.16 ``DUPLICATE:`` and ``DANGLING:``.
+and since 0.16 ``DUPLICATE:``, ``DANGLING:`` and ``STALE:``.
 
 Exit codes:
     0 = All hard checks pass (warn-class findings are warn-only)
@@ -51,7 +51,11 @@ _STRUCTURE_FIX_LINE = {
     "LOOSE": "move into <node>/deep_context/, make it a node, or list it in .kvaultignore",
     "JOURNAL": "one history: journal/YYYY-MM/log.md via kvault journal; a deliberate second "
     "layout goes in .kvaultignore",
+    "STALE": "re-check the node's time-sensitive facts, rewrite what changed, then "
+    "kvault mark <path> --verify-by <next date>",
 }
+#: Warn codes printed as one bounded group each, after SUMMARY/PENDING/RETRACTED.
+GROUPED_CODES = STRUCTURE_CODES + ("STALE",)
 
 
 def _find_kb_root() -> Optional[Path]:
@@ -280,9 +284,10 @@ def check_kb(
         )
     _more("RETRACTED", len(retracted))
 
-    # 0.15: the structural set. One bounded group per prefix, fix line last.
-    for code in STRUCTURE_CODES:
-        group = [f for f in doc["structure_warnings"] if f["code"] == code]
+    # 0.15: the structural set (and 0.16 STALE). One bounded group per
+    # prefix, fix line last.
+    for code in GROUPED_CODES:
+        group = [f for f in doc["findings"] if f["code"] == code]
         _echo_group(code, group, lines, doc["truncated"].get(code, 0))
 
     sys.exit(1 if hard_warnings else 0)

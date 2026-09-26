@@ -14,7 +14,7 @@ Two classes of finding:
 - **warn** (exit 0, one line per finding, bounded): ``SUMMARY``, ``PENDING``,
   ``RETRACTED``, and since 0.15 the structural set ``GHOST``, ``SERIES``,
   ``SIBLINGS``, ``LOOSE``, ``JOURNAL`` (0.16 adds ``DUPLICATE`` and
-  ``DANGLING``).
+  ``DANGLING``), and since 0.16 ``STALE`` (a node's ``verify_by`` passed).
   Maintenance work; ``kvault plan`` orders it.
 
 Every list in the document is bounded (``max_findings`` per code, with the
@@ -65,6 +65,7 @@ WARN_CODES = (
     "DANGLING",
     "LOOSE",
     "JOURNAL",
+    "STALE",
 )
 STRUCTURE_CODES = ("GHOST", "SERIES", "SIBLINGS", "DUPLICATE", "DANGLING", "LOOSE", "JOURNAL")
 ALL_CODES = HARD_CODES + WARN_CODES
@@ -562,6 +563,66 @@ def dangling_findings(kb_root: Path, ignore: Sequence[str]) -> List[Finding]:
     return out
 
 
+def stale_findings(
+    kb_root: Path, ignore: Sequence[str], today: Optional[date] = None
+) -> List[Finding]:
+    """Nodes whose ``verify_by`` date has passed, most overdue first.
+
+    The date is the writer's own promise to re-check facts that go stale
+    (a pending change, an open review). An unparseable value is reported
+    too: it would otherwise never come due.
+    """
+    day = today or date.today()
+    out: List[Finding] = []
+    for summary in sorted(Path(kb_root).rglob(st.SUMMARY_NAME)):
+        rel_path = st.rel(kb_root, summary.parent)
+        if rel_path != "." and (
+            any(part.startswith(".") for part in rel_path.split("/"))
+            or st.is_ignored(rel_path, ignore)
+        ):
+            continue
+        try:
+            if "verify_by" not in summary.read_text(encoding="utf-8", errors="replace"):
+                continue
+        except OSError:
+            continue
+        decision = dc.read_decisions(kb_root, rel_path)
+        raw = decision.get("verify_by_raw")
+        if raw is None:
+            continue
+        due = decision.get("verify_by")
+        if due is None:
+            out.append(
+                Finding(
+                    code="STALE",
+                    path=rel_path,
+                    message=f"verify_by {raw!r} is not a date (YYYY-MM-DD), so it never comes due",
+                    level="warn",
+                    detail={"verify_by": raw, "days_overdue": None},
+                    fix=f"kvault mark {rel_path} --verify-by +14d (or a YYYY-MM-DD date)",
+                )
+            )
+            continue
+        days = (day - date.fromisoformat(due)).days
+        if days <= 0:
+            continue
+        out.append(
+            Finding(
+                code="STALE",
+                path=rel_path,
+                message=f"verify_by {due} passed {days} day{'s' if days != 1 else ''} ago",
+                level="warn",
+                detail={"verify_by": due, "days_overdue": days},
+                fix=(
+                    "re-check the node's time-sensitive facts and rewrite what changed, then "
+                    f"kvault mark {rel_path} --verify-by +14d (or --verify-by none)"
+                ),
+            )
+        )
+    out.sort(key=lambda f: -(f.detail.get("days_overdue") or 10**6))
+    return out
+
+
 def journal_layout_findings(kb_root: Path, ignore: Sequence[str] = ()) -> List[Finding]:
     return [
         Finding(
@@ -696,6 +757,7 @@ def run_checks(
         ("DANGLING", lambda: dangling_findings(root, ignore)),
         ("LOOSE", lambda: loose_findings(root, ignore)),
         ("JOURNAL", lambda: journal_layout_findings(root, ignore)),
+        ("STALE", lambda: stale_findings(root, ignore)),
     ]
     truncated: Dict[str, int] = {}
     warn: List[Finding] = []
@@ -767,6 +829,7 @@ __all__ = [
     "sibling_findings",
     "duplicate_findings",
     "dangling_findings",
+    "stale_findings",
     "journal_layout_findings",
     "check_propagation",
     "check_journal",

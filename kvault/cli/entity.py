@@ -428,6 +428,15 @@ def _move_batch(
     default=None,
     help="This parent's dated children are an intentional chronology",
 )
+@click.option(
+    "--verify-by",
+    "verify_by",
+    default=None,
+    help=(
+        "Re-check PATH's time-sensitive facts by this date: YYYY-MM-DD, +14d or +2w "
+        "from today, or 'none' to clear. check reports STALE: once it passes."
+    ),
+)
 @click.option("--clear", is_flag=True, help="Drop all recorded decisions on PATH first")
 @verbosity_options
 @common_options
@@ -438,6 +447,7 @@ def mark_node(
     distinct_from: tuple,
     max_children: Optional[int],
     series_ok: Optional[bool],
+    verify_by: Optional[str],
     clear: bool,
     kb_root: Optional[Path],
     as_json: bool,
@@ -450,8 +460,10 @@ def mark_node(
 
     A correction that only lives in a conversation is re-proposed next week;
     one recorded here sticks: `distinct_from` silences the sibling-collision
-    finding and the create guard for that pair, `max_children` sets the
-    parent's own ceiling, `--series-ok` keeps a deliberate chronology.
+    finding, the duplicate finding and the create guard for that pair,
+    `max_children` sets the parent's own ceiling, `--series-ok` keeps a
+    deliberate chronology, `--verify-by` sets when the node's time-sensitive
+    facts must be re-checked (STALE: after that).
     """
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     apply_verbosity_options(ctx, quiet=quiet, explain=explain, trace=trace, strict=strict)
@@ -464,6 +476,7 @@ def mark_node(
         max_children=max_children,
         series_ok=series_ok,
         clear=clear,
+        verify_by=verify_by,
     )
     record_op(kb_root, "mark", result, started)
     if ctx.obj.get("as_json"):

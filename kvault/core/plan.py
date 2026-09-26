@@ -66,7 +66,8 @@ PRIORITY = {
     "dangling": 6,
     "loose": 7,
     "journal": 8,
-    "summary": 9,
+    "stale": 9,
+    "summary": 10,
 }
 
 
@@ -224,6 +225,7 @@ def build_plan(
             "DANGLING",
             "LOOSE",
             "JOURNAL",
+            "STALE",
             "SUMMARY",
         ):
             continue
@@ -379,6 +381,21 @@ def build_plan(
                         "then remove it",
                         f"# or, if this layout is deliberate: echo '{fpath}' >> "
                         f"{q}/{st.IGNORE_FILE}",
+                    ],
+                }
+            )
+        elif code == "STALE":
+            items.append(
+                {
+                    "kind": "stale",
+                    "priority": PRIORITY["stale"],
+                    "path": fpath,
+                    "why": finding["message"],
+                    "commands": [
+                        f"kvault read {fpath} --kb-root {q}",
+                        "# re-check the time-sensitive facts it records; rewrite what changed:",
+                        f"kvault write {fpath} --kb-root {q} <<'EOF' … (the updated node) EOF",
+                        f"kvault mark {fpath} --verify-by +14d --kb-root {q}  # the next check-in",
                     ],
                 }
             )

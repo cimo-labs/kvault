@@ -155,7 +155,7 @@ one line, not forty. The vocabulary is closed — 11 codes:
 | `skipped` | kvault could not read something and continued without it |
 | `waited` | kvault blocked on, or broke, another process's lock |
 | `guessed` | an input was unusable and a fallback was chosen |
-| `propagate` | ancestor summaries are stale because of this operation |
+| `propagate` | summaries are stale because of this operation: ancestor rollups, or other nodes that reference what moved |
 | `structure` | this write changed the tree's shape in a way worth a look: a near-duplicate name, a parent past the child ceiling, or a new root category |
 
 **Tiers.** `-q/--quiet` (receipt and warnings only) → normal → `--explain` (adds each note's
@@ -202,13 +202,19 @@ tree with the same rules, so the two never disagree.
 | `SUMMARY:` | A parent rollup is too short, misses children, has placeholder text, is too long, or accretes dated sections | Rewrite as a rollup; `too_long`/`stale_history` means **fold**, never split — chronology belongs in `journal/`, detail in `deep_context/` |
 | `GHOST:` | A directory with no `_summary.md` — invisible to `tree`, `search`, and `check` | Write a summary, or list it in `.kvaultignore` if it is tooling |
 | `SERIES:` | A parent whose children differ only by date or time words: a chronology written as nodes | `kvault plan` folds them: the dated nodes become `deep_context/` material of one current-state node you then write; new timeline entries go to `journal/` |
-| `SIBLINGS:` | Two sibling names share their words, or one basename lives at two depths (buckets like `a_m` and tier × segment facets are exempt) | Merge, or nest one with `kvault move` |
+| `SIBLINGS:` | Two sibling names under one parent share their words | Merge, or nest one with `kvault move` |
+| `DUPLICATE:` | The same thing filed in two places anywhere in the KB: the same name at two depths, the same title, shared aliases, or near-identical text (buckets like `a_m`, tier × segment facets, homonyms, rollups and date series are exempt) | Read both; same thing → fold into one node and park the other under its `deep_context/` (one move to undo); different things → `kvault mark --distinct-from` |
+| `DANGLING:` | A summary links to, or lists as a child, a path with nothing there (moved, deleted, or never created) | Point it at the node's current path (the finding names same-name nodes elsewhere) or drop it |
 | `LOOSE:` | A file outside the node convention: a legacy node file (Markdown with frontmatter, invisible to search), a supporting doc, or an artifact | Adopt it as a node (`plan` emits `kvault write <node> --create < file && git rm file`), move it into `<node>/deep_context/`, or ignore it |
-| `JOURNAL:` | Files off `journal/YYYY-MM/log.md`, or a second history | Fold into the canonical log |
+| `JOURNAL:` | Files off `journal/YYYY-MM/log.md`, or a second history | Fold into the canonical log, or list a deliberate second layout in `.kvaultignore` |
+| `STALE:` | A node's `verify_by` date has passed: it records facts that go stale (a pending change, an open review) | Re-check them, rewrite what changed, `kvault mark <path> --verify-by +14d` |
 | `PENDING:` / `RETRACTED:` | Captured events never promoted; nodes citing retracted events | Promote or resolve; rewrite and re-link |
 
 `.kvaultignore` at the KB root (one fnmatch pattern per line; a directory pattern covers
 its subtree) declares the tooling directories and files that are not nodes and are fine.
+`kvault check --code DUPLICATE` (repeatable) runs and reports one code; `--max-findings 0`
+and `--max-lines 0` return and print its full list. `move` and `delete` name the other
+summaries that still point at the old path (`referrer_paths`).
 
 **One path in.** The guards run only on `kvault write` and the MCP write tools. A node
 written with a file tool or a shell redirect skips them and never reaches the ops log; on a
@@ -218,16 +224,17 @@ nodes through kvault, and `check` is the backstop for the ones that did not.
 **Corrections stick.** Nobody reviews a KB on a schedule; the owner corrects the agent in use,
 after the fact. A correction that only lives in a chat is re-proposed the next week, so it is
 recorded in the node's frontmatter, where every rule reads it: `kvault mark <a> --distinct-from
-<b>` (different things; the sibling finding and the create guard stop for that pair),
-`kvault mark <parent> --max-children N` (this parent is meant to be this wide), `kvault mark
-<parent> --series-ok` (this chronology is intentional). Every `plan` question carries a default,
+<b>` (different things; the sibling and duplicate findings and the create guard stop for that
+pair), `kvault mark <parent> --max-children N` (this parent is meant to be this wide), `kvault
+mark <parent> --series-ok` (this chronology is intentional), `kvault mark <node> --verify-by
++14d` (re-check this node's time-sensitive facts by then). Every `plan` question carries a default,
 and a batch may carry `--new-root` only when it does not increase the root count, so
 consolidation runs unattended and nothing waits on a person.
 
 **The engine**: `kvault plan` turns findings into an ordered worklist with the exact commands —
 parents over the ceiling are clustered by leading word into new parents, each with a ready
-`kvault move --batch` payload; then ghosts, sibling collisions, loose files, journal drift,
-and summary rewrites. It never applies anything, and the judgment calls (are `aio` and
+`kvault move --batch` payload; then ghosts, date series, duplicates, sibling collisions,
+dangling references, loose files, journal drift, stale facts, and summary rewrites. It never applies anything, and the judgment calls (are `aio` and
 `ai_overview` one initiative?) come back as questions. `kvault move --batch --confirm` runs
 a JSON list of `{from, to}` under one lock with one combined propagation list.
 
@@ -267,10 +274,10 @@ written so a cron or systemd job can load it alone.
 
 | Category | Commands |
 |----------|----------|
-| **Orient & discover** | `kvault tree [path] [--depth N] [--max-children N] [--gist]`, `kvault search "<query>"` |
-| **Nodes** | `kvault read`, `kvault write` (stdin) `[--new-root] [--allow-similar]`, `kvault list`, `kvault delete`, `kvault move [--batch --dry-run]` |
+| **Orient & discover** | `kvault tree [path] [--depth N] [--max-children N] [--gist]`, `kvault search "<query>" [--compact] [--parents gist]` |
+| **Nodes** | `kvault read <path>… [--parents gist]`, `kvault write` (stdin) `[--new-root] [--allow-similar]`, `kvault list`, `kvault delete`, `kvault move [--batch --dry-run]` |
 | **Summaries** | `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors` |
-| **Quality** | `kvault validate`, `kvault check [--max-children N]`, `kvault plan [PATH] [--limit N]`, `kvault mark <path> [--distinct-from X] [--max-children N] [--series-ok]` |
+| **Quality** | `kvault validate`, `kvault check [--code X] [--max-findings N\|0] [--max-children N]`, `kvault plan [PATH] [--limit N]`, `kvault mark <path> [--distinct-from X] [--max-children N] [--series-ok] [--verify-by DATE]` |
 | **Journal & artifacts** | `kvault journal`, `kvault artifact daily`, `kvault log tail`, `kvault log summary` |
 | **Lifecycle** | `kvault init`, `kvault status` |
 
@@ -311,10 +318,20 @@ mature KB; pass `"content"` to inline it. Set
 `KVAULT_ALLOWED_ROOTS` to pin allowed roots on shared runtimes. Protocol details:
 [ARCHITECTURE.md](https://github.com/cimo-labs/kvault/blob/main/ARCHITECTURE.md).
 
-Every signal above is on the MCP surface too: `kvault_check` returns the `check` document,
-`kvault_plan` the worklist, `kvault_move_entities` runs a batch, `kvault_mark` records a decision, `kvault_write_node` takes
-`new_root` and `allow_similar`, and `kvault_prepare_summary_update` returns child gists past
-the ceiling (`children="content"` for full bodies). `kvault_validate_kb` is integrity only.
+Every signal above is on the MCP surface too: `kvault_check` returns the `check` document
+(`codes=[...]` for one code's full list), `kvault_plan` the worklist, `kvault_move_entities`
+runs a batch, `kvault_mark` records a decision (`verify_by` included), `kvault_write_node`
+takes `new_root` and `allow_similar`, and `kvault_prepare_summary_update` returns child gists
+past the ceiling (`children="content"` for full bodies). `kvault_validate_kb` is integrity
+only.
+
+Reads stay small over MCP (0.16). `kvault_search` returns compact hits by default (path,
+title, kind, date, one-line snippet: about 3.5 KB for 10 hits; `compact=false` for scores
+and long snippets). `parents="gist"` on search and reads gives each ancestor's path, title,
+and first line, about 2 KB for a whole result, where `parents="all"` used to attach every
+ancestor's full document to every hit (500+ KB on a mature KB; it is now capped by
+`total_max_chars`). `kvault_read_nodes` reads up to 25 picked hits in one call under one
+character budget.
 
 ## It's just files
 

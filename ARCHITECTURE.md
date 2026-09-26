@@ -80,13 +80,18 @@ parent-summary helpers backed by direct-child digests.
   so the guard and the audit cannot disagree.
 - `check.py`: every `kvault check` finding as one stateless document (`run_checks`): hard
   codes (`PROPAGATE`, `LOG`, `WRITE`, `BRANCH`) and bounded warn codes (`SUMMARY`,
-  `PENDING`, `RETRACTED`, `GHOST`, `SIBLINGS`, `LOOSE`, `JOURNAL`). Shared by the CLI
-  and MCP `kvault_check`.
+  `PENDING`, `RETRACTED`, `GHOST`, `SERIES`, `SIBLINGS`, `DUPLICATE`, `DANGLING`, `LOOSE`,
+  `JOURNAL`, `STALE`). `codes=` runs a subset. Shared by the CLI and MCP `kvault_check`.
+- `references.py`: what summaries point at (relative links, path code spans, bare paths,
+  child-list entries), resolved against the tree — `DANGLING:`, and the `referrer_paths`
+  that `move`/`delete` report.
+- `duplicates.py`: KB-wide duplicate pairs (same name, title, aliases, or 5-word shingles;
+  never ancestor/descendant, series, stub, or `distinct_from` pairs) — `DUPLICATE:`.
 - `plan.py`: `build_plan` — findings → ordered worklist with exact commands and `moves`
   payloads; never applies anything.
-- `decisions.py`: structure decisions recorded in node frontmatter (`distinct_from`,
-  `max_children`, `series_ok`) and honored by the guards, `check`, `plan`, and the strict
-  path. The home for a correction, so it is not re-proposed.
+- `decisions.py`: decisions recorded in node frontmatter (`distinct_from`, `max_children`,
+  `series_ok`, and since 0.16 `verify_by`) and honored by the guards, `check`, `plan`, and
+  the strict path. The home for a correction, so it is not re-proposed.
 - `conventions.py`: layout conventions shared by more than one rule (`BACKGROUND_CHILD_DIRS`,
   the `deep_context/` supporting-material child: budgeted as a leaf by the summary audit,
   never a reason for search to collapse its parent).
@@ -235,6 +240,12 @@ pytest -q
 ```
 
 ## Version Notes
+
+- 0.16.0: what agents could not see, and reads that stay small — `DUPLICATE:` (KB-wide),
+  `DANGLING:` (+ `referrer_paths` on move/delete), `STALE:` (`verify_by`), `check --code` /
+  `--max-findings 0`, JOURNAL honors `.kvaultignore`, `parents="gist"`, `read_nodes` /
+  `kvault_read_nodes`, compact search (the MCP default), frontmatter dates in search,
+  loose-file note in search and `+N loose` in tree, memoized frontmatter parsing.
 
 - 0.14.0: bounded outputs — `--version`/`doctor` handshake, `check` ceilings (`too_long`,
   `stale_history`), capture tripwire for shell-mangled text, `events retract` + `RETRACTED:`,

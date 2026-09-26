@@ -2,6 +2,106 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.16.0 - Unreleased
+
+What an agent could not see, and reads that stay small. The work agent (MCP
+only, ~1,000-node KB) reported eight friction points after running 0.15.2;
+each was checked against the code and, where possible, reproduced on copies
+of two real KBs before anything was written. Two turned out to be partly
+already there (children missing from a summary: `missing_child_coverage`;
+the same name at two depths: reported, but hidden by the output cap), and
+one was worse than reported (`parents="all"` on search added 510-640 KB).
+
+### Added
+
+- **`DUPLICATE:`** (warn), `kvault/core/duplicates.py`: the same thing filed
+  in two places anywhere in the KB. Signals: the same name at two depths
+  (moved here from `SIBLINGS`; buckets, per-pair facet layouts and homonyms
+  exempt), the same title words, shared aliases (two, an email/phone, or
+  mutual naming; never from a dated record *about* the subject), and
+  near-identical bodies (5-word shingles, Jaccard >= 0.5 or containment
+  >= 0.8). Ancestor/descendant pairs, date-series members, stubs,
+  `journal/`, `deep_context/` and `distinct_from` pairs are never reported.
+  `plan` emits one `duplicate` item per pair with the reversible default:
+  fold, then park the other node under the keeper's `deep_context/`. On a
+  496-node KB copy: 5 pairs, 4 real, none reported by 0.15.
+- **`DANGLING:`** (warn), `kvault/core/references.py`: summary references
+  that resolve inside the KB to nothing — relative Markdown links, code
+  spans holding a KB path, bare paths (3+ components or an underscore;
+  two-part prose such as "and/or" was all noise), and child-list entries in
+  summaries that demonstrably list their children that way. Findings name
+  same-name nodes elsewhere as the likely new home; `plan` groups them per
+  node. A deleted child can never be newer than its parent, so `PROPAGATE`
+  was blind to all of these.
+- **`move`, `move --batch` and `delete` report referrers**: a `propagate`
+  note (`detail.kind = "references"`, each with `now_at`) and
+  `referrer_paths` — the other summaries that still point at the old path,
+  including relative links inside a moved subtree that its new depth broke.
+- **`STALE:`** (warn) and the `verify_by: YYYY-MM-DD` decision key: set with
+  `kvault mark <path> --verify-by DATE|+14d|+2w|none` (MCP `kvault_mark`
+  `verify_by`) when a node records facts that go stale; reported once the
+  date passes, most overdue first, and when the value is not a date.
+- **`check --code CODE`** (repeatable or comma list; MCP `codes=[...]`) runs
+  and reports only those checks; exit 1 only for a selected hard code. An
+  unknown code is a usage error (exit 2), never a clean report.
+  **`--max-findings N|0`** on the CLI (0 = every finding). **`--max-lines`**
+  is the new name of `--summary-max-warnings` (still accepted); 0 prints
+  every line.
+- **`parents="gist"`** on `read`, `read_entity` and search: each ancestor as
+  `{path, title, gist}`; on search one shared map for all hits (about 2 KB).
+- **`read_nodes` / `kvault read a b c` / MCP `kvault_read_nodes`**: up to 25
+  nodes in one call, one shared content budget (`--max-total-chars`,
+  default 60,000), child paths, `missing` listed.
+- **Compact search** (`--compact`; `compact=true` over MCP): path, title,
+  kind, `last_updated` and a 120-character snippet, without the
+  collapsed-path lists; `--snippet-chars N`. MCP `kvault_search` also takes
+  `content_max_chars`, `total_max_chars` and `snippet_chars`.
+- **Search admits what it cannot see**: a `truncated` note (`detail.kind =
+  "not_indexed"`) counts the loose Markdown files under the searched path
+  and names the ones containing every query token. `tree` shows `+N loose`
+  beside `+N ghost`.
+
+### Changed
+
+- **MCP `kvault_search` returns compact hits by default** (3.2-3.5 KB for
+  10 hits on real KBs, from 8.7-9.9 KB); pass `compact=false` for `score`,
+  `matched_fields`, `summary_path` and the long snippet. The CLI default is
+  unchanged.
+- **`parents="immediate"|"all"` on search are bounded**: full documents are
+  attached only while they fit in `total_max_chars` (the first hit
+  included), with a `truncated` note naming `gist` and `read_nodes`.
+  Before, they were attached outside any budget.
+- **The same name at two depths is a `DUPLICATE:`**, no longer a
+  `SIBLINGS:` line with `detail.kind = "same_name_elsewhere"`. `SIBLINGS:`
+  now means names under one parent only.
+- **`JOURNAL:` honors `.kvaultignore`.** Its fix line has offered the ignore
+  file for a deliberate second layout since 0.15.0, but the check never
+  read it.
+- **Search `last_updated` is the frontmatter date** (`updated`, then
+  `created`), not the file time — on a git clone the file time is the clone
+  date.
+- **The `propagate` note contract**: "summaries are stale because of this
+  operation" — ancestors, or referrers of a moved or deleted path.
+- `plan` priorities renumbered for the new kinds (cluster, ghost, series,
+  duplicate, siblings, dangling, loose, journal, stale, summary).
+- `mark` results carry `verify_by` in `decisions`.
+
+### Performance
+
+- **Frontmatter parsing is memoized** (bounded LRU on the exact block text;
+  callers get a deep copy). One `check` parsed each summary's frontmatter
+  about seven times; YAML was ~80% of its run time. `check` on a 496-node
+  KB copy: 1.62 s in 0.15.2, 1.42 s in 0.16.0 with the three new checks.
+  `check` and `plan` output are byte-identical with and without the cache.
+
+### Not done
+
+- A configurable journal layout (`kvault journal` writing a weekly tree):
+  `.kvaultignore` now lets a deliberate second layout coexist with
+  `journal/YYYY-MM/log.md`.
+- A KB-wide duplicate guard at create time, and the word-based stale
+  heuristic ("pending", "WIP" + age: 117 hits on a 496-node KB).
+
 ## 0.15.2 - 2026-09-10
 
 First contact with the KB that motivated 0.15: the work agent ran the

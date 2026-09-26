@@ -13,7 +13,7 @@ check` names each of these; `kvault plan` orders the fixes and emits the
 commands. This skill is the procedure around those two commands. The plan
 comes from kvault, not from you, so every runtime makes the same moves.
 
-Requires knowledgevault 0.15.1 or later. The first line of every unattended
+Requires knowledgevault 0.16.0 or later. The first line of every unattended
 job is `kvault doctor`, so a runtime older than the skill text is visible in
 the job log instead of silently missing the signals below.
 
@@ -33,9 +33,12 @@ are on the `[KB]` line; everything else is warn-only maintenance work.
 | `SUMMARY:` | A parent rollup is too short, misses children, has placeholder text, is too long, or accretes dated sections | `too_short`/`missing_child_coverage`/`placeholder_language`: rewrite as a rollup. `too_long`/`stale_history`: **fold, never split** — chronology goes to `journal/`, detail to `<node>/deep_context/` |
 | `GHOST:` | A directory with no `_summary.md`: invisible to tree, search, and check | Write a summary (`kvault write <path> --create`) or list it in `.kvaultignore` if it is tooling |
 | `SERIES:` | A parent whose children differ only by date/time words — a chronology written as nodes (daily cards) | Run the `series` item from `kvault plan`: its batch moves the dated nodes under one hub's `deep_context/`; then write the hub as the current state (update it if `new_parent_exists`). New timeline entries go to `journal/`. Never add another dated node to a series |
-| `SIBLINGS:` | Two names under one parent share their words, or one basename lives at two depths | Same thing → merge and delete one. Subtopic → `kvault move`. Undecidable → leave it for the monthly review |
+| `SIBLINGS:` | Two names under one parent share their words | Same thing → merge and delete one. Subtopic → `kvault move`. Undecidable → leave it for the monthly review |
+| `DUPLICATE:` | The same thing in two places anywhere in the KB: same name at two depths, same title, shared aliases, or near-identical text | Read both. Same thing → fold the unique facts into one node, then park the other under its `deep_context/` (the `duplicate` item's move; one move undoes it). Different things → `kvault mark <a> --distinct-from <b>` |
+| `DANGLING:` | A summary links to, or lists as a child, a path with nothing there | Point it at the node's current path (the finding names same-name nodes elsewhere) or drop it |
 | `LOOSE:` | A file outside the node convention. `legacy_node_file` = Markdown with frontmatter that search cannot see; `supporting_doc`; `artifact` | Adopt legacy node files as nodes (`plan` emits `kvault write <node> --create < file && git rm file`); supporting docs into `<node>/deep_context/`; artifacts ignored |
-| `JOURNAL:` | Files off the `journal/YYYY-MM/log.md` layout, or a second history | Fold into the canonical log with `kvault journal`, then remove |
+| `JOURNAL:` | Files off the `journal/YYYY-MM/log.md` layout, or a second history | Fold into the canonical log with `kvault journal`, then remove. A second layout the owner keeps on purpose (a weekly journal tree) goes in `.kvaultignore` instead |
+| `STALE:` | A node's `verify_by` date passed: it records facts that go stale | Re-check them, rewrite what changed, then `kvault mark <path> --verify-by +14d` |
 | `PENDING:` / `RETRACTED:` | Captured events never promoted; nodes citing retracted events | Promote or resolve; rewrite and re-link |
 
 Write-time notes you will see in the ops log (`kvault log tail`): a
@@ -79,7 +82,11 @@ kvault check --json --kb-root "$KB" > "$LOG/check.json"
 3. `SUMMARY: placeholder_language` on a path that ends in a stub you or
    another agent created today — rewrite it as a rollup now; do not leave
    stubs overnight twice.
-4. Finish with `kvault check --strict`-equivalent discipline: log the exit
+4. `STALE:` — re-check each overdue node's time-sensitive facts from the
+   evidence you can reach, rewrite what changed, and set the next date
+   (`kvault mark <path> --verify-by +14d`). `DANGLING:` on a node you touched
+   today — point the reference at the current path.
+5. Finish with `kvault check --strict`-equivalent discipline: log the exit
    code and the `did` line. **No restructuring at night.** Moves are weekly.
 
 ### Weekly (headless)
@@ -107,8 +114,10 @@ kvault plan --json --limit 5 --kb-root "$KB" > "$LOG/plan.json"
 2. `ghost` items: read what is inside, then either write the summary or add
    the path to `.kvaultignore`. Tooling directories (`scripts/`,
    `sources/`) are ignore entries, not nodes.
-3. `siblings`, `loose`, `journal` items: follow the item's commands. For a
-   `siblings` item, read both nodes; the summaries decide, not the names.
+3. `duplicate`, `siblings`, `dangling`, `loose`, `journal`, `stale` items:
+   follow the item's commands. For a `duplicate` or `siblings` item, read both
+   nodes; the summaries decide, not the names. After any move, fix the
+   summaries in `referrer_paths` as well as `ancestor_paths`.
 4. `summary` items last.
 5. `kvault validate --kb-root "$KB"`, then journal the moves
    (`kvault journal`), then stop. **One structural batch per run.** Stop
@@ -175,15 +184,18 @@ roots), do this once, one batch at a time:
 
 | Purpose | Command |
 |---------|---------|
-| Health, one document | `kvault check [--json] [--max-children N] [--summary-max-warnings N]` |
+| Health, one document | `kvault check [--json] [--code X] [--max-findings N\|0] [--max-lines N\|0] [--max-children N]` |
 | Worklist | `kvault plan [PATH] [--json] [--limit N\|0]` |
 | Batch move | `kvault move --batch [--dry-run] --confirm` (stdin: JSON list of `{from, to}`) |
 | Guards on create | `kvault write <path> --create [--new-root] [--allow-similar]` |
-| Record a correction | `kvault mark <path> [--distinct-from <other>]… [--max-children N] [--series-ok] [--clear]` |
+| Record a correction | `kvault mark <path> [--distinct-from <other>]… [--max-children N] [--series-ok] [--verify-by DATE] [--clear]` |
 | Ignore tooling | `.kvaultignore` at the KB root, one fnmatch pattern per line; a directory pattern covers its subtree |
 | Runtime handshake | `kvault doctor`, `kvault --version` |
 | What ran recently | `kvault log tail [--session ID]`, `kvault log summary` |
 
-Over MCP the same signals are `kvault_check`, `kvault_plan`,
-`kvault_move_entities`, `kvault_mark`, and the `new_root` / `allow_similar`
-arguments on `kvault_write_node`; `kvault_validate_kb` is integrity only.
+Over MCP the same signals are `kvault_check` (`codes=[...]` and
+`max_findings=0` for one code's full list), `kvault_plan`,
+`kvault_move_entities`, `kvault_mark` (`verify_by` included), and the
+`new_root` / `allow_similar` arguments on `kvault_write_node`;
+`kvault_validate_kb` is integrity only. Read the nodes an item names with one
+`kvault_read_nodes` call.

@@ -70,17 +70,9 @@ def test_distinct_from_silences_same_name_elsewhere(empty_kb):
     # different depths: not a facet layout, so it is reported until recorded
     _n(empty_kb, "people/family")
     _n(empty_kb, "people/friends/family")
-    assert [
-        f
-        for f in run_checks(empty_kb)["findings"]
-        if f["detail"].get("kind") == "same_name_elsewhere"
-    ]
+    assert [f for f in run_checks(empty_kb)["findings"] if f["code"] == "DUPLICATE"]
     ops.mark_node(empty_kb, "people/family", distinct_from=["people/friends/family"])
-    assert not [
-        f
-        for f in run_checks(empty_kb)["findings"]
-        if f["detail"].get("kind") == "same_name_elsewhere"
-    ]
+    assert not [f for f in run_checks(empty_kb)["findings"] if f["code"] == "DUPLICATE"]
 
 
 # ── max_children ───────────────────────────────────────────────────────
@@ -129,7 +121,12 @@ def test_mark_is_idempotent_and_clearable(empty_kb):
     assert first["changed"] and not second["changed"]
     assert any(n["code"] == "unchanged" for n in second["notes"])
     cleared = ops.mark_node(empty_kb, "people/a", clear=True)
-    assert cleared["decisions"] == {"distinct_from": [], "max_children": None, "series_ok": False}
+    assert cleared["decisions"] == {
+        "distinct_from": [],
+        "max_children": None,
+        "series_ok": False,
+        "verify_by": None,
+    }
     assert ops.mark_node(empty_kb, "people/nope", series_ok=True)["success"] is False
     assert ops.mark_node(empty_kb, "people/a")["success"] is False  # nothing to record
 

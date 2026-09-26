@@ -57,6 +57,27 @@ from kvault.core.search import KINDS
     help="Only nodes of this kind (repeatable).",
 )
 @click.option("--path", "path_prefix", default=None, help="Only nodes at or under this path.")
+@click.option(
+    "--compact",
+    is_flag=True,
+    help="Path, title, kind, date, and a one-line snippet per hit (about a third the size).",
+)
+@click.option(
+    "--snippet-chars",
+    type=int,
+    default=None,
+    help="Snippet length per hit (default 440, or 120 with --compact; 0 = none).",
+)
+@click.option(
+    "--parents",
+    type=click.Choice(["none", "gist", "immediate", "all"]),
+    default="none",
+    show_default=True,
+    help=(
+        "Where each hit sits: gist = one shared map from ancestor path to {title, gist}; "
+        "immediate/all = full documents per hit while they fit in --max-total-chars."
+    ),
+)
 @verbosity_options
 @common_options
 @click.pass_context
@@ -70,6 +91,9 @@ def search_nodes(
     no_collapse: bool,
     kinds: Tuple[str, ...],
     path_prefix: Optional[str],
+    compact: bool,
+    snippet_chars: Optional[int],
+    parents: str,
     kb_root: Optional[Path],
     as_json: bool,
     quiet: bool,
@@ -91,6 +115,9 @@ def search_nodes(
         collapse=not no_collapse,
         kinds=list(kinds) or None,
         path_prefix=path_prefix,
+        compact=compact,
+        snippet_chars=snippet_chars,
+        parents=parents,
     )
     if ctx.obj.get("as_json"):
         output_json(result)
@@ -104,11 +131,18 @@ def search_nodes(
         finish_op(ctx, result)
         return
 
+    ancestry = result.get("parents") or {}
     for item in result["results"]:
-        click.echo(f"{item['path']}  {item['title']}  {item['kind']}  score={item['score']}")
+        if compact:
+            click.echo(f"{item['path']}  {item['title']}  ({item['last_updated'] or 'undated'})")
+        else:
+            click.echo(f"{item['path']}  {item['title']}  {item['kind']}  score={item['score']}")
         if item.get("snippet"):
             click.echo(f"  {item['snippet']}")
-        if tier >= nt.EXPLAIN:
+        chain = [ancestry[a]["title"] for a in ops.ancestor_paths(item["path"]) if a in ancestry]
+        if chain:
+            click.echo(f"  under: {' › '.join(chain)}")
+        if tier >= nt.EXPLAIN and not compact:
             click.echo(f"  matched: {', '.join(item.get('matched_fields', []))}")
             # --include-content used to be a silent no-op in human mode.
             if item.get("content"):

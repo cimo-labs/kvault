@@ -15,6 +15,7 @@ initiative? are ``people`` and ``team``?) come back as ``questions``.
 
 from __future__ import annotations
 
+import glob
 import json
 import shlex
 from pathlib import Path
@@ -23,7 +24,7 @@ from typing import Any, Dict, List, Optional
 from kvault._version import __version__
 from kvault.core import notes as nt
 from kvault.core import structure as st
-from kvault.core.check import DEFAULT_MAX_CHILDREN, run_checks
+from kvault.core.check import DEFAULT_MAX_CHILDREN, distinct_command, run_checks
 from kvault.core.frontmatter import parse_frontmatter
 
 #: Members listed with a gist per cluster item; past this the count stands in.
@@ -61,11 +62,28 @@ PRIORITY = {
     "cluster": 1,
     "ghost": 2,
     "series": 3,
-    "siblings": 4,
-    "loose": 5,
-    "journal": 6,
-    "summary": 7,
+    "duplicate": 4,
+    "siblings": 5,
+    "dangling": 6,
+    "loose": 7,
+    "journal": 8,
+    "stale": 9,
+    "summary": 10,
 }
+
+
+def _ignore_line(root: Path, rel_path: str) -> str:
+    """A shell line appending exactly *rel_path* to ``.kvaultignore``.
+
+    The pattern is fnmatch-escaped (a ``[1]`` in a name is not a character
+    class), a leading ``#`` is escaped (the file reads it as a comment), and
+    ``printf`` writes it (``echo`` mangles ``-n``, ``-e`` and backslashes).
+    """
+    pattern = glob.escape(rel_path)
+    if pattern.startswith("#"):
+        pattern = "[#]" + pattern[1:]
+    target = shlex.quote(str(root / st.IGNORE_FILE))
+    return f"printf '%s\\n' {shlex.quote(pattern)} >> {target}"
 
 
 def _join(parent: str, name: str) -> str:
@@ -119,6 +137,7 @@ def build_plan(
     # items, which is a wall, not a worklist.
     sibling_groups: Dict[str, List[Dict[str, Any]]] = {}
     loose_groups: Dict[str, List[Dict[str, Any]]] = {}
+    dangling_groups: Dict[str, List[Dict[str, Any]]] = {}
 
     for finding in doc["findings"]:
         fpath = finding["path"]
@@ -213,16 +232,29 @@ def build_plan(
                 )
             continue
 
-        if code not in ("GHOST", "SERIES", "SIBLINGS", "LOOSE", "JOURNAL", "SUMMARY"):
+        if code not in (
+            "GHOST",
+            "SERIES",
+            "SIBLINGS",
+            "DUPLICATE",
+            "DANGLING",
+            "LOOSE",
+            "JOURNAL",
+            "STALE",
+            "SUMMARY",
+        ):
             continue
         anchor = fpath
         if code == "SUMMARY":
             anchor = fpath[: -len("/_summary.md")] if fpath.endswith("/_summary.md") else "."
-        if code == "SIBLINGS" and finding["detail"].get("kind") == "same_name_elsewhere":
-            anchor = finding["detail"]["paths"][0]
         if code == "LOOSE":
             anchor = finding["detail"].get("parent", ".")
-        if not _in_scope(anchor, scope):
+        if code == "DUPLICATE":
+            if not (
+                _in_scope(finding["detail"]["a"], scope) or _in_scope(finding["detail"]["b"], scope)
+            ):
+                continue
+        elif not _in_scope(anchor, scope):
             continue
 
         if code == "SERIES":
@@ -304,14 +336,14 @@ def build_plan(
                 )
             items.append(item)
             continue
-        if code == "SIBLINGS" and finding["detail"].get("kind") not in (
-            "same_name_elsewhere",
-            "more_pairs",
-        ):
+        if code == "SIBLINGS" and finding["detail"].get("kind") != "more_pairs":
             sibling_groups.setdefault(fpath, []).append(finding)
             continue
         if code == "LOOSE":
             loose_groups.setdefault(anchor, []).append(finding)
+            continue
+        if code == "DANGLING":
+            dangling_groups.setdefault(fpath, []).append(finding)
             continue
 
         if code == "GHOST":
@@ -324,49 +356,38 @@ def build_plan(
                     "commands": [
                         f"kvault write {fpath} --create --kb-root {q} "
                         "<<'EOF' … (frontmatter + a rollup of what is inside) EOF",
-                        f"# or, if it is tooling and not knowledge: "
-                        f"echo '{fpath}/' >> {q}/{st.IGNORE_FILE}",
+                        f"# or, if it is tooling and not knowledge: {_ignore_line(root, fpath)}",
                     ],
                 }
             )
-        elif code == "SIBLINGS":
-            detail = finding["detail"]
-            if detail.get("kind") == "more_pairs":
-                continue
-            if detail.get("kind") == "same_name_elsewhere":
-                questions.append(
-                    f"'{fpath}' lives at {len(detail['paths'])} places "
-                    f"({', '.join(detail['paths'][:4])}): which one is home? — default: read both; "
-                    "different things → kvault mark <one> --distinct-from <other>"
-                )
-                items.append(
-                    {
-                        "kind": "siblings",
-                        "priority": PRIORITY["siblings"],
-                        "path": detail["paths"][0],
-                        "why": finding["message"],
-                        "commands": [f"kvault read {p} --kb-root {q}" for p in detail["paths"][:4]]
-                        + ["# then: kvault move --confirm <loser> <winner>/<name>, or delete"],
-                    }
-                )
-            else:
-                a, b = detail.get("a"), detail.get("b")
-                items.append(
-                    {
-                        "kind": "siblings",
-                        "priority": PRIORITY["siblings"],
-                        "path": fpath,
-                        "why": finding["message"],
-                        "commands": [
-                            f"kvault read {_join(fpath, a)} --kb-root {q}",
-                            f"kvault read {_join(fpath, b)} --kb-root {q}",
-                            "# same thing → merge and delete one; subtopic → "
-                            f"kvault move --confirm {_join(fpath, b)} {_join(fpath, a)}/{b}",
-                            f"# different things → kvault mark {_join(fpath, a)} --distinct-from {b} "
-                            f"--kb-root {q}  (the finding stops)",
-                        ],
-                    }
-                )
+        elif code == "DUPLICATE":
+            d = finding["detail"]
+            a, b = d["a"], d["b"]
+            other = b.rsplit("/", 1)[-1]
+            parked = other
+            for n in range(2, 100):
+                if not (root / a / "deep_context" / parked).exists():
+                    break
+                parked = f"{other}_{n}"
+            items.append(
+                {
+                    "kind": "duplicate",
+                    "priority": PRIORITY["duplicate"],
+                    "path": a,
+                    "other": b,
+                    "why": f"{a} and {b}: {finding['message'].split(': ', 1)[-1]}",
+                    "signals": d.get("signals", []),
+                    "commands": [
+                        f"kvault read {a} --kb-root {q}",
+                        f"kvault read {b} --kb-root {q}",
+                        "# same thing → fold the unique facts of one into the other "
+                        "(kvault write <keeper>), then park the other where one move undoes it:",
+                        f"kvault move --confirm {b} {a}/deep_context/{parked} --kb-root {q}",
+                        f"# different things → {distinct_command(a, b)} --kb-root {q}"
+                        "  (the finding stops)",
+                    ],
+                }
+            )
         elif code == "JOURNAL":
             items.append(
                 {
@@ -377,6 +398,23 @@ def build_plan(
                     "commands": [
                         "# fold its entries into journal/YYYY-MM/log.md with kvault journal, "
                         "then remove it",
+                        f"# or, if this layout is deliberate: {_ignore_line(root, fpath)}",
+                    ],
+                }
+            )
+        elif code == "STALE":
+            items.append(
+                {
+                    "kind": "stale",
+                    "priority": PRIORITY["stale"],
+                    "path": fpath,
+                    "why": finding["message"],
+                    "commands": [
+                        f"kvault read {fpath} --kb-root {q}",
+                        "# re-check the time-sensitive facts it records; rewrite what changed:",
+                        f"kvault write {fpath} --kb-root {q} <<'EOF' … (the updated node) EOF",
+                        f"kvault mark {fpath} --verify-by +14d --kb-root {q}  # still time-sensitive",
+                        f"# settled: kvault mark {fpath} --verify-by none --kb-root {q}",
                     ],
                 }
             )
@@ -416,12 +454,37 @@ def build_plan(
     items = [
         i for i in items if not (i["kind"] in ("cluster", "series") and _under_another_batch(i))
     ]
+    # Every other item names paths as they are now; one under a batch's
+    # source would act on a path the batch moves (a duplicate item could
+    # park a node under a stub left at the old path). Defer them: the next
+    # plan, run after the batch, computes them against the moved tree.
+    moved_sources = [
+        mv["from"] for i in items if i["kind"] in ("cluster", "series") for mv in i.get("moves", [])
+    ]
+
+    def _moves_under(path: Optional[str]) -> bool:
+        return bool(path) and any(
+            path == src or str(path).startswith(src + "/") for src in moved_sources
+        )
+
+    deferred = [
+        i
+        for i in items
+        if i["kind"] not in ("cluster", "series")
+        and (_moves_under(i.get("path")) or _moves_under(i.get("other")))
+    ]
+    items = [i for i in items if i not in deferred]
     for item in items:
         question = item.pop("_question", None)
         if question:
             questions.append(question)
 
     for parent, group in sibling_groups.items():
+        if _moves_under(parent) or any(
+            _moves_under(_join(parent, str(g["detail"].get(k)))) for g in group for k in ("a", "b")
+        ):
+            deferred.append({"kind": "siblings", "path": parent})
+            continue
         top = group[0]["detail"]
         items.append(
             {
@@ -449,6 +512,9 @@ def build_plan(
             }
         )
     for parent, group in loose_groups.items():
+        if _moves_under(parent):
+            deferred.append({"kind": "loose", "path": parent})
+            continue
         kinds = {
             k: sum(1 for g in group if g["detail"].get("kind") == k)
             for k in ("legacy_node_file", "supporting_doc", "artifact")
@@ -501,10 +567,50 @@ def build_plan(
             }
         )
 
+    for node, group in dangling_groups.items():
+        suggested = [m for g in group for m in g["detail"].get("moved_to", [])]
+        if _moves_under(node) or any(_moves_under(m) for m in suggested):
+            deferred.append({"kind": "dangling", "path": node})
+            continue
+        items.append(
+            {
+                "kind": "dangling",
+                "priority": PRIORITY["dangling"],
+                "path": node,
+                "why": (
+                    f"{len(group)} reference(s) in its summary point at nothing, "
+                    f"e.g. {group[0]['message']}"
+                ),
+                "refs": [
+                    {
+                        "kind": g["detail"].get("kind"),
+                        "raw": g["detail"].get("raw"),
+                        "target": g["detail"].get("target"),
+                        "moved_to": g["detail"].get("moved_to", []),
+                    }
+                    for g in group[:12]
+                ],
+                "commands": [
+                    f"kvault read {node} --kb-root {q}",
+                    "# point each reference at the node's current path (moved_to), or drop it:",
+                    f"kvault write {node} --kb-root {q} <<'EOF' … (the corrected summary) EOF",
+                ],
+            }
+        )
+
     items.sort(key=lambda i: (i["priority"], i["path"]))
     total = len(items)
     shown = items[:limit] if limit and limit > 0 else items
     notes: List[Dict[str, Any]] = []
+    if deferred:
+        notes.append(
+            nt.note(
+                "truncated",
+                f"{len(deferred)} item(s) name paths a batch above moves; re-run kvault plan "
+                "after the batches to get them against the moved tree",
+                detail={"deferred": [{"kind": d["kind"], "path": d.get("path")} for d in deferred]},
+            )
+        )
     if len(shown) < total:
         notes.append(
             nt.note(

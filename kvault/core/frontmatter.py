@@ -8,6 +8,8 @@ duplicate keys, and non-mapping payloads.
 """
 
 import yaml
+from copy import deepcopy
+from functools import lru_cache
 from typing import Any, Dict, Mapping, Tuple
 
 
@@ -36,6 +38,22 @@ _StrictLoader.add_constructor(
 )
 
 
+class _DatesAsTextLoader(yaml.SafeLoader):
+    """SafeLoader that leaves timestamps as strings.
+
+    An impossible date (``verify_by: 2026-09-31``) passes the YAML parser and
+    then fails in the date constructor with ``ValueError``, which is not a
+    ``YAMLError``: one such value used to crash every command that read the
+    node. The tolerant parser falls back to this loader instead.
+    """
+
+
+_DatesAsTextLoader.yaml_implicit_resolvers = {
+    first: [(tag, rx) for tag, rx in resolvers if tag != "tag:yaml.org,2002:timestamp"]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+
+
 def _split_frontmatter(content: str) -> Tuple[str, str, bool]:
     """Return (yaml_block, remaining, found); found is False when no block."""
     if not content.startswith("---"):
@@ -44,6 +62,39 @@ def _split_frontmatter(content: str) -> Tuple[str, str, bool]:
     if end == -1:
         return "", content, False
     return content[4:end], content[end + 4 :].lstrip("\n"), True
+
+
+#: Blocks longer than this parse uncached, so the memo stays small (a few MB)
+#: even in a long-running MCP server; typical frontmatter is a few hundred bytes.
+_MEMO_MAX_BLOCK = 4096
+
+
+def _safe_load(yaml_content: str) -> Tuple[bool, Any]:
+    if len(yaml_content) > _MEMO_MAX_BLOCK:
+        return _safe_load_cached.__wrapped__(yaml_content)
+    return _safe_load_cached(yaml_content)
+
+
+@lru_cache(maxsize=4096)
+def _safe_load_cached(yaml_content: str) -> Tuple[bool, Any]:
+    """``yaml.safe_load`` memoized on the exact block text.
+
+    One ``kvault check`` parses every summary's frontmatter about seven times
+    (one pass per rule), and pure-Python YAML was ~80% of check's run time on
+    a 500-node KB. The key is the text itself, so an edited file can never
+    hit a stale entry; callers get a deep copy because they mutate metadata.
+    """
+    try:
+        return True, yaml.safe_load(yaml_content)
+    except yaml.YAMLError:
+        return False, None
+    except (ValueError, TypeError):
+        try:
+            return True, yaml.load(yaml_content, Loader=_DatesAsTextLoader)
+        except (yaml.YAMLError, ValueError, TypeError, RecursionError):
+            return False, None
+    except RecursionError:
+        return False, None
 
 
 def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
@@ -70,15 +121,14 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     if not found:
         return {}, content
 
-    try:
-        meta = yaml.safe_load(yaml_content)
-    except yaml.YAMLError:
+    ok, meta = _safe_load(yaml_content)
+    if not ok:
         return {}, content
     if meta is None:
         return {}, remaining
     if not isinstance(meta, dict):
         return {}, content
-    return meta, remaining
+    return deepcopy(meta), remaining
 
 
 def parse_frontmatter_strict(content: str) -> Tuple[Dict[str, Any], str]:
@@ -100,7 +150,8 @@ def parse_frontmatter_strict(content: str) -> Tuple[Dict[str, Any], str]:
         meta = yaml.load(yaml_content, Loader=_StrictLoader)
     except FrontmatterError:
         raise
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, ValueError, TypeError) as exc:
+        # ValueError: an impossible date such as 2026-09-31
         raise FrontmatterError(f"Invalid YAML frontmatter: {exc}") from exc
     if meta is None:
         return {}, remaining

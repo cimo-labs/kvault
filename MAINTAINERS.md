@@ -56,10 +56,11 @@ kvault/
 from kvault.core import operations as ops
 
 # Stateless — all functions take kg_root: Path as first arg
-ops.read_node(kg_root, path, parents="immediate")
+ops.read_node(kg_root, path, parents="immediate")   # none | gist | immediate | all
+ops.read_nodes(kg_root, paths, parents="none", total_max_chars=20000)   # budget counts whole nodes
 ops.write_node(kg_root, path, content, meta=..., create=...)
 ops.list_nodes(kg_root, path=".", recursive=False)
-ops.search_nodes(kg_root, query, limit=10)
+ops.search_nodes(kg_root, query, limit=10, compact=False, parents="none")
 ops.prepare_summary_update(kg_root, path)
 ops.write_parent_summary(kg_root, path, content, children_digest, meta=...)
 ops.read_entity(kg_root, path)
@@ -111,8 +112,9 @@ from kvault.core.storage import (
 
 ```bash
 # Node operations
-kvault search <query> [--limit N] [--kind root|category|entity]... [--path PREFIX] [--no-collapse] [--json]
-kvault read <path> [--parents none|immediate|all] [--json]      # default none since 0.14.0
+kvault search <query> [--limit N] [--kind root|category|entity]... [--path PREFIX] [--no-collapse] \
+              [--compact] [--snippet-chars N] [--parents none|gist|immediate|all] [--json]
+kvault read <path>... [--parents none|gist|immediate|all] [--max-total-chars N] [--json]   # several paths: one call
 kvault write <path> [--create] [--reasoning TEXT] [--json] < content.md
 kvault list [path] [--recursive] [--json]
 
@@ -136,8 +138,9 @@ kvault events retract <id> --reason TEXT [--superseded-by ID] [--json]
 kvault status [--root-summary] [--json]
 kvault tree [--depth N]
 kvault validate [--json]
-kvault check [--kb-root PATH] [--json] [--no-summary-quality] [--summary-max-warnings N] \
-             [--summary-max-words N|0] [--summary-max-dated-sections N|0] [--pending-max-age D]
+kvault check [--kb-root PATH] [--json] [--code CODE]... [--max-findings N|0] [--max-lines N|0] \
+             [--no-summary-quality] [--summary-max-words N|0] [--summary-max-dated-sections N|0] \
+             [--pending-max-age D] [--max-children N]
 kvault doctor [--kb-root PATH] [--json]   # runtime/env/KB-binding report; exit 0 always
 
 # Init & artifacts

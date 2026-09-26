@@ -71,6 +71,16 @@ _PLACEHOLDER_LINE_RE = re.compile(
 )
 SUMMARY_UPDATE_DIGEST_ALGORITHM = "direct-child-summary-sha256-v1"
 MAX_DIRECT_CHILDREN = 10
+#: Parent context a read can carry. ``gist`` (0.16) is path, title, and one
+#: line per ancestor; ``immediate``/``all`` are full documents.
+PARENTS_MODES = ("none", "gist", "immediate", "all")
+READ_NODES_MAX_PATHS = 25
+#: read_nodes' shared budget in characters of compact JSON (whole nodes, not
+#: just content). MCP defaults lower: its first user inlines ~10 KB.
+READ_NODES_MAX_CHARS = 20000
+READ_NODES_MCP_MAX_CHARS = 8000
+#: Child paths listed per node in read_nodes; past this, children_count says how many.
+READ_NODES_MAX_CHILDREN = 50
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +224,16 @@ def _walk_outline(
             if st.is_ghost(d)
         )
     )
+    # Loose files are invisible the same way (0.16): count what LOOSE: reports.
+    loose_count = (
+        0
+        if path != "." and st.is_reserved_name(slug)
+        else sum(
+            1
+            for f in st.loose_files_in(kg_root if path == "." else kg_root / path, kg_root, ignore)
+            if not f.rsplit("/", 1)[-1].startswith("_")
+        )
+    )
 
     descendants = sum(1 + c["descendants_count"] for c in children)
     updated_max = updated
@@ -233,6 +253,7 @@ def _walk_outline(
         "children_count": len(children),
         "descendants_count": descendants,
         "ghost_count": ghost_count,
+        "loose_count": loose_count,
         "children": children,
         "truncated": None,
     }
@@ -294,6 +315,8 @@ def render_outline_text(outline: Dict[str, Any]) -> str:
             counts.append(f"{node['children_count']} children, {node['descendants_count']} total")
         if node.get("ghost_count"):
             counts.append(f"+{node['ghost_count']} ghost")
+        if node.get("loose_count"):
+            counts.append(f"+{node['loose_count']} loose")
         if counts:
             parts.append(f"[{', '.join(counts)}]")
         if node["updated_max"]:
@@ -463,6 +486,11 @@ def _ancestor_node_paths(path: str) -> List[str]:
     return ancestors
 
 
+def ancestor_paths(path: str) -> List[str]:
+    """Ancestors of a node path, nearest first, ending with the root ``"."``."""
+    return _ancestor_node_paths(_normalize_node_path(path))
+
+
 def _node_kind(kg_root: Path, path: str) -> str:
     if path == ".":
         return "root"
@@ -499,13 +527,12 @@ def _read_node_raw(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
     summary_path = _summary_path_for_node(kg_root, path)
     if not summary_path.exists():
         return None
+    if not st.inside_root(summary_path, kg_root):
+        return None  # a _summary.md symlinked out of the KB is not a node of it
     raw = summary_path.read_text()
     meta, body = parse_frontmatter(raw)
     if not meta:
-        meta_path = (kg_root if path == "." else kg_root / path) / "_meta.json"
-        if meta_path.exists():
-            with open(meta_path) as f:
-                meta = json.load(f)
+        meta = _legacy_meta(kg_root, (kg_root if path == "." else kg_root / path) / "_meta.json")
     content = body if meta else raw
     return {
         "path": path,
@@ -519,8 +546,28 @@ def _read_node_raw(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def _legacy_meta(kg_root: Path, meta_path: Path) -> Dict[str, Any]:
+    """A legacy ``_meta.json`` as a dict, or ``{}``.
+
+    Never raises (malformed JSON is a ValueError) and never reads through a
+    symlink out of the KB.
+    """
+    if not meta_path.exists() or not st.inside_root(meta_path, kg_root):
+        return {}
+    try:
+        with open(meta_path) as f:
+            loaded = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
 def _node_handle(kg_root: Path, path: str) -> Dict[str, Any]:
-    raw = _read_node_raw(kg_root, path) or {}
+    # A child that cannot be decoded must not make its parent unreadable.
+    try:
+        raw = _read_node_raw(kg_root, path) or {}
+    except (OSError, UnicodeDecodeError):
+        raw = {}
     return {
         "path": path,
         "kind": _node_kind(kg_root, path),
@@ -929,7 +976,11 @@ def get_kb_info(kg_root: Path, include_root_summary: bool = False) -> Dict[str, 
     always reported so a caller can decide whether to fetch it.
     """
     root_summary_path = kg_root / "_summary.md"
-    root_summary = root_summary_path.read_text() if root_summary_path.exists() else ""
+    root_summary = (
+        root_summary_path.read_text()
+        if root_summary_path.exists() and st.inside_root(root_summary_path, kg_root)
+        else ""
+    )
     outline = build_outline(kg_root, depth=2)
     info: Dict[str, Any] = {
         "version": __version__,
@@ -957,15 +1008,12 @@ def _read_entity_raw(kg_root: Path, entity_path: str) -> Optional[Dict[str, Any]
         return None
     full_path = kg_root / entity_path
     summary_path = full_path / "_summary.md"
-    if not summary_path.exists():
+    if not summary_path.exists() or not st.inside_root(summary_path, kg_root):
         return None
     content = summary_path.read_text()
     meta, body = parse_frontmatter(content)
     if not meta:
-        meta_path = full_path / "_meta.json"
-        if meta_path.exists():
-            with open(meta_path) as f:
-                meta = json.load(f)
+        meta = _legacy_meta(kg_root, full_path / "_meta.json")
     return {
         "path": entity_path,
         "meta": meta,
@@ -989,33 +1037,189 @@ def read_entity(kg_root: Path, path: str, parents: str = "immediate") -> Optiona
     if parent:
         entity_data["parent_summary"] = parent.get("content", "")
         entity_data["parent_path"] = parent.get("path")
+    if parents == "gist" and node.get("parents"):
+        entity_data["parent_path"] = node["parents"][0]["path"]
+        entity_data["parents"] = node["parents"]
     return entity_data
 
 
+def _gist_handle(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
+    """``{path, title, gist}``: where a node sits, in one line (None if unreadable)."""
+    try:
+        raw = _read_node_raw(kg_root, path)
+    except (OSError, UnicodeDecodeError):
+        return None
+    if raw is None:
+        return None
+    return {"path": path, "title": raw["title"], "gist": _extract_gist(raw["content"])}
+
+
 def read_node(kg_root: Path, path: str, parents: str = "immediate") -> Optional[Dict[str, Any]]:
-    """Read any node summary, with parent context by default."""
+    """Read any node summary, with parent context by default.
+
+    ``parents="gist"`` (0.16) adds ``parents``: every ancestor nearest first
+    as ``{path, title, gist}`` — the orientation ``all`` gave, at a few
+    hundred bytes instead of every ancestor's full document.
+    """
     path = _normalize_node_path(path)
     node = _read_node_shallow(kg_root, path)
     if node is None:
         return None
 
-    if parents not in {"none", "immediate", "all"}:
+    if parents not in PARENTS_MODES:
         return None
 
+    def _context(ancestor: str) -> Optional[Dict[str, Any]]:
+        # A parent that cannot be read or decoded is left out; it must not
+        # make this node unreadable (or be blamed on it).
+        try:
+            return _read_node_shallow(kg_root, ancestor)
+        except (OSError, UnicodeDecodeError, ValueError):
+            return None
+
     node["parent"] = None
+    if parents == "gist":
+        node["parents"] = [
+            handle
+            for ancestor in _ancestor_node_paths(path)
+            if (handle := _gist_handle(kg_root, ancestor)) is not None
+        ]
+        return node
     if parents in {"immediate", "all"}:
         parent_path = _parent_path(path)
         if parent_path is not None:
-            node["parent"] = _read_node_shallow(kg_root, parent_path)
+            node["parent"] = _context(parent_path)
 
     if parents == "all":
         node["parents"] = [
             parent
             for ancestor in _ancestor_node_paths(path)
-            if (parent := _read_node_shallow(kg_root, ancestor)) is not None
+            if (parent := _context(ancestor)) is not None
         ]
 
     return node
+
+
+def read_nodes(
+    kg_root: Path,
+    paths: Sequence[str],
+    parents: str = "none",
+    total_max_chars: int = READ_NODES_MAX_CHARS,
+) -> Dict[str, Any]:
+    """Read several nodes in one call, under one shared character budget.
+
+    For an agent that has picked five hits from a search and wants their
+    bodies: one call instead of five, and a bounded one. Each node carries
+    its content, metadata, and child *paths* (at most
+    ``READ_NODES_MAX_CHILDREN``; ``children_count`` past that); ``parents``
+    is ``none`` or ``gist`` (full parent documents belong to ``read_node``,
+    one at a time). The budget counts whole nodes as compact JSON, not just
+    content: a node past it comes back with its content cut
+    (``content_truncated``), a node whose metadata alone does not fit is
+    listed in ``omitted``, and a ``truncated`` note says so. Paths that are
+    not nodes are listed in ``missing``, files that cannot be decoded in
+    ``unreadable`` (a ``skipped`` note).
+    """
+    if isinstance(paths, str):
+        paths = [paths]
+    if not isinstance(paths, (list, tuple)) or not paths:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR, "paths must be a non-empty list of node paths"
+        )
+    if len(paths) > READ_NODES_MAX_PATHS:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            f"at most {READ_NODES_MAX_PATHS} paths per call ({len(paths)} given)",
+            hint="Split the list, or narrow it with search first",
+        )
+    if parents not in ("none", "gist"):
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            "parents must be none or gist when reading several nodes",
+            hint="Read one node with parents='immediate' or 'all' for full parent documents",
+        )
+    wanted = list(dict.fromkeys(_normalize_node_path(str(p)) for p in paths))
+    budget = max(0, int(total_max_chars))
+    remaining = budget
+    nodes: List[Dict[str, Any]] = []
+    missing: List[str] = []
+    unreadable: List[str] = []
+    omitted: List[str] = []
+    cut: List[str] = []
+    for path in wanted:
+        try:
+            node = read_node(kg_root, path, parents=parents)
+        except (OSError, UnicodeDecodeError, ValueError):
+            unreadable.append(path)
+            continue
+        if node is None:
+            missing.append(path)
+            continue
+        node.pop("parent", None)
+        kids = [c["path"] for c in node.get("children", [])]
+        node["children"] = kids[:READ_NODES_MAX_CHILDREN]
+        if len(kids) > READ_NODES_MAX_CHILDREN:
+            node["children_count"] = len(kids)
+        content = node.get("content", "")
+        node["content"] = ""
+        overhead = len(json.dumps(node, default=str)) + len(', "content_truncated": true')
+        room = remaining - overhead
+        if room < 0:
+            omitted.append(path)
+            continue
+        # Count content as it is serialized: quotes, newlines and non-ASCII
+        # escape to more characters than they are.
+        cost = len(json.dumps(content)) - 2
+        if cost > room:
+            keep = room
+            while keep > 0 and len(json.dumps(content[:keep])) - 2 > room:
+                keep = int(keep * 0.9)
+            node["content"] = content[:keep]
+            node["content_truncated"] = True
+            cut.append(path)
+            cost = len(json.dumps(node["content"])) - 2
+        else:
+            node["content"] = content
+        remaining -= overhead + cost
+        nodes.append(node)
+
+    notes: List[Dict[str, Any]] = []
+    if cut or omitted:
+        short = cut + omitted
+        shown = ", ".join(short[:3]) + (f" (+{len(short) - 3} more)" if len(short) > 3 else "")
+        notes.append(
+            nt.note(
+                "truncated",
+                f"the {budget:,}-character budget ran out: {len(cut)} node(s) cut short, "
+                f"{len(omitted)} left out: {shown}",
+                detail={"cut": cut, "omitted": omitted, "total_max_chars": budget},
+                next_step="read those nodes on their own, or raise total_max_chars",
+            )
+        )
+    if unreadable:
+        notes.append(
+            nt.note(
+                "skipped",
+                f"{len(unreadable)} node(s) could not be read (not UTF-8, or no permission): "
+                + ", ".join(unreadable[:5]),
+                detail={"paths": unreadable},
+                next_step="re-encode the listed _summary.md files as UTF-8, or fix their permissions",
+            )
+        )
+    did = f"read {len(nodes)} of {len(wanted)} node(s)"
+    if missing:
+        did += f"; not found: {', '.join(missing[:5])}"
+    result: Dict[str, Any] = {"success": True, "did": did, "count": len(nodes)}
+    if notes:
+        result["notes"] = notes
+    result["missing"] = missing
+    if unreadable:
+        result["unreadable"] = unreadable
+    if omitted:
+        result["omitted"] = omitted
+    result["budget"] = {"total_max_chars": budget, "chars_returned": budget - remaining}
+    result["nodes"] = nodes
+    return result
 
 
 def read_summary(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
@@ -1028,6 +1232,8 @@ def read_summary(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
         summary_path = kg_root / path
         if not summary_path.exists() or not path.endswith(".md"):
             return None
+    if not st.inside_root(summary_path, kg_root):
+        return None  # never read through a symlink out of the KB
     content = summary_path.read_text()
     meta, body = parse_frontmatter(content)
     return {
@@ -1152,8 +1358,13 @@ def write_node(
     new_root: bool = False,
     allow_similar: bool = False,
     drop_meta_keys: Optional[Sequence[str]] = None,
+    preserve_dates: bool = False,
 ) -> Dict[str, Any]:
     """Write any node summary with YAML frontmatter.
+
+    *preserve_dates* keeps an existing node's ``created``/``updated`` (used by
+    ``mark``: a recorded decision is not a content change, and stamping
+    today made the parent look stale).
 
     A create runs the structure guards first (0.15): it is refused when it
     would mint a root category without *new_root* or collide with a sibling
@@ -1319,7 +1530,7 @@ def write_node(
                     noop_dates[key] = existing["meta"][key]
                 else:
                     meta.pop(key, None)
-        else:
+        elif not preserve_dates:
             meta["updated"] = today
 
     # Write
@@ -1446,19 +1657,32 @@ def write_node(
     if reasoning:
         action_type = "create" if create else "update"
         source = journal_source or meta.get("source", "unknown")
-        journal_result = write_journal(
-            kg_root,
-            actions=[
-                {
-                    "action_type": action_type,
-                    "path": path,
-                    "reasoning": reasoning,
-                }
-            ],
-            source=source,
-        )
-        journal_logged = journal_result.get("success", False)
-        journal_path = journal_result.get("journal_path")
+        try:
+            journal_result = write_journal(
+                kg_root,
+                actions=[
+                    {
+                        "action_type": action_type,
+                        "path": path,
+                        "reasoning": reasoning,
+                    }
+                ],
+                source=source,
+            )
+            journal_logged = journal_result.get("success", False)
+            journal_path = journal_result.get("journal_path")
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            # The node is already on disk; a journal that cannot be appended
+            # to must not turn a completed write into a traceback.
+            notes.append(
+                nt.note(
+                    "partial",
+                    f"node written, but the journal entry failed: {type(exc).__name__}",
+                    detail={"error": str(exc)[:200]},
+                    why="the monthly journal file could not be read or written",
+                    next_step="repair journal/YYYY-MM/log.md, then kvault journal (stdin: this action)",
+                )
+            )
 
     # Fetch ancestor summaries for propagation.
     #
@@ -1915,11 +2139,24 @@ def search_nodes(
     collapse: bool = True,
     kinds: Optional[Sequence[str]] = None,
     path_prefix: Optional[str] = None,
+    compact: bool = False,
+    snippet_chars: Optional[int] = None,
+    parents: str = "none",
 ) -> Dict[str, Any]:
-    """Search visible kvault node summaries."""
+    """Search visible kvault node summaries.
+
+    ``parents`` (0.16, CLI and MCP alike): ``gist`` adds one shared
+    ``parents`` map from every ancestor path of the hits to ``{title,
+    gist}`` (a hit's ancestors are the prefixes of its path) — about 2 KB
+    for 10 hits. ``immediate``/``all`` attach full documents per hit
+    (``node``) while they fit in ``total_max_chars``; unbounded they cost
+    100–640 KB per search on real KBs.
+    """
     from kvault.core.search import search_nodes as _search_nodes
 
-    return _search_nodes(
+    if parents not in PARENTS_MODES:
+        raise ValueError("parents must be one of: " + ", ".join(PARENTS_MODES))
+    result = _search_nodes(
         kg_root,
         query=query,
         limit=limit,
@@ -1929,7 +2166,67 @@ def search_nodes(
         collapse=collapse,
         kinds=kinds,
         path_prefix=path_prefix,
+        compact=compact,
+        snippet_chars=snippet_chars,
     )
+    if parents != "none":
+        # One budget for the whole result: what include_content used is gone.
+        spent = (result.get("budget") or {}).get("content_chars_returned", 0)
+        _attach_search_parents(
+            kg_root, result, parents, max(0, total_max_chars - spent), total_max_chars
+        )
+    return result
+
+
+def _attach_search_parents(
+    kg_root: Path, result: Dict[str, Any], parents: str, budget: int, total: int
+) -> None:
+    items = result.pop("results", [])
+    if parents == "gist":
+        ancestry: Dict[str, Dict[str, Any]] = {}
+        for item in items:
+            for ancestor in _ancestor_node_paths(item["path"]):
+                if ancestor not in ancestry:
+                    handle = _gist_handle(kg_root, ancestor)
+                    if handle is not None:
+                        ancestry[ancestor] = {"title": handle["title"], "gist": handle["gist"]}
+        result["parents"] = ancestry
+        result["results"] = items
+        return
+    # Full documents share the budget, the first hit included: a mature
+    # root summary alone can exceed it, and unbounded, 10 hits with
+    # parents="all" were ~600 KB.
+    used = 0
+    omitted = 0
+    for item in items:
+        try:
+            node = read_node(kg_root, item["path"], parents=parents)
+        except (OSError, UnicodeDecodeError, ValueError):
+            item["node_omitted_reason"] = "unreadable"
+            continue
+        size = len(json.dumps(node, default=str)) if node is not None else 0
+        if used + size > budget:
+            item["node_omitted_reason"] = "total_budget_exhausted"
+            omitted += 1
+            continue
+        item["node"] = node
+        used += size
+    result.setdefault("budget", {"total_max_chars": total})
+    result["budget"]["parent_chars_returned"] = used
+    if omitted:
+        result.setdefault("notes", []).append(
+            nt.note(
+                "truncated",
+                f"parents={parents!r} attached full documents to {len(items) - omitted} of "
+                f"{len(items)} results before the budget ran out ({budget:,} of "
+                f"{total:,} characters were left for them)",
+                detail={"omitted": omitted, "total_max_chars": total, "parents_budget": budget},
+                why="full ancestor documents repeat across hits and dwarf the search itself",
+                next_step="use parents='gist' (path, title, one line per ancestor), or read the "
+                "hits with read_nodes",
+            )
+        )
+    result["results"] = items
 
 
 def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:
@@ -1953,6 +2250,7 @@ def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:
         shutil.rmtree(full_path)
 
     targets = _propagation_targets(kg_root, path)
+    ref_notes, referrers = _reference_notes(kg_root, [(path, None)])
     notes = [
         nt.note(
             "removed",
@@ -1968,6 +2266,7 @@ def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:
             next_step="kvault update-summaries",
         ),
     ]
+    notes.extend(ref_notes)
     notes.extend(_lock_notes(lock))
     return {
         "success": True,
@@ -1979,8 +2278,78 @@ def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:
         "files_deleted": files_deleted,
         "propagation_required": len(targets) > 0,
         "ancestor_paths": [t["path"] for t in targets],
+        "referrer_paths": referrers,
         "ancestors": targets,
     }
+
+
+def _reference_notes(
+    kg_root: Path, moved: Sequence[Tuple[str, Optional[str]]]
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Summary references that point at nothing after a move or delete.
+
+    *moved* pairs each old path with its new one (None for a delete). Looks
+    only where such a reference can be: summaries that mention an old path's
+    name, and the moved subtrees themselves (their relative links break when
+    their depth changes). Ancestor chains are reported separately; these are
+    other nodes, and kvault never rewrites their prose.
+    """
+    from kvault.core import references as rf
+
+    if not moved:
+        return [], []
+    new_home = dict(moved)
+    anchors = {
+        "/".join(src.split("/")[: i + 1]) for src, _ in moved for i in range(src.count("/") + 1)
+    }
+    try:
+        refs = rf.dangling_references(
+            kg_root,
+            contains=[src.rsplit("/", 1)[-1] for src, _ in moved],
+            under=[dst for _, dst in moved if dst],
+            anchors=anchors,
+        )
+    except Exception as exc:  # the tree already changed; the report must never fail it
+        return [
+            nt.note(
+                "skipped",
+                f"could not scan for references to what moved: {type(exc).__name__}",
+                detail={"error": str(exc)[:200]},
+                next_step="kvault check --code DANGLING",
+            )
+        ], []
+    hits: List[Dict[str, Any]] = []
+    for ref in refs:
+        src = next((s for s, _ in moved if ref.target == s or ref.target.startswith(s + "/")), None)
+        inside = any(
+            d is not None and (ref.node == d or ref.node.startswith(d + "/")) for _, d in moved
+        )
+        if src is None and not inside:
+            continue
+        entry = ref.as_dict()
+        entry.pop("exists", None)
+        if src is not None:
+            dst = new_home[src]
+            now_at = dst + ref.target[len(src) :] if dst else None
+            # a reference that already pointed at nothing has no new home
+            entry["now_at"] = now_at if now_at and (kg_root / now_at).exists() else None
+        hits.append(entry)
+    if not hits:
+        return [], []
+    referrers = sorted({h["node"] for h in hits})
+    shown = "; ".join(f"{h['node']} → {h['raw']}" for h in hits[:3])
+    more = f" (+{len(hits) - 3} more)" if len(hits) > 3 else ""
+    note = nt.note(
+        "propagate",
+        f"{len(hits)} reference(s) in {len(referrers)} "
+        f"summar{'y' if len(referrers) == 1 else 'ies'} point at nothing after this "
+        f"operation: {shown}{more}",
+        level=nt.NORMAL,
+        detail={"kind": "references", "references": hits[:20], "referrer_paths": referrers},
+        why="summaries elsewhere still name the old path; kvault never rewrites prose",
+        next_step="point each at its new path (now_at) or drop it: kvault write <node>",
+    )
+    return [note], referrers
 
 
 def _reserved_move_problem(source: str, target: str) -> Optional[str]:
@@ -2086,6 +2455,8 @@ def move_entity(
             next_step="kvault update-summaries",
         )
     )
+    ref_notes, referrers = _reference_notes(kg_root, [(source_path, target_path)])
+    notes.extend(ref_notes)
     notes.extend(_lock_notes(lock))
     return {
         "success": True,
@@ -2098,6 +2469,7 @@ def move_entity(
         "ancestor_paths": [t["path"] for t in combined],
         "ancestors_source": [t["path"] for t in src_targets],
         "ancestors_target": [t["path"] for t in tgt_targets],
+        "referrer_paths": referrers,
         "ancestors": combined,
     }
 
@@ -2289,6 +2661,7 @@ def move_entities(
                 next_step="fix the cause, then re-run the batch with the remaining moves",
             )
         )
+    ref_notes, referrers = _reference_notes(kg_root, [(m["from"], m["to"]) for m in moved])
     if combined:
         notes.append(
             nt.note(
@@ -2303,6 +2676,7 @@ def move_entities(
                 next_step="kvault update-summaries",
             )
         )
+    notes.extend(ref_notes)
     notes.extend(_lock_notes(lock))
 
     result: Dict[str, Any] = {
@@ -2318,6 +2692,7 @@ def move_entities(
     result["count"] = len(moved)
     result["propagation_required"] = len(combined) > 0
     result["ancestor_paths"] = [t["path"] for t in combined]
+    result["referrer_paths"] = referrers
     result["ancestors"] = combined
     return result
 
@@ -2329,20 +2704,46 @@ def mark_node(
     max_children: Optional[int] = None,
     series_ok: Optional[bool] = None,
     clear: bool = False,
+    verify_by: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Record a structure decision in a node's frontmatter (see core.decisions).
+    """Record a decision in a node's frontmatter (see core.decisions).
 
     Goes through ``write_node`` so it is validated, no-op aware, and logged.
+    *verify_by* takes ``YYYY-MM-DD``, ``+14d``/``+2w``, or ``none`` to clear;
+    *clear* drops the structure decisions (not ``verify_by``). The node's
+    ``updated`` date is kept, because a decision is not a content change
+    (0.16: stamping today made its parent PROPAGATE), and the decision is
+    journaled, so marking a node never leaves ``check`` red.
     """
     path = _normalize_node_path(path)
-    if not (distinct_from or max_children is not None or series_ok is not None or clear):
+    if not (
+        distinct_from
+        or max_children is not None
+        or series_ok is not None
+        or verify_by is not None
+        or clear
+    ):
         return error_response(
             ErrorCode.VALIDATION_ERROR,
-            "nothing to record: pass --distinct-from, --max-children, --series-ok, or --clear",
+            "nothing to record: pass distinct_from, max_children, series_ok, verify_by, "
+            "or clear",
         )
+    due: Optional[str] = None
+    if verify_by is not None:
+        try:
+            due = dc.parse_verify_by(verify_by)
+        except ValueError as exc:
+            return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
     raw = _read_node_raw(kg_root, path)
     if raw is None:
         return error_response(ErrorCode.NOT_FOUND, f"Node doesn't exist: {path}")
+    selves = [d for d in distinct_from or [] if dc.normalize_rel(d, path) == path]
+    if selves:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR,
+            f"distinct_from {selves[0]!r} names {path} itself (a bare name means a sibling)",
+            hint="Name the other node by its KB path, or mark the root-level node instead",
+        )
     meta = dc.merge_decisions(
         raw["meta"] or {},
         path,
@@ -2350,17 +2751,53 @@ def mark_node(
         max_children=max_children,
         series_ok=series_ok,
         clear=clear,
+        verify_by=due,
     )
     drops = [key for key in dc.DECISION_KEYS if key not in meta and key in (raw["meta"] or {})]
+    summary_file = _summary_path_for_node(kg_root, path)
+    try:
+        before = summary_file.stat()
+    except OSError:
+        before = None
+    changes = meta != (raw["meta"] or {}) or bool(drops)
+    recorded = [
+        label
+        for label, given in (
+            ("cleared structure decisions", clear),
+            (f"distinct_from {', '.join(distinct_from or [])}", bool(distinct_from)),
+            (f"max_children {max_children}", max_children is not None),
+            (f"series_ok {series_ok}", series_ok is not None),
+            (f"verify_by {due or 'cleared'}", due is not None),
+        )
+        if given
+    ]
     result = write_node(
-        kg_root, path, raw["content"], meta=meta, create=False, drop_meta_keys=drops or None
+        kg_root,
+        path,
+        raw["content"],
+        meta=meta,
+        create=False,
+        drop_meta_keys=drops or None,
+        preserve_dates=True,
+        reasoning=(
+            ("decision recorded with kvault mark: " + "; ".join(recorded)) if changes else None
+        ),
     )
+    if result.get("success") and result.get("changed") and before is not None:
+        # A decision is not a content change: the file keeps its time (plus a
+        # second, so a size-and-time sync such as rsync still sees the edit).
+        # Where summaries carry no dates, check compares file times, and a
+        # fresh time made the parent PROPAGATE.
+        try:
+            os.utime(summary_file, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+        except OSError:
+            pass
     if not result.get("success"):
         return result
     decisions = dc.read_decisions(kg_root, path)
     parts: List[str] = []
     if clear:
-        parts.append("cleared")
+        parts.append("cleared structure decisions")
     if distinct_from:
         parts.append(
             "distinct_from += " + ", ".join(decisions["distinct_from"][-len(distinct_from) :])
@@ -2369,8 +2806,10 @@ def mark_node(
         parts.append(f"max_children={decisions['max_children']}")
     if series_ok is not None:
         parts.append(f"series_ok={str(decisions['series_ok']).lower()}")
+    if due is not None:
+        parts.append(f"verify_by={due}" if due else "verify_by cleared")
     result["did"] = f"marked {path}: " + "; ".join(parts)
-    result["decisions"] = decisions
+    result["decisions"] = {k: v for k, v in decisions.items() if k != "verify_by_raw"}
     result.pop("ancestors", None)  # a decision does not change what the parent should say
     result["ancestor_paths"] = []
     result["propagation_required"] = False
@@ -2499,18 +2938,22 @@ def validate_kb(kg_root: Path) -> Dict[str, Any]:
         if any(part.startswith(".") for part in rel_parts):
             continue
         try:
-            parse_frontmatter_strict(summary_file.read_text(encoding="utf-8"))
+            text = summary_file.read_text(encoding="utf-8")
+            parse_frontmatter_strict(text)
         except FrontmatterError as exc:
+            # An impossible date (2026-09-31) is still read, with its dates as
+            # text; anything else malformed is read as empty.
+            how = "read leniently" if parse_frontmatter(text)[0] else "read as empty"
             issues.append(
                 {
                     "type": "malformed_frontmatter",
                     "severity": "warning",
                     "path": str(Path(*rel_parts)) if rel_parts else ".",
-                    "message": f"Frontmatter is malformed and read as empty: {exc}",
+                    "message": f"Frontmatter is malformed and {how}: {exc}",
                     "fix": "Rewrite the node with kvault write to repair its frontmatter",
                 }
             )
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
 
     for entity in entities:

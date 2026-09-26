@@ -317,12 +317,36 @@ def child_dirs(dir_path: Path, kg_root: Path, ignore: Sequence[str]) -> List[Pat
 
 
 def walk_dirs(kg_root: Path, ignore: Sequence[str]) -> Iterator[Path]:
-    """Every managed directory under the root, depth-first, root excluded."""
-    stack = list(reversed(child_dirs(Path(kg_root), Path(kg_root), ignore)))
+    """Every managed directory under the root, depth-first, root excluded.
+
+    A symlinked directory is never walked. Its target, if it is inside the
+    KB, is walked at its real path; one outside the KB is not the KB's. A
+    walk that followed links looped on a cycle until the path was too long,
+    and 0.16 runs this walk on every search (the loose-file note). A link
+    that sorted before its target also hid the real node from every rule.
+    """
+    root = Path(kg_root)
+    stack = list(reversed(child_dirs(root, root, ignore)))
     while stack:
         current = stack.pop()
+        if current.is_symlink():
+            continue
         yield current
-        stack.extend(reversed(child_dirs(current, Path(kg_root), ignore)))
+        stack.extend(reversed(child_dirs(current, root, ignore)))
+
+
+def inside_root(path: Path, kg_root: Path) -> bool:
+    """True when *path* resolves (symlinks followed) inside the KB root.
+
+    Anything that *reads content* checks this first, so a symlink in the
+    KB cannot make a root-bound server read a file outside it. A symlink
+    loop (``resolve`` raises RuntimeError before Python 3.13) is not inside.
+    """
+    try:
+        Path(path).resolve().relative_to(Path(kg_root).resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
 
 
 def has_summary(dir_path: Path) -> bool:
@@ -365,39 +389,42 @@ def basename_duplicates(kg_root: Path, ignore: Sequence[str]) -> Dict[str, List[
     return {k: v for k, v in seen.items() if len(v) > 1}
 
 
-def loose_files(kg_root: Path, ignore: Sequence[str]) -> List[str]:
-    """Files that sit outside the node convention (not a summary, not in deep_context/)."""
+def loose_files_in(dir_path: Path, kg_root: Path, ignore: Sequence[str]) -> List[str]:
+    """KB-relative paths of the loose files directly inside one managed directory."""
     root = Path(kg_root)
+    allowed = NODE_FILES + ROOT_FILES if Path(dir_path) == root else NODE_FILES
+    try:
+        entries = sorted(Path(dir_path).iterdir())
+    except OSError:
+        return []
     out: List[str] = []
-
-    def _scan(dir_path: Path, allowed: Tuple[str, ...]) -> None:
-        try:
-            entries = sorted(dir_path.iterdir())
-        except OSError:
-            return
-        for entry in entries:
-            if not entry.is_file() or entry.name.startswith("."):
-                continue
-            if entry.name in allowed:
-                continue
-            r = rel(root, entry)
-            if is_ignored(r, ignore):
-                continue
+    for entry in entries:
+        if not entry.is_file() or entry.name.startswith(".") or entry.name in allowed:
+            continue
+        r = rel(root, entry)
+        if not is_ignored(r, ignore):
             out.append(r)
-
-    _scan(root, NODE_FILES + ROOT_FILES)
-    for d in walk_dirs(root, ignore):
-        _scan(d, NODE_FILES)
     return out
 
 
-def journal_layout_findings(kg_root: Path) -> List[Dict[str, str]]:
+def loose_files(kg_root: Path, ignore: Sequence[str]) -> List[str]:
+    """Files that sit outside the node convention (not a summary, not in deep_context/)."""
+    root = Path(kg_root)
+    out = loose_files_in(root, root, ignore)
+    for d in walk_dirs(root, ignore):
+        out.extend(loose_files_in(d, root, ignore))
+    return out
+
+
+def journal_layout_findings(kg_root: Path, ignore: Sequence[str] = ()) -> List[Dict[str, str]]:
     """Files and directories under ``journal/`` that are off the canonical layout.
 
     Canonical: ``journal/YYYY-MM/log.md``. A ``_summary.md`` at ``journal/``
     or in a month directory is tolerated (some KBs treat months as nodes).
     ``journal/archive`` and ``archive/journal`` are flagged as competing
-    histories.
+    histories. A path matched by *ignore* (``.kvaultignore``) is a layout the
+    owner declared on purpose, e.g. a weekly ``journal/y2026/…`` tree kept
+    beside kvault's own monthly log, and is not reported.
     """
     root = Path(kg_root)
     findings: List[Dict[str, str]] = []
@@ -408,6 +435,8 @@ def journal_layout_findings(kg_root: Path) -> List[Dict[str, str]]:
             if any(part.startswith(".") for part in entry.relative_to(root).parts):
                 continue
             r = rel(root, entry)
+            if is_ignored(r, ignore):
+                continue
             # One finding per stray subtree: the directory, not every file in it.
             if any(r.startswith(d + "/") for d in flagged_dirs):
                 continue
@@ -431,7 +460,7 @@ def journal_layout_findings(kg_root: Path) -> List[Dict[str, str]]:
             ):
                 continue
             findings.append({"path": r, "reason": "file off the journal/YYYY-MM/log.md layout"})
-    if (root / "archive" / "journal").is_dir():
+    if (root / "archive" / "journal").is_dir() and not is_ignored("archive/journal", ignore):
         findings.append({"path": "archive/journal", "reason": "second history: archive/journal"})
     return findings
 
@@ -462,11 +491,13 @@ __all__ = [
     "rel",
     "child_dirs",
     "walk_dirs",
+    "inside_root",
     "has_summary",
     "is_ghost",
     "ghost_dirs",
     "basename_matches",
     "basename_duplicates",
+    "loose_files_in",
     "loose_files",
     "journal_layout_findings",
 ]

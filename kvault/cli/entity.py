@@ -24,28 +24,84 @@ from kvault.cli.render import render_notes
 from kvault.core import operations as ops
 
 
+def _echo_gist_parents(parents: list) -> None:
+    if parents:
+        chain = " › ".join(f"{p['title']} ({p['path']})" for p in parents)
+        click.echo(f"Under: {chain}")
+
+
+def _read_several(
+    ctx: click.Context, kb_root: Path, paths: tuple, parents: str, max_total_chars: int
+) -> None:
+    result = ops.read_nodes(kb_root, list(paths), parents=parents, total_max_chars=max_total_chars)
+    if ctx.obj.get("as_json"):
+        output_json(result)
+        if not result.get("success"):
+            ctx.exit(1)
+        return
+    if not result.get("success"):
+        raise click.ClickException(result.get("error", "read failed"))
+    for node in result["nodes"]:
+        click.echo(f"== {node['path']}  ({node['title']}, {node['kind']})")
+        _echo_gist_parents(node.get("parents") or [])
+        click.echo(node.get("content", "").rstrip())
+        if node.get("content_truncated"):
+            click.echo("[content cut: the shared --max-total-chars budget ran out]")
+        click.echo()
+    if result["missing"]:
+        click.echo(f"Not found: {', '.join(result['missing'])}")
+    render_notes(result, get_tier(ctx))
+
+
 @click.command("read")
-@click.argument("path")
+@click.argument("paths", nargs=-1, required=True)
 @click.option(
     "--parents",
-    type=click.Choice(["none", "immediate", "all"]),
+    type=click.Choice(["none", "gist", "immediate", "all"]),
     default="none",
     show_default=True,
-    help="Parent context to include (immediate = parent summary for sibling context).",
+    help=(
+        "Parent context: gist = path, title, one line per ancestor; immediate = the "
+        "parent's full summary; all = every ancestor's full summary."
+    ),
+)
+@click.option(
+    "--max-total-chars",
+    type=int,
+    default=ops.READ_NODES_MAX_CHARS,
+    show_default=True,
+    help="With several paths: one budget in characters of compact JSON, shared by all of them.",
 )
 @common_options
 @click.pass_context
 def read_entity(
     ctx: click.Context,
-    path: str,
+    paths: tuple,
     parents: str,
+    max_total_chars: int,
     kb_root: Optional[Path],
     as_json: bool,
 ) -> None:
-    """Read a node (add --parents immediate for the parent summary)."""
+    """Read a node, or several (kvault read a b c: one call, one budget).
+
+    --parents gist adds where each node sits; immediate/all add full parent
+    summaries (one node at a time).
+    """
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)
-    result = ops.read_node(kb_root, path, parents=parents)
+    if len(paths) > 1:
+        _read_several(ctx, kb_root, paths, parents, max_total_chars)
+        return
+    path = paths[0]
+    try:
+        result = ops.read_node(kb_root, path, parents=parents)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        reason = "not valid UTF-8" if isinstance(exc, UnicodeDecodeError) else type(exc).__name__
+        message = f"{path} could not be read ({reason}); check its _summary.md"
+        if ctx.obj.get("as_json"):
+            output_json({"success": False, "error_code": "validation_error", "error": message})
+            ctx.exit(1)
+        raise click.ClickException(message)
     if result is None:
         if ctx.obj.get("as_json"):
             output_json({"success": False, "error": f"Node not found: {path}"})
@@ -64,6 +120,8 @@ def read_entity(
             click.echo(f"Aliases: {', '.join(str(a) for a in meta['aliases'])}")
         if meta.get("source"):
             click.echo(f"Source: {meta['source']}")
+        if parents == "gist":
+            _echo_gist_parents(result.get("parents") or [])
         if result.get("parent"):
             parent = result["parent"]
             click.echo(f"Parent: {parent['path']}")
@@ -378,7 +436,21 @@ def _move_batch(
     default=None,
     help="This parent's dated children are an intentional chronology",
 )
-@click.option("--clear", is_flag=True, help="Drop all recorded decisions on PATH first")
+@click.option(
+    "--verify-by",
+    "verify_by",
+    default=None,
+    help=(
+        "Re-check PATH's time-sensitive facts by this date: YYYY-MM-DD, +14d or +2w "
+        "from today, or 'none' to clear. check reports STALE: once it passes."
+    ),
+)
+@click.option(
+    "--clear",
+    is_flag=True,
+    help="Drop PATH's structure decisions first (distinct_from, max_children, series_ok; "
+    "verify_by has --verify-by none)",
+)
 @verbosity_options
 @common_options
 @click.pass_context
@@ -388,6 +460,7 @@ def mark_node(
     distinct_from: tuple,
     max_children: Optional[int],
     series_ok: Optional[bool],
+    verify_by: Optional[str],
     clear: bool,
     kb_root: Optional[Path],
     as_json: bool,
@@ -400,8 +473,10 @@ def mark_node(
 
     A correction that only lives in a conversation is re-proposed next week;
     one recorded here sticks: `distinct_from` silences the sibling-collision
-    finding and the create guard for that pair, `max_children` sets the
-    parent's own ceiling, `--series-ok` keeps a deliberate chronology.
+    finding, the duplicate finding and the create guard for that pair,
+    `max_children` sets the parent's own ceiling, `--series-ok` keeps a
+    deliberate chronology, `--verify-by` sets when the node's time-sensitive
+    facts must be re-checked (STALE: after that).
     """
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     apply_verbosity_options(ctx, quiet=quiet, explain=explain, trace=trace, strict=strict)
@@ -414,6 +489,7 @@ def mark_node(
         max_children=max_children,
         series_ok=series_ok,
         clear=clear,
+        verify_by=verify_by,
     )
     record_op(kb_root, "mark", result, started)
     if ctx.obj.get("as_json"):

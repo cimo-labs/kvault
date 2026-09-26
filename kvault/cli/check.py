@@ -3,8 +3,9 @@
 Hard findings (exit 1) are collapsed into one ``[KB]`` line for hook use;
 warn-class findings print one bounded group per prefix. The human output is
 tier-invariant and ``--json`` is one document (frozen since 0.13). The
-prefix vocabulary is ``[KB]``, ``SUMMARY:``, ``PENDING:``, ``RETRACTED:``
-and, since 0.15, ``GHOST:``, ``SIBLINGS:``, ``LOOSE:``, ``JOURNAL:``.
+prefix vocabulary is ``[KB]``, ``SUMMARY:``, ``PENDING:``, ``RETRACTED:``,
+since 0.15 ``GHOST:``, ``SERIES:``, ``SIBLINGS:``, ``LOOSE:``, ``JOURNAL:``,
+and since 0.16 ``DUPLICATE:``, ``DANGLING:`` and ``STALE:``.
 
 Exit codes:
     0 = All hard checks pass (warn-class findings are warn-only)
@@ -14,12 +15,13 @@ Exit codes:
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import click
 
 from kvault.core import operations as ops
 from kvault.core.check import (  # noqa: F401 — re-exported for callers and tests
+    ALL_CODES,
     DEFAULT_MAX_CHILDREN,
     DEFAULT_MAX_FINDINGS,
     DEFAULT_PENDING_MAX_AGE,
@@ -32,6 +34,7 @@ from kvault.core.check import (  # noqa: F401 — re-exported for callers and te
     check_frontmatter,
     check_journal,
     check_propagation,
+    normalize_codes,
     run_checks,
 )
 from kvault.core.summary_quality import DEFAULT_MAX_DATED_SECTIONS
@@ -41,9 +44,18 @@ _STRUCTURE_FIX_LINE = {
     "SERIES": "chronology as nodes → kvault plan folds them under one current-state node's "
     "deep_context/; new entries go to journal/",
     "SIBLINGS": "same thing → merge; subtopic → kvault move; kvault plan lists the moves",
+    "DUPLICATE": "read both; same thing → fold into one node and park the other under its "
+    "deep_context/; different things → kvault mark <a> --distinct-from <b>",
+    "DANGLING": "point each reference at the node's current path (see 'same name at') or "
+    "drop it; kvault plan groups them per node",
     "LOOSE": "move into <node>/deep_context/, make it a node, or list it in .kvaultignore",
-    "JOURNAL": "one history: journal/YYYY-MM/log.md via kvault journal",
+    "JOURNAL": "one history: journal/YYYY-MM/log.md via kvault journal; a deliberate second "
+    "layout goes in .kvaultignore",
+    "STALE": "re-check the node's time-sensitive facts, rewrite what changed, then "
+    "kvault mark <path> --verify-by +14d (still time-sensitive) or --verify-by none (settled)",
 }
+#: Warn codes printed as one bounded group each, after SUMMARY/PENDING/RETRACTED.
+GROUPED_CODES = STRUCTURE_CODES + ("STALE",)
 
 
 def _find_kb_root() -> Optional[Path]:
@@ -57,16 +69,17 @@ def _find_kb_root() -> Optional[Path]:
 
 
 def _echo_group(
-    code: str, findings: List[Dict[str, Any]], max_lines: int, hidden_extra: int = 0
+    code: str, findings: List[Dict[str, Any]], max_lines: Optional[int], hidden_extra: int = 0
 ) -> None:
     # A per-parent overflow marker ("+2,340 more colliding pairs") is a count,
     # not a finding; it prints after the capped lines instead of competing
-    # with them for the cap.
+    # with them for the cap. max_lines None = print every line.
     markers = [f for f in findings if (f.get("detail") or {}).get("kind") == "more_pairs"]
     regular = [f for f in findings if f not in markers]
     for finding in regular[:max_lines]:
         click.echo(f"{code}: {finding['path']} — {finding['message']}")
-    hidden = max(len(regular) - max_lines, 0) + hidden_extra
+    shown = len(regular) if max_lines is None else min(len(regular), max_lines)
+    hidden = len(regular) - shown + hidden_extra
     if hidden > 0:
         click.echo(f"{code}: (+{hidden} more)")
     for marker in markers:
@@ -96,11 +109,29 @@ def _echo_group(
     help="Skip parent-summary quality warnings.",
 )
 @click.option(
+    "--max-lines",
     "--summary-max-warnings",
+    "max_lines",
     type=int,
     default=5,
     show_default=True,
-    help="Maximum warn-class lines to print per prefix.",
+    help="Warn-class lines to print per prefix (0 = all). --summary-max-warnings is the old name.",
+)
+@click.option(
+    "--code",
+    "codes",
+    multiple=True,
+    help=(
+        "Run and report only these codes (repeatable or comma-separated), e.g. "
+        "--code SIBLINGS or --code GHOST,LOOSE. Exit 1 only if a selected hard code fires."
+    ),
+)
+@click.option(
+    "--max-findings",
+    type=int,
+    default=DEFAULT_MAX_FINDINGS,
+    show_default=True,
+    help="Warn-class findings kept per code in the document (0 = all; --json and the line counts).",
 )
 @click.option(
     "--summary-max-words",
@@ -139,7 +170,9 @@ def check_kb(
     as_json: bool,
     threshold: int,
     no_summary_quality: bool,
-    summary_max_warnings: int,
+    max_lines: int,
+    codes: Tuple[str, ...],
+    max_findings: int,
     summary_max_words: Optional[int],
     summary_max_dated_sections: int,
     pending_max_age: int,
@@ -157,6 +190,19 @@ def check_kb(
     explicit_root = kb_root or ctx.obj.get("kb_root")
     if as_json:
         ctx.obj["as_json"] = True
+    try:
+        selected = normalize_codes(codes)
+    except ValueError as exc:
+        if ctx.obj.get("as_json"):
+            click.echo(
+                json.dumps(
+                    {"success": False, "error_code": "validation_error", "error": str(exc)},
+                    indent=2,
+                )
+            )
+            sys.exit(2)
+        raise click.UsageError(str(exc))
+    lines: Optional[int] = None if max_lines <= 0 else max_lines
 
     if explicit_root is None:
         kb_root = _find_kb_root()
@@ -186,6 +232,8 @@ def check_kb(
         max_dated_sections=summary_max_dated_sections,
         pending_max_age=pending_max_age,
         max_children=max_children,
+        max_findings=max_findings,
+        codes=selected,
     )
     hard_warnings: List[str] = doc["warnings"]
 
@@ -206,38 +254,40 @@ def check_kb(
                 msg += f" (+{len(hard_warnings) - 3} more)"
             click.echo(msg)
 
+    def _more(prefix: str, total: int) -> None:
+        if lines is not None and total > lines:
+            click.echo(f"{prefix}: (+{total - lines} more)")
+
     summary = doc["summary_warnings"]
-    for issue in summary[:summary_max_warnings]:
+    for issue in summary[:lines]:
         click.echo(f"SUMMARY: {issue['path']}: {issue['message']}")
-    if len(summary) > summary_max_warnings:
-        click.echo(f"SUMMARY: (+{len(summary) - summary_max_warnings} more)")
+    _more("SUMMARY", len(summary))
 
     # Warn-only, like SUMMARY: — a captured candidate that was never
     # promoted or explicitly resolved is unfinished maintenance work.
     pending = doc["pending_events"]
-    for finding in pending[:summary_max_warnings]:
+    for finding in pending[:lines]:
         click.echo(
             f"PENDING: {finding['event_id']} captured {str(finding['captured_at'])[:10]} "
             f"({finding['age_days']}d) — resolve with kvault write --event or "
             f"kvault events resolve"
         )
-    if len(pending) > summary_max_warnings:
-        click.echo(f"PENDING: (+{len(pending) - summary_max_warnings} more)")
+    _more("PENDING", len(pending))
 
     retracted = doc["retracted_refs"]
-    for finding in retracted[:summary_max_warnings]:
+    for finding in retracted[:lines]:
         reason = str(finding.get("reason") or "")[:80]
         follow_up = finding.get("superseded_by") or "<id of the corrected capture>"
         click.echo(
             f"RETRACTED: {finding['path']} cites retracted {finding['event_id']} — {reason} — "
             f"rewrite the node, then write --event {follow_up} (drops the retracted ref)"
         )
-    if len(retracted) > summary_max_warnings:
-        click.echo(f"RETRACTED: (+{len(retracted) - summary_max_warnings} more)")
+    _more("RETRACTED", len(retracted))
 
-    # 0.15: the structural set. One bounded group per prefix, fix line last.
-    for code in STRUCTURE_CODES:
-        group = [f for f in doc["structure_warnings"] if f["code"] == code]
-        _echo_group(code, group, summary_max_warnings, doc["truncated"].get(code, 0))
+    # 0.15: the structural set (and 0.16 STALE). One bounded group per
+    # prefix, fix line last.
+    for code in GROUPED_CODES:
+        group = [f for f in doc["findings"] if f["code"] == code]
+        _echo_group(code, group, lines, doc["truncated"].get(code, 0))
 
     sys.exit(1 if hard_warnings else 0)

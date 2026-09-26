@@ -10,13 +10,18 @@ import os
 import time
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import click
 
 from kvault.core import notes as nt
 from kvault.core import operations as ops
-from kvault.core.check import DEFAULT_MAX_CHILDREN, DEFAULT_MAX_FINDINGS, run_checks
+from kvault.core.check import (
+    DEFAULT_MAX_CHILDREN,
+    DEFAULT_MAX_FINDINGS,
+    normalize_codes,
+    run_checks,
+)
 from kvault.core.plan import DEFAULT_LIMIT, build_plan
 from kvault.core.summary_quality import DEFAULT_MAX_DATED_SECTIONS
 from kvault.core.search import KINDS
@@ -31,6 +36,10 @@ except ImportError:  # pragma: no cover - exercised when optional extra is absen
     FastMCP = None
 
 KVAULT_KB_ROOT_ENV = "KVAULT_KB_ROOT"
+#: Enums in the tool schemas, so an MCP-only agent sees the allowed values.
+ParentsMode = Literal["none", "gist", "immediate", "all"]
+BatchParentsMode = Literal["none", "gist"]
+_NOT_UTF8 = "could not be read (not UTF-8, or no permission); check its _summary.md"
 
 
 def resolve_bound_root(kb_root: Optional[Path | str] = None) -> Path:
@@ -110,7 +119,11 @@ def create_server(kb_root: Path | str) -> Any:
             "Root-bound kvault compatibility tools. This server can only access "
             f"{bound_root}. Results carry a `notes` array reporting decisions "
             "kvault made on your behalf (autofilled metadata, no-op writes, "
-            "half-failures, truncation); read it before acting on the payload."
+            "half-failures, truncation); read it before acting on the payload. "
+            "Keep reads small: kvault_search returns compact hits by default "
+            "(parents='gist' adds where each hit sits for about 2 KB); read the "
+            "hits you picked with one kvault_read_nodes call; kvault_check with "
+            "codes=[...] and max_findings=0 returns one finding code's full list."
         ),
     )
 
@@ -174,21 +187,24 @@ def create_server(kb_root: Path | str) -> Any:
         assert root is not None
         return _status_payload(root, include_root_summary=include_root_summary)
 
+    _PARENTS_ERROR = "parents must be one of: " + ", ".join(ops.PARENTS_MODES)
+
     @server.tool(name="kvault_read_entity")
     def kvault_read_entity(
-        path: str, parents: str = "none", kg_root: Optional[str] = None
+        path: str, parents: ParentsMode = "none", kg_root: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Read an entity; parents='immediate' adds the parent summary for sibling context."""
+        """Read an entity; parents='gist' adds each ancestor's path, title, and one line;
+        'immediate' adds the parent's full summary."""
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        if parents not in {"none", "immediate", "all"}:
-            return error_response(
-                ErrorCode.VALIDATION_ERROR,
-                "parents must be one of: none, immediate, all",
-            )
-        result = ops.read_entity(root, path, parents=parents)
+        if parents not in ops.PARENTS_MODES:
+            return error_response(ErrorCode.VALIDATION_ERROR, _PARENTS_ERROR)
+        try:
+            result = ops.read_entity(root, path, parents=parents)
+        except (OSError, UnicodeDecodeError, ValueError):
+            return error_response(ErrorCode.VALIDATION_ERROR, f"{path} {_NOT_UTF8}")
         if result is None:
             return error_response(ErrorCode.NOT_FOUND, f"Entity not found: {path}")
         return success_response(result)
@@ -196,23 +212,51 @@ def create_server(kb_root: Path | str) -> Any:
     @server.tool(name="kvault_read_node")
     def kvault_read_node(
         path: str,
-        parents: str = "none",
+        parents: ParentsMode = "none",
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Read a node; parents='immediate'|'all' adds parent context (off by default since 0.14)."""
+        """Read a node. parents='gist' adds every ancestor as {path, title, gist} (a few
+        hundred bytes); 'immediate'|'all' add full parent documents (can be tens of KB).
+        To read several nodes use kvault_read_nodes."""
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        if parents not in {"none", "immediate", "all"}:
-            return error_response(
-                ErrorCode.VALIDATION_ERROR,
-                "parents must be one of: none, immediate, all",
-            )
-        result = ops.read_node(root, path, parents=parents)
+        if parents not in ops.PARENTS_MODES:
+            return error_response(ErrorCode.VALIDATION_ERROR, _PARENTS_ERROR)
+        try:
+            result = ops.read_node(root, path, parents=parents)
+        except (OSError, UnicodeDecodeError, ValueError):
+            return error_response(ErrorCode.VALIDATION_ERROR, f"{path} {_NOT_UTF8}")
         if result is None:
             return error_response(ErrorCode.NOT_FOUND, f"Node not found: {path}")
         return success_response(result)
+
+    @server.tool(name="kvault_read_nodes")
+    def kvault_read_nodes(
+        paths: List[str],
+        parents: BatchParentsMode = "none",
+        total_max_chars: int = ops.READ_NODES_MCP_MAX_CHARS,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Read up to 25 nodes in one call, under one shared budget (default 8,000).
+
+        The budget counts whole nodes as compact JSON (content, meta, child
+        paths), sized for clients that inline about 10 KB; raise it when you
+        can take more. A node past the budget comes back cut
+        (`content_truncated`); one whose metadata alone does not fit is listed
+        in `omitted`; a `truncated` note names both. Each node: path, kind,
+        title, meta, content, up to 50 child paths (`children_count` past
+        that), and with parents='gist' its ancestors as {path, title, gist}.
+        Full parent documents ('immediate'|'all') are one node at a time:
+        kvault_read_node. Paths that are not nodes are listed in `missing`.
+        Use it after a search: pick the hits, read them together.
+        """
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        return ops.read_nodes(root, paths, parents=parents, total_max_chars=total_max_chars)
 
     def _strip_ancestors(result: Dict[str, Any], ancestors: str) -> Dict[str, Any]:
         """ancestors='paths' (the default since 0.14.0) keeps ancestor_paths and
@@ -400,8 +444,12 @@ def create_server(kb_root: Path | str) -> Any:
     def kvault_search(
         query: str,
         limit: int = 10,
+        compact: bool = True,
+        parents: ParentsMode = "none",
         include_content: bool = False,
-        parents: str = "none",
+        content_max_chars: int = 6000,
+        total_max_chars: int = 20000,
+        snippet_chars: Optional[int] = None,
         collapse: bool = True,
         kind: Optional[str] = None,
         path_prefix: Optional[str] = None,
@@ -409,26 +457,32 @@ def create_server(kb_root: Path | str) -> Any:
     ) -> Dict[str, Any]:
         """Search visible node summaries.
 
+        Hits are compact by default over MCP (0.16): path, title, kind,
+        last_updated (frontmatter date), and a one-line snippet — about
+        3-4 KB for 10 hits. compact=False adds score, matched_fields,
+        summary_path, a 440-character snippet, and the collapsed-path
+        lists (~9-10 KB). parents='gist' adds one shared `parents` map from
+        every ancestor path of the hits to {title, gist} (~2-3 KB; a hit's
+        ancestors are the prefixes of its path); 'immediate'|'all' attach
+        full documents per hit only while they fit in total_max_chars (a
+        `truncated` note says when). Read the hits you pick with
+        kvault_read_nodes.
+
         The result reports its own blind spots: `total_matched` vs `count`
-        when `limit` cut the list, per-result `content_omitted_reason`
-        (content_max_chars | total_budget_exhausted | empty_node), `collapsed`
-        / `collapsed_paths` for ancestor hits that only repeated a descendant's
-        match (collapse=False keeps them), and `notes` for unreadable files
-        that were skipped. `kind` is a comma-separated subset of
-        root,category,entity; `path_prefix` restricts to a subtree. CAUTION:
-        the char budget applies only to `content` — `parents != "none"`
-        attaches full parent documents OUTSIDE any budget and can dwarf the
-        results.
+        when `limit` cut the list, per-result `content_omitted_reason`,
+        `collapsed` (ancestor hits that only repeated a descendant's match;
+        compact=False also lists them in `collapsed_paths`, collapse=False
+        keeps them), and `notes` for skipped files and for loose Markdown
+        files that are not searched. include_content and full parents share
+        one total_max_chars budget. `kind` is a comma-separated subset of
+        root,category,entity; `path_prefix` restricts to a subtree.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        if parents not in {"none", "immediate", "all"}:
-            return error_response(
-                ErrorCode.VALIDATION_ERROR,
-                "parents must be one of: none, immediate, all",
-            )
+        if parents not in ops.PARENTS_MODES:
+            return error_response(ErrorCode.VALIDATION_ERROR, _PARENTS_ERROR)
         kinds = [k.strip() for k in (kind or "").split(",") if k.strip()] or None
         if kinds and any(k not in KINDS for k in kinds):
             return error_response(
@@ -440,13 +494,15 @@ def create_server(kb_root: Path | str) -> Any:
             query=query,
             limit=limit,
             include_content=include_content,
+            content_max_chars=content_max_chars,
+            total_max_chars=total_max_chars,
             collapse=collapse,
             kinds=kinds,
             path_prefix=path_prefix,
+            compact=compact,
+            snippet_chars=snippet_chars,
+            parents=parents,
         )
-        if parents != "none":
-            for item in result["results"]:
-                item["node"] = ops.read_node(root, item["path"], parents=parents)
         return success_response(result)
 
     @server.tool(name="kvault_delete_entity")
@@ -456,7 +512,8 @@ def create_server(kb_root: Path | str) -> Any:
         Deletes the entire subtree. The result reports `nodes_deleted` /
         `files_deleted` and lists the now-stale ancestor summaries
         (`propagation_required`, `ancestor_paths`) — rewrite them next or
-        they keep describing nodes that no longer exist.
+        they keep describing nodes that no longer exist. `referrer_paths`
+        names other nodes whose summaries still point at the deleted path.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -479,6 +536,8 @@ def create_server(kb_root: Path | str) -> Any:
         BOTH ancestor chains are stale afterwards (`ancestors_source`,
         `ancestors_target`): the source chain still describes the moved
         subtree, the target chain doesn't describe it yet. Rewrite both.
+        `referrer_paths` names other nodes whose summaries still point at
+        the old path; the `propagate` note carries each reference's `now_at`.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -557,15 +616,22 @@ def create_server(kb_root: Path | str) -> Any:
         distinct_from: Optional[List[str]] = None,
         max_children: Optional[int] = None,
         series_ok: Optional[bool] = None,
+        verify_by: Optional[str] = None,
         clear: bool = False,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Record a structure decision on a node so check, plan, and the guards honor it.
+        """Record a decision on a node so check, plan, and the guards honor it.
 
         Use it when a person corrects you: `distinct_from` (these are different
-        things; the SIBLINGS finding and the create guard stop for that pair),
-        `max_children` (this parent's own ceiling), `series_ok` (a deliberate
-        chronology). Written through the normal write path, so it is logged.
+        things; the SIBLINGS and DUPLICATE findings and the create guard stop
+        for that pair), `max_children` (this parent's own ceiling), `series_ok`
+        (a deliberate chronology). Use `verify_by` whenever you record a fact
+        that goes stale (pending, in review, awaiting a reply, deployed to
+        staging): YYYY-MM-DD, "+14d" or "+2w", or "none" to clear once the
+        fact is settled; check reports STALE once it passes. `clear` drops
+        the structure decisions, not verify_by. A mark keeps the node's
+        `updated` date and journals itself. Written through the normal write
+        path, so it is logged.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -579,6 +645,7 @@ def create_server(kb_root: Path | str) -> Any:
             max_children=max_children,
             series_ok=series_ok,
             clear=clear,
+            verify_by=verify_by,
         )
         _record("mark", result, started)
         return result
@@ -722,21 +789,30 @@ def create_server(kb_root: Path | str) -> Any:
         max_findings: int = DEFAULT_MAX_FINDINGS,
         summary_max_words: Optional[int] = None,
         summary_max_dated_sections: int = DEFAULT_MAX_DATED_SECTIONS,
+        codes: Optional[List[str]] = None,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the maintenance checks (the CLI's `kvault check`, one document).
 
         `success` is false only for hard findings (PROPAGATE, LOG, WRITE,
         BRANCH). `findings` is the unified list, hard first; SUMMARY,
-        PENDING, RETRACTED, GHOST, SIBLINGS, LOOSE and JOURNAL are warn-only
-        maintenance work. Lists are capped at `max_findings` per code with
-        the hidden counts in `truncated`. `kvault_validate_kb` checks
-        integrity only; this is the one that says whether the tree is rotting.
+        PENDING, RETRACTED, GHOST, SERIES, SIBLINGS, DUPLICATE, DANGLING,
+        LOOSE, JOURNAL and STALE are warn-only maintenance work. Lists are capped at `max_findings` per
+        code (0 = all) with the hidden counts in `truncated`. `codes` (e.g.
+        ["SIBLINGS"]) runs and reports only those checks; with
+        max_findings=0 that is one code's full list without the rest of
+        the document.
+        `kvault_validate_kb` checks integrity only; this is the one that
+        says whether the tree is rotting.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
+        try:
+            selected = normalize_codes(codes)
+        except ValueError as exc:
+            return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
         return run_checks(
             root,
             threshold_minutes=threshold_minutes,
@@ -746,6 +822,7 @@ def create_server(kb_root: Path | str) -> Any:
             max_findings=max_findings,
             max_words=summary_max_words,
             max_dated_sections=summary_max_dated_sections,
+            codes=selected,
         )
 
     @server.tool(name="kvault_plan")

@@ -20,7 +20,10 @@
    must have an entry for today before the session ends. (Auto-logged if you pass `--reasoning` to `kvault write`.)
 
 4. **FRONTMATTER REQUIRED.** Every node needs `source` and `aliases` in YAML frontmatter.
-   `created` and `updated` are set automatically by kvault.
+   `created` and `updated` are set automatically by kvault. When you record a fact that goes
+   stale (pending, in review, awaiting a reply, deployed to staging), also set when to re-check
+   it: `kvault mark <path> --verify-by +14d`; `kvault check` reports `STALE:` once it passes.
+   When the fact is settled, `kvault mark <path> --verify-by none`.
 
 5. **CHECK BEFORE WRITE.** Always browse the tree and read parent summaries before creating new nodes.
    Use `kvault search` and native tools such as `rg` before creating. Never create duplicates.
@@ -74,8 +77,9 @@ kvault tree                                # Annotated outline of every node —
 kvault tree people --depth 2 --gist        # Zoom into a branch with one-line gists
 kvault status --json                       # Health, entity count, compact hierarchy
 rg -n "search phrase" .                    # Raw filesystem search
-kvault search "search phrase" --json       # Structured node search
-kvault read <path> --json                  # The node; add --parents immediate for the parent summary
+kvault search "search phrase" --compact --json  # Structured node search, one line per hit
+kvault read <path> --json                  # The node; --parents gist adds where it sits
+kvault read <a> <b> <c> --json             # Several nodes in one call, one shared budget (--max-total-chars)
 kvault list [path] --json                  # List child nodes
 ```
 
@@ -130,10 +134,17 @@ Every result carries `did` (one line of what happened) and `notes` — the decis
 | `removed` | Something was destroyed, with a count | Verify the count matches intent |
 
 The rest are informational: `autofilled`, `unchanged`, `created`, `truncated`, `guessed`, `waited`,
-`propagate` (stale ancestors — the PROPAGATE step above already handles it).
+`propagate` (stale ancestors — the PROPAGATE step above already handles it — or, after a move
+or delete, other nodes that still point at the old path, listed in `referrer_paths`).
 Tiers: `-q` trims output (`partial` still shows), `--explain` adds why + the exact next command;
 `--strict` exits 3 on `partial`/`skipped`/broken-lock notes. Set `KVAULT_SESSION=<task-id>` so the
 ops log groups one task's commands — review with `kvault log tail`.
+
+MCP clients keep reads small: `kvault_search` returns compact hits by default, `parents="gist"`
+adds where each hit sits (path, title, one line per ancestor), `kvault_read_nodes` reads the
+hits you pick in one call, and `kvault_check` with `codes=[...]` and `max_findings=0` returns
+one code's full list. Avoid `parents="all"` on search: it attaches every ancestor's full document
+to each hit until `total_max_chars` runs out, usually after one or two hits.
 
 MCP clients should use strict parent-summary tools when available:
 
@@ -160,10 +171,13 @@ counts, descendant totals, and most-recent activity (`~date`) per branch. Act on
 |--------|--------|
 | Branch with >10 children (`[N children, ...]`, `BRANCH:` from `kvault check`) | `kvault plan <path>` → run the `cluster` item's `kvault move --batch --confirm` payload → rewrite the new hub, then the chain (`kvault update-summaries`) → `kvault validate` |
 | `[+K ghost]` in the tree, `GHOST:` from `kvault check` | A directory with no summary — write one (`kvault write <path> --create`) or list it in `.kvaultignore` if it is tooling |
-| `SERIES:` / `SIBLINGS:` / `LOOSE:` / `JOURNAL:` from `kvault check` | Fold dated nodes with the `series` item from `kvault plan` (they become one current-state node's `deep_context/`; new timeline entries go to `journal/`); merge or nest the twins; adopt legacy node files as nodes and move supporting files into `<node>/deep_context/`; fold stray journal files into `journal/YYYY-MM/log.md` |
+| `SERIES:` / `SIBLINGS:` / `LOOSE:` / `JOURNAL:` from `kvault check` | Fold dated nodes with the `series` item from `kvault plan` (they become one current-state node's `deep_context/`; new timeline entries go to `journal/`); merge or nest the twins; adopt legacy node files as nodes and move supporting files into `<node>/deep_context/`; fold stray journal files into `journal/YYYY-MM/log.md`, or list a deliberate second layout in `.kvaultignore` |
+| `DUPLICATE:` from `kvault check` | The same thing in two places (same name, title, aliases, or text). Read both: same thing → fold the unique facts into one node and park the other under its `deep_context/`; different things → `kvault mark <a> --distinct-from <b>` |
+| `DANGLING:` from `kvault check` | A summary points at a path with nothing there. Point it at the node's current path (the finding names same-name nodes elsewhere) or drop it |
+| `STALE:` from `kvault check` | The node's `verify_by` date passed. Re-check its time-sensitive facts and rewrite what changed; still time-sensitive → `kvault mark <path> --verify-by +14d`; settled → `--verify-by none` |
 | Branch `~updated_max` older than ~6 months | Review for stale or dead content; update, merge, or prune |
 | `SUMMARY:` warnings from `kvault check` | Rewrite the flagged parent summaries as comprehensive rollups — this is real maintenance work even though the command exits 0. `too_long`/`stale_history`: fold, never split into sub-files |
-| Near-duplicate titles or aliases | Verify identifiers exactly (email/phone) → merge into the canonical entity → delete the duplicate |
+| Near-duplicate titles or aliases | Verify identifiers exactly (email/phone) → fold the facts into the canonical entity → park the other under its `deep_context/` (a move, not a delete, so it can be undone) |
 
 Before creating any node: `kvault search "<name/topic>" --json` and `kvault tree <target-branch>`.
 Update beats create; journal-only beats trivial create.
@@ -187,6 +201,8 @@ Context and notes here.
 
 **Required:** `source`, `aliases`
 **Auto-set:** `created`, `updated`
+**Optional decisions** (set with `kvault mark`): `distinct_from`, `max_children`, `series_ok`,
+`verify_by`
 
 ---
 
@@ -194,9 +210,9 @@ Context and notes here.
 
 **Node:** `kvault search`, `kvault read`, `kvault write` (stdin), `kvault list`
 **Compatibility:** `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors`, `kvault delete --confirm`, `kvault move --confirm` (destructive — both require `--confirm`), `kvault move --batch --confirm` (stdin JSON list of `{from, to}`)
-**Maintenance:** `kvault plan [PATH] [--limit N]` (ordered worklist with commands; never applies anything), `kvault mark <path> [--distinct-from X] [--max-children N] [--series-ok] [--clear]` (record a decision the rules honor)
+**Maintenance:** `kvault plan [PATH] [--limit N]` (ordered worklist with commands; never applies anything), `kvault mark <path> [--distinct-from X] [--max-children N] [--series-ok] [--verify-by DATE] [--clear]` (record a decision the rules honor)
 **Journal:** `kvault journal --source TEXT` (stdin JSON)
-**Validation:** `kvault validate`, `kvault check` (prefixes: `[KB]`, `SUMMARY:`, `PENDING:`, `RETRACTED:`, `GHOST:`, `SERIES:`, `SIBLINGS:`, `LOOSE:`, `JOURNAL:`)
+**Validation:** `kvault validate`, `kvault check [--code X] [--max-findings N|0]` (prefixes: `[KB]`, `SUMMARY:`, `PENDING:`, `RETRACTED:`, `GHOST:`, `SERIES:`, `SIBLINGS:`, `DUPLICATE:`, `DANGLING:`, `LOOSE:`, `JOURNAL:`, `STALE:`)
 **Status:** `kvault status`, `kvault doctor` (runtime/version/KB binding), `kvault tree [path] [--depth N] [--max-children N] [--gist]`
 
 All agent-facing commands support `--json` for machine-readable output and `--kb-root` to specify

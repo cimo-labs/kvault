@@ -12,8 +12,10 @@ Two classes of finding:
 - **hard** (exit 1, the ``[KB]`` line): ``PROPAGATE``, ``LOG``, ``WRITE``,
   ``BRANCH``. Fix before continuing.
 - **warn** (exit 0, one line per finding, bounded): ``SUMMARY``, ``PENDING``,
-  ``RETRACTED``, and since 0.15 the structural set ``GHOST``, ``SIBLINGS``,
-  ``LOOSE``, ``JOURNAL``. Maintenance work; ``kvault plan`` orders it.
+  ``RETRACTED``, and since 0.15 the structural set ``GHOST``, ``SERIES``,
+  ``SIBLINGS``, ``LOOSE``, ``JOURNAL`` (0.16 adds ``DUPLICATE`` and
+  ``DANGLING``), and since 0.16 ``STALE`` (a node's ``verify_by`` passed).
+  Maintenance work; ``kvault plan`` orders it.
 
 Every list in the document is bounded (``max_findings`` per code, with the
 hidden count recorded) because the 0.14 ``missing_child_coverage`` line on a
@@ -25,10 +27,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from kvault._version import __version__
 from kvault.core import decisions as dc
+from kvault.core import duplicates as du
+from kvault.core import references as rf
 from kvault.core import structure as st
 from kvault.core.events import pending_event_findings, retracted_reference_findings
 from kvault.core.frontmatter import parse_frontmatter
@@ -39,6 +43,7 @@ from kvault.core.summary_quality import (
 )
 
 from kvault.core.operations import MAX_DIRECT_CHILDREN
+from kvault.core.validation import NODE_COMPONENT_RE
 
 DEFAULT_THRESHOLD_MINUTES = 5
 #: The write guard's ceiling and check's default are one number on purpose.
@@ -50,8 +55,21 @@ DEFAULT_PENDING_MAX_AGE = 7
 MAX_SIBLING_PAIRS_PER_PARENT = 5
 
 HARD_CODES = ("PROPAGATE", "LOG", "WRITE", "BRANCH")
-WARN_CODES = ("SUMMARY", "PENDING", "RETRACTED", "GHOST", "SERIES", "SIBLINGS", "LOOSE", "JOURNAL")
-STRUCTURE_CODES = ("GHOST", "SERIES", "SIBLINGS", "LOOSE", "JOURNAL")
+WARN_CODES = (
+    "SUMMARY",
+    "PENDING",
+    "RETRACTED",
+    "GHOST",
+    "SERIES",
+    "SIBLINGS",
+    "DUPLICATE",
+    "DANGLING",
+    "LOOSE",
+    "JOURNAL",
+    "STALE",
+)
+STRUCTURE_CODES = ("GHOST", "SERIES", "SIBLINGS", "DUPLICATE", "DANGLING", "LOOSE", "JOURNAL")
+ALL_CODES = HARD_CODES + WARN_CODES
 
 _SUMMARY_FIX = {
     "too_short": "rewrite the parent as a comprehensive rollup of its children",
@@ -96,7 +114,12 @@ class Finding:
 
 
 def _get_mtime(path: Path) -> datetime:
-    return datetime.fromtimestamp(path.stat().st_mtime)
+    # A summary that cannot be stat'ed (a symlink loop: ELOOP on Linux, where
+    # rglob yields it) counts as never modified rather than crashing check.
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime)
+    except OSError:
+        return datetime.min
 
 
 def _get_updated_date(path: Path) -> Optional[date]:
@@ -435,7 +458,12 @@ def sibling_findings(
     ignore: Sequence[str],
     pairs_per_parent: int = MAX_SIBLING_PAIRS_PER_PARENT,
 ) -> List[Finding]:
-    """Near-duplicate sibling names, and the same basename at several depths."""
+    """Near-duplicate sibling names under one parent.
+
+    The same basename at several depths moved to ``DUPLICATE`` in 0.16: it
+    was appended after every per-parent pair here, and on a large KB the
+    output cap hid it.
+    """
     out: List[Finding] = []
     for node_dir in _node_dirs(kb_root, ignore):
         names = [d.name for d in st.child_dirs(node_dir, kb_root, ignore)]
@@ -478,33 +506,6 @@ def sibling_findings(
                     fix=f"kvault plan {parent}",
                 )
             )
-    for name, paths in sorted(st.basename_duplicates(kb_root, ignore).items()):
-        # a_m/n_z buckets under two branches, and one basename under sibling
-        # parents (customers/{key,standard}/oem), are layouts, not twins.
-        if st.is_bucket_name(name) or st.is_facet_layout(paths):
-            continue
-        # a recorded `distinct_from` between any two of them settles it
-        paths = [
-            p for p in paths if not any(dc.are_distinct(kb_root, p, o) for o in paths if o != p)
-        ]
-        if len(paths) < 2:
-            continue
-        titled = [f"{p} «{_node_title(kb_root, p)}»" for p in paths[:4]]
-        out.append(
-            Finding(
-                code="SIBLINGS",
-                path=name,
-                message=f"'{name}' exists at {len(paths)} places: {', '.join(titled)}"
-                + (" …" if len(paths) > 4 else ""),
-                level="warn",
-                detail={
-                    "kind": "same_name_elsewhere",
-                    "paths": paths,
-                    "titles": [_node_title(kb_root, p) for p in paths],
-                },
-                fix="same thing: merge; different things: rename one so the name is not ambiguous",
-            )
-        )
     return out
 
 
@@ -512,23 +513,142 @@ def _child(parent: str, name: str) -> str:
     return name if parent == "." else f"{parent}/{name}"
 
 
-def _node_title(kb_root: Path, rel_path: str) -> str:
-    summary = kb_root / rel_path / st.SUMMARY_NAME
-    try:
-        meta, body = parse_frontmatter(summary.read_text(encoding="utf-8", errors="replace"))
-    except OSError:
-        return ""
-    for key in ("name", "title", "topic"):
-        value = (meta or {}).get(key)
-        if value:
-            return str(value)[:40]
-    for line in body.splitlines():
-        if line.startswith("#"):
-            return line.lstrip("# ").strip()[:40]
-    return ""
+def distinct_command(a: str, b: str) -> str:
+    """``kvault mark`` that records *a* and *b* as different things.
+
+    ``--distinct-from`` reads a bare name as a sibling, so a root category
+    cannot be named from a nested node; mark the root one instead.
+    """
+    if "/" not in b and "/" in a:
+        a, b = b, a
+    return f"kvault mark {a} --distinct-from {b}"
 
 
-def journal_layout_findings(kb_root: Path) -> List[Finding]:
+def duplicate_findings(kb_root: Path, ignore: Sequence[str]) -> List[Finding]:
+    """The same thing filed in two places, anywhere in the KB (see core.duplicates)."""
+    out: List[Finding] = []
+    for pair in du.duplicate_pairs(kb_root, ignore):
+        a, b = pair["a"], pair["b"]
+        other = b.rsplit("/", 1)[-1]
+        mark = distinct_command(a, b)
+        out.append(
+            Finding(
+                code="DUPLICATE",
+                path=a,
+                message=f"and {b}: {du.describe(pair)}",
+                level="warn",
+                detail=dict(pair),
+                fix=(
+                    "read both; same thing → keep the richer node, fold the other's unique "
+                    f"facts into it, then park the other under its deep_context/ (kvault move "
+                    f"--confirm {b} {a}/deep_context/{other}); different things → {mark}"
+                ),
+            )
+        )
+    return out
+
+
+def dangling_findings(kb_root: Path, ignore: Sequence[str]) -> List[Finding]:
+    """Summary references that resolve inside the KB to nothing (see core.references).
+
+    A deleted or moved child can never be newer than its parent, so
+    PROPAGATE is blind to it; this compares what summaries point at with
+    what is on disk.
+    """
+    out: List[Finding] = []
+    for ref in rf.dangling_references(kb_root, ignore):
+        hint = f" (same name at {', '.join(ref.moved_to)})" if ref.moved_to else ""
+        out.append(
+            Finding(
+                code="DANGLING",
+                path=ref.node,
+                message=f"{ref.kind} {ref.raw} → nothing at {ref.target}{hint}",
+                level="warn",
+                detail={
+                    "kind": ref.kind,
+                    "raw": ref.raw,
+                    "target": ref.target,
+                    "moved_to": list(ref.moved_to),
+                },
+                fix=(
+                    "point it at the node's current path"
+                    + (f" (likely {ref.moved_to[0]})" if ref.moved_to else "")
+                    + f", or drop it: kvault write {ref.node}"
+                ),
+            )
+        )
+    return out
+
+
+def stale_findings(
+    kb_root: Path, ignore: Sequence[str], today: Optional[date] = None
+) -> List[Finding]:
+    """Nodes whose ``verify_by`` date has passed, most overdue first.
+
+    The date is the writer's own promise to re-check facts that go stale
+    (a pending change, an open review). An unparseable value is reported
+    too: it would otherwise never come due. Only nodes ``kvault mark`` can
+    address are walked: journal/ and deep_context/ are history and parked
+    material, internal and ignored paths are not nodes, and a summary that
+    resolves outside the KB is never read.
+    """
+    day = today or date.today()
+    root = Path(kb_root)
+    out: List[Finding] = []
+    for node_dir in [root] + [d for d in st.walk_dirs(root, ignore) if st.has_summary(d)]:
+        rel_path = st.rel(root, node_dir)
+        summary = node_dir / st.SUMMARY_NAME
+        if rel_path != "." and not all(NODE_COMPONENT_RE.match(p) for p in rel_path.split("/")):
+            continue
+        if not summary.is_file() or not st.inside_root(summary, root):
+            continue
+        try:
+            if "verify_by" not in summary.read_text(encoding="utf-8", errors="replace"):
+                continue
+        except OSError:
+            continue
+        decision = dc.read_decisions(kb_root, rel_path)
+        raw = decision.get("verify_by_raw")
+        if raw is None:
+            continue
+        due = decision.get("verify_by")
+        if due is None:
+            out.append(
+                Finding(
+                    code="STALE",
+                    path=rel_path,
+                    message=f"verify_by {raw!r} is not a date (YYYY-MM-DD), so it never comes due",
+                    level="warn",
+                    detail={"verify_by": raw, "days_overdue": None},
+                    fix=(
+                        f"kvault mark {rel_path} --verify-by +14d (or a YYYY-MM-DD date); "
+                        "--verify-by none if nothing in it goes stale"
+                    ),
+                )
+            )
+            continue
+        days = (day - date.fromisoformat(due)).days
+        if days <= 0:
+            continue
+        out.append(
+            Finding(
+                code="STALE",
+                path=rel_path,
+                message=f"verify_by {due} passed {days} day{'s' if days != 1 else ''} ago",
+                level="warn",
+                detail={"verify_by": due, "days_overdue": days},
+                fix=(
+                    "re-check the node's time-sensitive facts and rewrite what changed; still "
+                    f"time-sensitive → kvault mark {rel_path} --verify-by +14d, settled → "
+                    f"kvault mark {rel_path} --verify-by none"
+                ),
+            )
+        )
+    out.sort(key=lambda f: -(f.detail.get("days_overdue") or 10**6))
+    return out
+
+
+def journal_layout_findings(kb_root: Path, ignore: Sequence[str] = ()) -> List[Finding]:
     return [
         Finding(
             code="JOURNAL",
@@ -537,10 +657,11 @@ def journal_layout_findings(kb_root: Path) -> List[Finding]:
             level="warn",
             fix=(
                 "keep one history: journal/YYYY-MM/log.md written by kvault journal; "
-                f"fold other files into it or list them in {st.IGNORE_FILE}"
+                "fold other files into it, or list a deliberate second layout in "
+                f"{st.IGNORE_FILE}"
             ),
         )
-        for f in st.journal_layout_findings(kb_root)
+        for f in st.journal_layout_findings(kb_root, ignore)
     ]
 
 
@@ -566,10 +687,36 @@ def check_directory_size(kb_root: Path, max_children: int = DEFAULT_MAX_CHILDREN
 # -- the document ------------------------------------------------------------
 
 
-def _cap(findings: List[Finding], limit: int) -> tuple[List[Finding], int]:
+def _cap(findings: List[Finding], limit: int) -> Tuple[List[Finding], int]:
     if limit <= 0 or len(findings) <= limit:
         return findings, 0
     return findings[:limit], len(findings) - limit
+
+
+def normalize_codes(codes: Optional[Iterable[str]]) -> Optional[List[str]]:
+    """``["siblings,ghost", "LOOSE:"]`` → ``["SIBLINGS", "GHOST", "LOOSE"]``.
+
+    ``None`` or nothing usable means "every check". An unknown code raises
+    ``ValueError`` naming the valid ones: a typo'd filter that silently
+    matched nothing would report a clean KB.
+    """
+    if codes is None:
+        return None
+    if isinstance(codes, str):
+        codes = [codes]
+    out: List[str] = []
+    for item in codes:
+        for part in str(item).split(","):
+            code = part.strip().rstrip(":").upper()
+            if not code:
+                continue
+            if code not in ALL_CODES:
+                raise ValueError(
+                    f"unknown check code '{part.strip()}'; valid codes: {', '.join(ALL_CODES)}"
+                )
+            if code not in out:
+                out.append(code)
+    return out or None
 
 
 def run_checks(
@@ -581,54 +728,74 @@ def run_checks(
     pending_max_age: int = DEFAULT_PENDING_MAX_AGE,
     max_children: int = DEFAULT_MAX_CHILDREN,
     max_findings: int = DEFAULT_MAX_FINDINGS,
+    codes: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
-    """Run every check and return one document.
+    """Run every check (or the *codes* named) and return one document.
 
     ``success`` is false only for hard findings. The legacy keys
     (``warnings`` as strings, ``summary_warnings``, ``pending_events``,
     ``retracted_refs``) are unchanged; ``findings`` is the unified structured
-    list hard-first, and ``structure_warnings`` holds the 0.15 codes. Lists
-    of warn-class findings are capped at *max_findings* per code with the
-    hidden count in ``truncated``.
+    list hard-first, and ``structure_warnings`` holds the structural codes.
+    Lists of warn-class findings are capped at *max_findings* per code
+    (0 = no cap) with the hidden count in ``truncated``.
+
+    *codes* limits which checks run and are reported (0.16): with
+    ``max_findings=0`` a maintenance agent working one code at a time gets
+    that code's full list without the rest of the document, and ``success``
+    reflects only the hard codes it selected. The selection is echoed as
+    ``codes``.
     """
     root = Path(kb_root)
     ignore = st.load_ignore(root)
+    selected = normalize_codes(codes)
+
+    def wanted(code: str) -> bool:
+        return selected is None or code in selected
 
     hard: List[Finding] = []
-    hard.extend(propagation_findings(root, threshold_minutes))
-    hard.extend(journal_findings(root))
-    hard.extend(frontmatter_findings(root))
-    hard.extend(branching_findings(root, max_children, ignore))
+    if wanted("PROPAGATE"):
+        hard.extend(propagation_findings(root, threshold_minutes))
+    if wanted("LOG"):
+        hard.extend(journal_findings(root))
+    if wanted("WRITE"):
+        hard.extend(frontmatter_findings(root))
+    if wanted("BRANCH"):
+        hard.extend(branching_findings(root, max_children, ignore))
 
     issues = (
         audit_summary_quality(root, max_words=max_words, max_dated_sections=max_dated_sections)
-        if summary_quality
+        if summary_quality and wanted("SUMMARY")
         else []
     )
-    pending = pending_event_findings(root, max_age_days=pending_max_age)
-    retracted = retracted_reference_findings(root)
+    pending = (
+        pending_event_findings(root, max_age_days=pending_max_age) if wanted("PENDING") else []
+    )
+    retracted = retracted_reference_findings(root) if wanted("RETRACTED") else []
 
+    producers: List[Tuple[str, Callable[[], List[Finding]]]] = [
+        ("SUMMARY", lambda: summary_findings(issues)),
+        ("PENDING", lambda: pending_findings(pending)),
+        ("RETRACTED", lambda: retracted_findings(retracted)),
+        ("GHOST", lambda: ghost_findings(root, ignore)),
+        ("SERIES", lambda: series_findings(root, ignore)),
+        ("SIBLINGS", lambda: sibling_findings(root, ignore)),
+        ("DUPLICATE", lambda: duplicate_findings(root, ignore)),
+        ("DANGLING", lambda: dangling_findings(root, ignore)),
+        ("LOOSE", lambda: loose_findings(root, ignore)),
+        ("JOURNAL", lambda: journal_layout_findings(root, ignore)),
+        ("STALE", lambda: stale_findings(root, ignore)),
+    ]
     truncated: Dict[str, int] = {}
-    warn_groups: List[List[Finding]] = []
-    for code, group in (
-        ("SUMMARY", summary_findings(issues)),
-        ("PENDING", pending_findings(pending)),
-        ("RETRACTED", retracted_findings(retracted)),
-        ("GHOST", ghost_findings(root, ignore)),
-        ("SERIES", series_findings(root, ignore)),
-        ("SIBLINGS", sibling_findings(root, ignore)),
-        ("LOOSE", loose_findings(root, ignore)),
-        ("JOURNAL", journal_layout_findings(root)),
-    ):
-        shown, hidden = _cap(group, max_findings)
+    warn: List[Finding] = []
+    for code, produce in producers:
+        if not wanted(code):
+            continue
+        shown, hidden = _cap(produce(), max_findings)
         if hidden:
             truncated[code] = hidden
-        warn_groups.append(shown)
-    warn = [f for group in warn_groups for f in group]
+        warn.extend(shown)
     structure = [f for f in warn if f.code in STRUCTURE_CODES]
-    structure_total = sum(len(g) for g in warn_groups[3:]) + sum(
-        truncated.get(c, 0) for c in STRUCTURE_CODES
-    )
+    structure_total = len(structure) + sum(truncated.get(c, 0) for c in STRUCTURE_CODES)
 
     warn_total = len(warn) + sum(truncated.values())
     doc: Dict[str, Any] = {
@@ -661,6 +828,8 @@ def run_checks(
         "truncated": truncated,
         "ignore_patterns": list(ignore),
     }
+    if selected is not None:
+        doc["codes"] = selected
     return doc
 
 
@@ -672,7 +841,9 @@ __all__ = [
     "HARD_CODES",
     "WARN_CODES",
     "STRUCTURE_CODES",
+    "ALL_CODES",
     "Finding",
+    "normalize_codes",
     "propagation_findings",
     "journal_findings",
     "frontmatter_findings",
@@ -682,6 +853,10 @@ __all__ = [
     "series_findings",
     "loose_findings",
     "sibling_findings",
+    "duplicate_findings",
+    "distinct_command",
+    "dangling_findings",
+    "stale_findings",
     "journal_layout_findings",
     "check_propagation",
     "check_journal",

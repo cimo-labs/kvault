@@ -365,3 +365,83 @@ def test_hub_is_not_clustered_by_its_own_name(empty_kb):
     # grouping falls through to the next word where there is one
     hubs = {i["new_parent"] for i in clusters}
     assert hubs <= {"projects/aio/experiment", "projects/aio/search"} or hubs == set()
+
+
+def test_ignore_lines_are_quoted_and_escaped(tmp_path):
+    """A journal file named with a quote or fnmatch brackets used to emit an echo
+    that failed in the shell, or a pattern that did not match the file."""
+    import subprocess
+
+    from kvault.core.plan import build_plan
+    from kvault.core.check import run_checks
+
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "_summary.md").write_text("# Root\n\nRoot.\n")
+    (kb / "journal").mkdir()
+    (kb / "journal" / "it's.md").write_text("x")
+    (kb / "journal" / "notes[1].md").write_text("x")
+    items = [i for i in build_plan(kb, limit=0)["items"] if i["kind"] == "journal"]
+    assert len(items) == 2
+    for item in items:
+        line = item["commands"][-1].split(": ", 1)[1]
+        subprocess.run(["bash", "-c", line], check=True)
+    assert not [f for f in run_checks(kb)["findings"] if f["code"] == "JOURNAL"]
+
+
+def test_items_under_a_batch_are_deferred_and_parking_names_are_free(tmp_path):
+    """A duplicate item naming a node that a cluster batch moves would, run in
+    order, park a node under a stub left at the old path."""
+    from kvault.core.plan import build_plan
+
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "_summary.md").write_text("# Root\n\nRoot.\n")
+    body = " ".join(f"word{i}" for i in range(80))
+
+    def node(rel, text):
+        (kb / rel).mkdir(parents=True, exist_ok=True)
+        (kb / rel / "_summary.md").write_text(f"---\nsource: m\naliases: []\n---\n{text}\n")
+
+    node("projects", "# Projects\n\nAll.")
+    for i in range(11):
+        node(f"projects/routing_part{i:02d}", f"# Routing part {i}\n\nPart {i}.")
+    node("tech", "# Tech\n\nAll.")
+    node("tech/notes_copy", f"# Copy\n\n{body}")
+    node("projects/routing_part00", f"# Routing part 0\n\n{body}")
+    result = build_plan(kb, limit=0)
+    kinds = [i["kind"] for i in result["items"]]
+    assert "cluster" in kinds and "duplicate" not in kinds
+    assert any("re-run kvault plan" in n["text"] for n in result["notes"])
+
+    # with no batch in the way, the parking target avoids an existing name
+    kb2 = tmp_path / "kb2"
+    kb2.mkdir()
+    (kb2 / "_summary.md").write_text("# Root\n\nRoot.\n")
+    for rel, text in (
+        ("a", "# A\n\nA."),
+        ("a/keeper", f"# Keeper\n\n{body}"),
+        ("b", "# B\n\nB."),
+        ("b/twin", f"# Twin\n\n{body}"),
+        ("a/keeper/deep_context/twin", "# Old\n\nOlder twin."),
+    ):
+        (kb2 / rel).mkdir(parents=True, exist_ok=True)
+        (kb2 / rel / "_summary.md").write_text(f"---\nsource: m\naliases: []\n---\n{text}\n")
+    (item,) = [i for i in build_plan(kb2, limit=0)["items"] if i["kind"] == "duplicate"]
+    assert any("a/keeper/deep_context/twin_2" in c for c in item["commands"])
+
+
+def test_ignore_lines_survive_awkward_names(tmp_path):
+    import subprocess
+
+    from kvault.core.plan import _ignore_line
+    from kvault.core.structure import is_ignored, load_ignore
+
+    for shell in ("sh", "bash"):
+        kb = tmp_path / shell
+        kb.mkdir()
+        names = ["-n", "-e", "#tag", "back\\slash", "sp ace", "notes[1]", "it's"]
+        for name in names:
+            subprocess.run([shell, "-c", _ignore_line(kb, f"journal/{name}")], check=True)
+        patterns = load_ignore(kb)
+        assert all(is_ignored(f"journal/{name}", patterns) for name in names), patterns

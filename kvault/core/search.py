@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from kvault.core import notes as nt
+from kvault.core import structure as st
 from kvault.core.conventions import is_background_child
 from kvault.core.frontmatter import parse_frontmatter
 
@@ -214,6 +215,24 @@ def search_nodes(
                 next_step="repair or re-encode the listed files (UTF-8), then re-run",
             )
         )
+    loose = _loose_markdown(kg_root, query_tokens, prefix)
+    if loose is not None:
+        count, matching = loose
+        text = f"{count} Markdown file(s) outside the node layout are not searched"
+        if matching:
+            text += f"; {len(matching)} contain the query: " + ", ".join(matching[:3])
+            if len(matching) > 3:
+                text += f" (+{len(matching) - 3} more)"
+        notes.append(
+            nt.note(
+                "truncated",
+                text,
+                detail={"kind": "not_indexed", "loose_markdown": count, "matching": matching[:5]},
+                why="search indexes node summaries; a loose file is invisible to it and to tree",
+                next_step="kvault plan adopts legacy node files as nodes; until then, read a "
+                "matching file directly",
+            )
+        )
     if total_matched > len(results):
         notes.append(
             nt.note(
@@ -281,6 +300,38 @@ def search_nodes(
     # Bulk payload last: over MCP, key order is reading order.
     out["results"] = [result.to_dict(compact=compact) for result in results]
     return out
+
+
+def _loose_markdown(
+    kg_root: Path, query_tokens: Sequence[str], prefix: Optional[str]
+) -> Optional[Tuple[int, List[str]]]:
+    """``(count, matching)`` for Markdown files search cannot see, or None if none.
+
+    The files LOOSE: reports (``_``-prefixed internals and ignored paths
+    excluded), restricted to *prefix*; *matching* are those containing every
+    query token. On a real 1,000-node KB, 43 such files were invisible to
+    every search, with nothing saying so.
+    """
+    root = Path(kg_root)
+    files = [
+        f
+        for f in st.loose_files(root, st.load_ignore(root))
+        if f.endswith(".md")
+        and not f.rsplit("/", 1)[-1].startswith("_")
+        and (prefix is None or _under_prefix(f, prefix))
+    ]
+    if not files:
+        return None
+    wanted = set(query_tokens)
+    matching: List[str] = []
+    for f in files:
+        try:
+            text = (root / f).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if wanted <= set(_tokens(text)):
+            matching.append(f)
+    return len(files), matching
 
 
 def _depth(path: str) -> int:

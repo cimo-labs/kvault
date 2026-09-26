@@ -219,6 +219,16 @@ def _walk_outline(
             if st.is_ghost(d)
         )
     )
+    # Loose files are invisible the same way (0.16): count what LOOSE: reports.
+    loose_count = (
+        0
+        if path != "." and st.is_reserved_name(slug)
+        else sum(
+            1
+            for f in st.loose_files_in(kg_root if path == "." else kg_root / path, kg_root, ignore)
+            if not f.rsplit("/", 1)[-1].startswith("_")
+        )
+    )
 
     descendants = sum(1 + c["descendants_count"] for c in children)
     updated_max = updated
@@ -238,6 +248,7 @@ def _walk_outline(
         "children_count": len(children),
         "descendants_count": descendants,
         "ghost_count": ghost_count,
+        "loose_count": loose_count,
         "children": children,
         "truncated": None,
     }
@@ -299,6 +310,8 @@ def render_outline_text(outline: Dict[str, Any]) -> str:
             counts.append(f"{node['children_count']} children, {node['descendants_count']} total")
         if node.get("ghost_count"):
             counts.append(f"+{node['ghost_count']} ghost")
+        if node.get("loose_count"):
+            counts.append(f"+{node['loose_count']} loose")
         if counts:
             parts.append(f"[{', '.join(counts)}]")
         if node["updated_max"]:

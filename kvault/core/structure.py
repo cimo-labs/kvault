@@ -365,29 +365,30 @@ def basename_duplicates(kg_root: Path, ignore: Sequence[str]) -> Dict[str, List[
     return {k: v for k, v in seen.items() if len(v) > 1}
 
 
+def loose_files_in(dir_path: Path, kg_root: Path, ignore: Sequence[str]) -> List[str]:
+    """KB-relative paths of the loose files directly inside one managed directory."""
+    root = Path(kg_root)
+    allowed = NODE_FILES + ROOT_FILES if Path(dir_path) == root else NODE_FILES
+    try:
+        entries = sorted(Path(dir_path).iterdir())
+    except OSError:
+        return []
+    out: List[str] = []
+    for entry in entries:
+        if not entry.is_file() or entry.name.startswith(".") or entry.name in allowed:
+            continue
+        r = rel(root, entry)
+        if not is_ignored(r, ignore):
+            out.append(r)
+    return out
+
+
 def loose_files(kg_root: Path, ignore: Sequence[str]) -> List[str]:
     """Files that sit outside the node convention (not a summary, not in deep_context/)."""
     root = Path(kg_root)
-    out: List[str] = []
-
-    def _scan(dir_path: Path, allowed: Tuple[str, ...]) -> None:
-        try:
-            entries = sorted(dir_path.iterdir())
-        except OSError:
-            return
-        for entry in entries:
-            if not entry.is_file() or entry.name.startswith("."):
-                continue
-            if entry.name in allowed:
-                continue
-            r = rel(root, entry)
-            if is_ignored(r, ignore):
-                continue
-            out.append(r)
-
-    _scan(root, NODE_FILES + ROOT_FILES)
+    out = loose_files_in(root, root, ignore)
     for d in walk_dirs(root, ignore):
-        _scan(d, NODE_FILES)
+        out.extend(loose_files_in(d, root, ignore))
     return out
 
 
@@ -471,6 +472,7 @@ __all__ = [
     "ghost_dirs",
     "basename_matches",
     "basename_duplicates",
+    "loose_files_in",
     "loose_files",
     "journal_layout_findings",
 ]

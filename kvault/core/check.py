@@ -114,7 +114,12 @@ class Finding:
 
 
 def _get_mtime(path: Path) -> datetime:
-    return datetime.fromtimestamp(path.stat().st_mtime)
+    # A summary that cannot be stat'ed (a symlink loop: ELOOP on Linux, where
+    # rglob yields it) counts as never modified rather than crashing check.
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime)
+    except OSError:
+        return datetime.min
 
 
 def _get_updated_date(path: Path) -> Optional[date]:

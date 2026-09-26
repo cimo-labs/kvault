@@ -338,13 +338,13 @@ def walk_dirs(kg_root: Path, ignore: Sequence[str]) -> Iterator[Path]:
 def inside_root(path: Path, kg_root: Path) -> bool:
     """True when *path* resolves (symlinks followed) inside the KB root.
 
-    The tree walk follows symlinked directories, which is harmless for
-    names; anything that *reads content* checks this first, so a symlink
-    in the KB cannot make a root-bound server read files outside it.
+    Anything that *reads content* checks this first, so a symlink in the
+    KB cannot make a root-bound server read a file outside it. A symlink
+    loop (``resolve`` raises RuntimeError before Python 3.13) is not inside.
     """
     try:
         Path(path).resolve().relative_to(Path(kg_root).resolve())
-    except (OSError, ValueError):
+    except (OSError, RuntimeError, ValueError):
         return False
     return True
 

@@ -566,7 +566,7 @@ def _snippet(
     if max_chars <= 0:
         return ""
     if not text:
-        return doc.title
+        return doc.title[:max_chars]
     haystack = text.lower()
     needle = query.lower().strip()
     idx = haystack.find(needle) if needle else -1

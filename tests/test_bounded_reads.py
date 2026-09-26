@@ -273,3 +273,101 @@ def test_snippets_respect_their_length_and_parents_are_validated(kb):
         assert all(len(r["snippet"]) <= width for r in hits["results"])
     with pytest.raises(ValueError, match="gist"):
         ops.search_nodes(kb, "uplift", parents="Gist")
+
+
+# ── re-review (2026-09-26) ────────────────────────────────────────────────
+
+
+def test_no_read_path_follows_a_symlink_out_of_the_kb(kb, tmp_path):
+    outside = tmp_path / "private"
+    outside.mkdir()
+    (outside / "private.md").write_text("---\nsource: x\n---\n# P\n\nsecret-token\n")
+    (outside / "creds.json").write_text('{"name": "secret-token"}')
+    (kb / "projects" / "y").mkdir()
+    (kb / "projects" / "y" / "_summary.md").symlink_to(outside / "private.md")
+    (kb / "projects" / "legacy").mkdir()
+    (kb / "projects" / "legacy" / "_summary.md").write_text("# Legacy\n\nNo frontmatter.\n")
+    (kb / "projects" / "legacy" / "_meta.json").symlink_to(outside / "creds.json")
+    (kb / "memo.md").symlink_to(outside / "private.md")
+    blob = json.dumps(
+        [
+            ops.read_summary(kb, "projects/y"),
+            ops.read_summary(kb, "memo.md"),
+            ops.get_ancestors(kb, "projects/y/z"),
+            ops.read_node(kb, "projects/legacy"),
+            ops.read_nodes(kb, ["projects/legacy", "projects/y"]),
+        ],
+        default=str,
+    )
+    assert "secret-token" not in blob
+    (kb / "_summary.md").unlink()
+    (kb / "_summary.md").symlink_to(outside / "private.md")
+    assert "secret-token" not in json.dumps(ops.get_kb_info(kb, include_root_summary=True))
+
+
+def test_symlink_loops_on_summaries_never_crash_check_or_plan(kb):
+    from kvault.core.check import run_checks
+    from kvault.core.plan import build_plan
+
+    (kb / "projects" / "loopy").mkdir()
+    (kb / "projects" / "loopy" / "_summary.md").symlink_to("_summary.md")
+    run_checks(kb)
+    build_plan(kb, limit=0)
+
+
+def test_an_unreadable_parent_or_legacy_meta_never_breaks_a_readable_node(kb):
+    (kb / "projects" / "_summary.md").write_bytes(b"# Projects\n\ncaf\xe9\n")
+    node = ops.read_node(kb, "projects/routing", parents="immediate")
+    assert node["path"] == "projects/routing" and node["parent"] is None
+    assert ops.read_node(kb, "projects/routing", parents="all")["parents"]
+    (kb / "projects" / "routing" / "_summary.md").write_text("# Routing\n\nNo frontmatter.\n")
+    (kb / "projects" / "routing" / "_meta.json").write_text('{"name": "Legacy",')
+    assert ops.read_node(kb, "projects/routing/model_01", parents="immediate")["parent"]
+    batch = ops.read_nodes(kb, ["projects/routing", "projects/routing/model_02"])
+    assert batch["count"] == 2
+
+
+def test_read_nodes_budget_counts_serialized_content(kb):
+    tricky = 'He said "hi"\n' * 400 + '```json\n{"a": "b\\n"}\n```\n' * 50
+    (kb / "projects" / "routing" / "model_04" / "_summary.md").write_text(
+        f"---\nsource: manual\naliases: []\n---\n# M4\n\n{tricky}\n"
+    )
+    result = ops.read_nodes(
+        kb, ["projects/routing/model_04", "projects/routing/model_05"], total_max_chars=8000
+    )
+    assert len(json.dumps(result["nodes"])) <= 8000 + 200
+
+
+def test_search_parents_budget_is_reported_the_same_way_everywhere(kb):
+    result = ops.search_nodes(
+        kb, "uplift routing", limit=10, parents="immediate", total_max_chars=20000
+    )
+    assert result["budget"]["total_max_chars"] == 20000
+    assert "parent_chars_returned" in result["budget"]
+    note = [n for n in result["notes"] if "parents=" in n["text"]][0]
+    assert note["detail"]["total_max_chars"] == 20000
+
+
+def test_single_read_errors_are_one_json_document(kb):
+    import os
+
+    target = kb / "projects" / "routing" / "model_06" / "_summary.md"
+    os.chmod(target, 0)
+    try:
+        out = CliRunner().invoke(
+            cli, ["--kb-root", str(kb), "--json", "read", "projects/routing/model_06"]
+        )
+        doc = json.loads(out.output)
+        assert out.exit_code == 1 and doc["success"] is False
+    finally:
+        os.chmod(target, 0o644)
+
+
+def test_empty_bodies_respect_the_snippet_length(tmp_path):
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "_summary.md").write_text("# Root\n\nRoot.\n")
+    (kb / "p").mkdir()
+    (kb / "p" / "_summary.md").write_text("---\nsource: x\nname: " + "Long title " * 30 + "\n---\n")
+    hits = ops.search_nodes(kb, "long title", compact=True, snippet_chars=20)
+    assert all(len(r["snippet"]) <= 20 for r in hits["results"])

@@ -532,10 +532,7 @@ def _read_node_raw(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
     raw = summary_path.read_text()
     meta, body = parse_frontmatter(raw)
     if not meta:
-        meta_path = (kg_root if path == "." else kg_root / path) / "_meta.json"
-        if meta_path.exists():
-            with open(meta_path) as f:
-                meta = json.load(f)
+        meta = _legacy_meta(kg_root, (kg_root if path == "." else kg_root / path) / "_meta.json")
     content = body if meta else raw
     return {
         "path": path,
@@ -547,6 +544,22 @@ def _read_node_raw(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
         "has_frontmatter": bool(meta),
         "title": _extract_title(path, meta, content),
     }
+
+
+def _legacy_meta(kg_root: Path, meta_path: Path) -> Dict[str, Any]:
+    """A legacy ``_meta.json`` as a dict, or ``{}``.
+
+    Never raises (malformed JSON is a ValueError) and never reads through a
+    symlink out of the KB.
+    """
+    if not meta_path.exists() or not st.inside_root(meta_path, kg_root):
+        return {}
+    try:
+        with open(meta_path) as f:
+            loaded = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def _node_handle(kg_root: Path, path: str) -> Dict[str, Any]:
@@ -963,7 +976,11 @@ def get_kb_info(kg_root: Path, include_root_summary: bool = False) -> Dict[str, 
     always reported so a caller can decide whether to fetch it.
     """
     root_summary_path = kg_root / "_summary.md"
-    root_summary = root_summary_path.read_text() if root_summary_path.exists() else ""
+    root_summary = (
+        root_summary_path.read_text()
+        if root_summary_path.exists() and st.inside_root(root_summary_path, kg_root)
+        else ""
+    )
     outline = build_outline(kg_root, depth=2)
     info: Dict[str, Any] = {
         "version": __version__,
@@ -991,15 +1008,12 @@ def _read_entity_raw(kg_root: Path, entity_path: str) -> Optional[Dict[str, Any]
         return None
     full_path = kg_root / entity_path
     summary_path = full_path / "_summary.md"
-    if not summary_path.exists():
+    if not summary_path.exists() or not st.inside_root(summary_path, kg_root):
         return None
     content = summary_path.read_text()
     meta, body = parse_frontmatter(content)
     if not meta:
-        meta_path = full_path / "_meta.json"
-        if meta_path.exists():
-            with open(meta_path) as f:
-                meta = json.load(f)
+        meta = _legacy_meta(kg_root, full_path / "_meta.json")
     return {
         "path": entity_path,
         "meta": meta,
@@ -1055,6 +1069,14 @@ def read_node(kg_root: Path, path: str, parents: str = "immediate") -> Optional[
     if parents not in PARENTS_MODES:
         return None
 
+    def _context(ancestor: str) -> Optional[Dict[str, Any]]:
+        # A parent that cannot be read or decoded is left out; it must not
+        # make this node unreadable (or be blamed on it).
+        try:
+            return _read_node_shallow(kg_root, ancestor)
+        except (OSError, UnicodeDecodeError, ValueError):
+            return None
+
     node["parent"] = None
     if parents == "gist":
         node["parents"] = [
@@ -1066,13 +1088,13 @@ def read_node(kg_root: Path, path: str, parents: str = "immediate") -> Optional[
     if parents in {"immediate", "all"}:
         parent_path = _parent_path(path)
         if parent_path is not None:
-            node["parent"] = _read_node_shallow(kg_root, parent_path)
+            node["parent"] = _context(parent_path)
 
     if parents == "all":
         node["parents"] = [
             parent
             for ancestor in _ancestor_node_paths(path)
-            if (parent := _read_node_shallow(kg_root, ancestor)) is not None
+            if (parent := _context(ancestor)) is not None
         ]
 
     return node
@@ -1127,7 +1149,7 @@ def read_nodes(
     for path in wanted:
         try:
             node = read_node(kg_root, path, parents=parents)
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError, ValueError):
             unreadable.append(path)
             continue
         if node is None:
@@ -1140,18 +1162,25 @@ def read_nodes(
             node["children_count"] = len(kids)
         content = node.get("content", "")
         node["content"] = ""
-        overhead = len(json.dumps(node, default=str))
+        overhead = len(json.dumps(node, default=str)) + len(', "content_truncated": true')
         room = remaining - overhead
         if room < 0:
             omitted.append(path)
             continue
-        if len(content) > room:
-            node["content"] = content[:room]
+        # Count content as it is serialized: quotes, newlines and non-ASCII
+        # escape to more characters than they are.
+        cost = len(json.dumps(content)) - 2
+        if cost > room:
+            keep = room
+            while keep > 0 and len(json.dumps(content[:keep])) - 2 > room:
+                keep = int(keep * 0.9)
+            node["content"] = content[:keep]
             node["content_truncated"] = True
             cut.append(path)
+            cost = len(json.dumps(node["content"])) - 2
         else:
             node["content"] = content
-        remaining -= overhead + len(node["content"])
+        remaining -= overhead + cost
         nodes.append(node)
 
     notes: List[Dict[str, Any]] = []
@@ -1171,10 +1200,10 @@ def read_nodes(
         notes.append(
             nt.note(
                 "skipped",
-                f"{len(unreadable)} node(s) could not be decoded as UTF-8: "
+                f"{len(unreadable)} node(s) could not be read (not UTF-8, or no permission): "
                 + ", ".join(unreadable[:5]),
                 detail={"paths": unreadable},
-                next_step="re-encode the listed _summary.md files as UTF-8",
+                next_step="re-encode the listed _summary.md files as UTF-8, or fix their permissions",
             )
         )
     did = f"read {len(nodes)} of {len(wanted)} node(s)"
@@ -1203,6 +1232,8 @@ def read_summary(kg_root: Path, path: str) -> Optional[Dict[str, Any]]:
         summary_path = kg_root / path
         if not summary_path.exists() or not path.endswith(".md"):
             return None
+    if not st.inside_root(summary_path, kg_root):
+        return None  # never read through a symlink out of the KB
     content = summary_path.read_text()
     meta, body = parse_frontmatter(content)
     return {
@@ -2141,12 +2172,14 @@ def search_nodes(
     if parents != "none":
         # One budget for the whole result: what include_content used is gone.
         spent = (result.get("budget") or {}).get("content_chars_returned", 0)
-        _attach_search_parents(kg_root, result, parents, max(0, total_max_chars - spent))
+        _attach_search_parents(
+            kg_root, result, parents, max(0, total_max_chars - spent), total_max_chars
+        )
     return result
 
 
 def _attach_search_parents(
-    kg_root: Path, result: Dict[str, Any], parents: str, budget: int
+    kg_root: Path, result: Dict[str, Any], parents: str, budget: int, total: int
 ) -> None:
     items = result.pop("results", [])
     if parents == "gist":
@@ -2168,8 +2201,9 @@ def _attach_search_parents(
     for item in items:
         try:
             node = read_node(kg_root, item["path"], parents=parents)
-        except (OSError, UnicodeDecodeError):
-            node = None
+        except (OSError, UnicodeDecodeError, ValueError):
+            item["node_omitted_reason"] = "unreadable"
+            continue
         size = len(json.dumps(node, default=str)) if node is not None else 0
         if used + size > budget:
             item["node_omitted_reason"] = "total_budget_exhausted"
@@ -2177,15 +2211,16 @@ def _attach_search_parents(
             continue
         item["node"] = node
         used += size
-    if "budget" in result:
-        result["budget"]["parent_chars_returned"] = used
+    result.setdefault("budget", {"total_max_chars": total})
+    result["budget"]["parent_chars_returned"] = used
     if omitted:
         result.setdefault("notes", []).append(
             nt.note(
                 "truncated",
                 f"parents={parents!r} attached full documents to {len(items) - omitted} of "
-                f"{len(items)} results before the {budget:,}-character budget ran out",
-                detail={"omitted": omitted, "total_max_chars": budget},
+                f"{len(items)} results before the budget ran out ({budget:,} of "
+                f"{total:,} characters were left for them)",
+                detail={"omitted": omitted, "total_max_chars": total, "parents_budget": budget},
                 why="full ancestor documents repeat across hits and dwarf the search itself",
                 next_step="use parents='gist' (path, title, one line per ancestor), or read the "
                 "hits with read_nodes",

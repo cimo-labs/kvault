@@ -95,8 +95,9 @@ def read_entity(
     path = paths[0]
     try:
         result = ops.read_node(kb_root, path, parents=parents)
-    except UnicodeDecodeError:
-        message = f"{path} is not valid UTF-8; re-encode its _summary.md"
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        reason = "not valid UTF-8" if isinstance(exc, UnicodeDecodeError) else type(exc).__name__
+        message = f"{path} could not be read ({reason}); check its _summary.md"
         if ctx.obj.get("as_json"):
             output_json({"success": False, "error_code": "validation_error", "error": message})
             ctx.exit(1)

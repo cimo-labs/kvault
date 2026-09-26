@@ -79,9 +79,11 @@ one was worse than reported (`parents="all"` on search added 510-640 KB).
   never walks a symlinked directory: a target inside the KB is walked at
   its real path, and one outside is not the KB's (a symlink loop made 0.15
   `check` recurse until the path was too long, and a link could hide the
-  real node from a rule). A `_summary.md` that resolves outside the KB is
-  not a node: `read` does not return it and search lists it as skipped
-  (`outside_kb`).
+  real node from a rule). No read follows a symlink out of the KB: a
+  `_summary.md`, legacy `_meta.json` or loose file that resolves outside it
+  is not read by `read`, `read_nodes`, `read-summary`, `ancestors`,
+  `status --root-summary` or search (which lists it as skipped,
+  `outside_kb`).
 - `kvault_tree` JSON nodes carry `loose_count`.
 - **`parents="immediate"|"all"` on search are bounded**: full documents are
   attached only while they fit in `total_max_chars` (the first hit
@@ -120,6 +122,10 @@ one was worse than reported (`parents="all"` on search added 510-640 KB).
 - **A journal that cannot be appended to no longer crashes a write.** With
   `--reasoning` (and every `mark`), an unreadable `journal/YYYY-MM/log.md`
   raised after the node was written; it is now a `partial` note.
+- **A readable node is never failed by its neighbours**: a parent that
+  cannot be decoded is left out of `parents` context instead of failing the
+  read (and being blamed on the child), and a malformed legacy
+  `_meta.json` reads as no metadata instead of raising.
 - **Search and batch reads survive what they could not before**: a
   symlink loop (the search note's tree walk recursed until the path was
   too long, or hung the MCP server), one non-UTF-8 summary (gist parents

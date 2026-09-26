@@ -39,7 +39,7 @@ KVAULT_KB_ROOT_ENV = "KVAULT_KB_ROOT"
 #: Enums in the tool schemas, so an MCP-only agent sees the allowed values.
 ParentsMode = Literal["none", "gist", "immediate", "all"]
 BatchParentsMode = Literal["none", "gist"]
-_NOT_UTF8 = "is not valid UTF-8; re-encode its _summary.md"
+_NOT_UTF8 = "could not be read (not UTF-8, or no permission); check its _summary.md"
 
 
 def resolve_bound_root(kb_root: Optional[Path | str] = None) -> Path:
@@ -203,7 +203,7 @@ def create_server(kb_root: Path | str) -> Any:
             return error_response(ErrorCode.VALIDATION_ERROR, _PARENTS_ERROR)
         try:
             result = ops.read_entity(root, path, parents=parents)
-        except UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError, ValueError):
             return error_response(ErrorCode.VALIDATION_ERROR, f"{path} {_NOT_UTF8}")
         if result is None:
             return error_response(ErrorCode.NOT_FOUND, f"Entity not found: {path}")
@@ -226,7 +226,7 @@ def create_server(kb_root: Path | str) -> Any:
             return error_response(ErrorCode.VALIDATION_ERROR, _PARENTS_ERROR)
         try:
             result = ops.read_node(root, path, parents=parents)
-        except UnicodeDecodeError:
+        except (OSError, UnicodeDecodeError, ValueError):
             return error_response(ErrorCode.VALIDATION_ERROR, f"{path} {_NOT_UTF8}")
         if result is None:
             return error_response(ErrorCode.NOT_FOUND, f"Node not found: {path}")

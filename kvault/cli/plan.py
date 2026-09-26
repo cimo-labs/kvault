@@ -64,8 +64,8 @@ def plan(
     """List maintenance work in leverage order, with the exact commands.
 
     Clusters over-fanout parents by leading word, then ghosts, sibling
-    collisions, loose files, journal drift, and summary rewrites. Never
-    applies anything; judgment calls come back as questions.
+    collisions, dangling references, loose files, journal drift, and summary
+    rewrites. Never applies anything; judgment calls come back as questions.
     """
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     kb_root = resolve_kb_root(ctx)

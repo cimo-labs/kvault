@@ -62,9 +62,10 @@ PRIORITY = {
     "ghost": 2,
     "series": 3,
     "siblings": 4,
-    "loose": 5,
-    "journal": 6,
-    "summary": 7,
+    "dangling": 5,
+    "loose": 6,
+    "journal": 7,
+    "summary": 8,
 }
 
 
@@ -119,6 +120,7 @@ def build_plan(
     # items, which is a wall, not a worklist.
     sibling_groups: Dict[str, List[Dict[str, Any]]] = {}
     loose_groups: Dict[str, List[Dict[str, Any]]] = {}
+    dangling_groups: Dict[str, List[Dict[str, Any]]] = {}
 
     for finding in doc["findings"]:
         fpath = finding["path"]
@@ -213,7 +215,7 @@ def build_plan(
                 )
             continue
 
-        if code not in ("GHOST", "SERIES", "SIBLINGS", "LOOSE", "JOURNAL", "SUMMARY"):
+        if code not in ("GHOST", "SERIES", "SIBLINGS", "DANGLING", "LOOSE", "JOURNAL", "SUMMARY"):
             continue
         anchor = fpath
         if code == "SUMMARY":
@@ -312,6 +314,9 @@ def build_plan(
             continue
         if code == "LOOSE":
             loose_groups.setdefault(anchor, []).append(finding)
+            continue
+        if code == "DANGLING":
+            dangling_groups.setdefault(fpath, []).append(finding)
             continue
 
         if code == "GHOST":
@@ -500,6 +505,33 @@ def build_plan(
                 ),
                 "files": [g["path"] for g in group[:12]],
                 "commands": commands,
+            }
+        )
+
+    for node, group in dangling_groups.items():
+        items.append(
+            {
+                "kind": "dangling",
+                "priority": PRIORITY["dangling"],
+                "path": node,
+                "why": (
+                    f"{len(group)} reference(s) in its summary point at nothing, "
+                    f"e.g. {group[0]['message']}"
+                ),
+                "refs": [
+                    {
+                        "kind": g["detail"].get("kind"),
+                        "raw": g["detail"].get("raw"),
+                        "target": g["detail"].get("target"),
+                        "moved_to": g["detail"].get("moved_to", []),
+                    }
+                    for g in group[:12]
+                ],
+                "commands": [
+                    f"kvault read {node} --kb-root {q}",
+                    "# point each reference at the node's current path (moved_to), or drop it:",
+                    f"kvault write {node} --kb-root {q} <<'EOF' … (the corrected summary) EOF",
+                ],
             }
         )
 

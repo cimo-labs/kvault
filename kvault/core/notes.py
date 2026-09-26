@@ -57,7 +57,7 @@ NOTE_CODES: Tuple[str, ...] = (
     "skipped",  # kvault could not read something and continued without it
     "waited",  # kvault blocked on, or broke, another process's lock
     "guessed",  # an input was unusable and a fallback was chosen
-    "propagate",  # ancestor summaries are stale because of this operation
+    "propagate",  # summaries are stale because of this operation (ancestors, or referrers)
     "structure",  # this write changed the tree's shape in a way worth a look
 )
 

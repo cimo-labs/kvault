@@ -3,8 +3,9 @@
 Hard findings (exit 1) are collapsed into one ``[KB]`` line for hook use;
 warn-class findings print one bounded group per prefix. The human output is
 tier-invariant and ``--json`` is one document (frozen since 0.13). The
-prefix vocabulary is ``[KB]``, ``SUMMARY:``, ``PENDING:``, ``RETRACTED:``
-and, since 0.15, ``GHOST:``, ``SIBLINGS:``, ``LOOSE:``, ``JOURNAL:``.
+prefix vocabulary is ``[KB]``, ``SUMMARY:``, ``PENDING:``, ``RETRACTED:``,
+since 0.15 ``GHOST:``, ``SERIES:``, ``SIBLINGS:``, ``LOOSE:``, ``JOURNAL:``,
+and since 0.16 ``DANGLING:``.
 
 Exit codes:
     0 = All hard checks pass (warn-class findings are warn-only)
@@ -43,6 +44,8 @@ _STRUCTURE_FIX_LINE = {
     "SERIES": "chronology as nodes → kvault plan folds them under one current-state node's "
     "deep_context/; new entries go to journal/",
     "SIBLINGS": "same thing → merge; subtopic → kvault move; kvault plan lists the moves",
+    "DANGLING": "point each reference at the node's current path (see 'same name at') or "
+    "drop it; kvault plan groups them per node",
     "LOOSE": "move into <node>/deep_context/, make it a node, or list it in .kvaultignore",
     "JOURNAL": "one history: journal/YYYY-MM/log.md via kvault journal; a deliberate second "
     "layout goes in .kvaultignore",

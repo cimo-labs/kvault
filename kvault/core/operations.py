@@ -1953,6 +1953,7 @@ def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:
         shutil.rmtree(full_path)
 
     targets = _propagation_targets(kg_root, path)
+    ref_notes, referrers = _reference_notes(kg_root, [(path, None)])
     notes = [
         nt.note(
             "removed",
@@ -1968,6 +1969,7 @@ def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:
             next_step="kvault update-summaries",
         ),
     ]
+    notes.extend(ref_notes)
     notes.extend(_lock_notes(lock))
     return {
         "success": True,
@@ -1979,8 +1981,65 @@ def delete_entity(kg_root: Path, path: str) -> Dict[str, Any]:
         "files_deleted": files_deleted,
         "propagation_required": len(targets) > 0,
         "ancestor_paths": [t["path"] for t in targets],
+        "referrer_paths": referrers,
         "ancestors": targets,
     }
+
+
+def _reference_notes(
+    kg_root: Path, moved: Sequence[Tuple[str, Optional[str]]]
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Summary references that point at nothing after a move or delete.
+
+    *moved* pairs each old path with its new one (None for a delete). Looks
+    only where such a reference can be: summaries that mention an old path's
+    name, and the moved subtrees themselves (their relative links break when
+    their depth changes). Ancestor chains are reported separately; these are
+    other nodes, and kvault never rewrites their prose.
+    """
+    from kvault.core import references as rf
+
+    if not moved:
+        return [], []
+    new_home = dict(moved)
+    try:
+        refs = rf.dangling_references(
+            kg_root,
+            contains=[src.rsplit("/", 1)[-1] for src, _ in moved],
+            under=[dst for _, dst in moved if dst],
+        )
+    except OSError:
+        return [], []
+    hits: List[Dict[str, Any]] = []
+    for ref in refs:
+        src = next((s for s, _ in moved if ref.target == s or ref.target.startswith(s + "/")), None)
+        inside = any(
+            d is not None and (ref.node == d or ref.node.startswith(d + "/")) for _, d in moved
+        )
+        if src is None and not inside:
+            continue
+        entry = ref.as_dict()
+        entry.pop("exists", None)
+        if src is not None:
+            dst = new_home[src]
+            entry["now_at"] = dst + ref.target[len(src) :] if dst else None
+        hits.append(entry)
+    if not hits:
+        return [], []
+    referrers = sorted({h["node"] for h in hits})
+    shown = "; ".join(f"{h['node']} → {h['raw']}" for h in hits[:3])
+    more = f" (+{len(hits) - 3} more)" if len(hits) > 3 else ""
+    note = nt.note(
+        "propagate",
+        f"{len(hits)} reference(s) in {len(referrers)} "
+        f"summar{'y' if len(referrers) == 1 else 'ies'} point at nothing after this "
+        f"operation: {shown}{more}",
+        level=nt.NORMAL,
+        detail={"kind": "references", "references": hits[:20], "referrer_paths": referrers},
+        why="summaries elsewhere still name the old path; kvault never rewrites prose",
+        next_step="point each at its new path (now_at) or drop it: kvault write <node>",
+    )
+    return [note], referrers
 
 
 def _reserved_move_problem(source: str, target: str) -> Optional[str]:
@@ -2086,6 +2145,8 @@ def move_entity(
             next_step="kvault update-summaries",
         )
     )
+    ref_notes, referrers = _reference_notes(kg_root, [(source_path, target_path)])
+    notes.extend(ref_notes)
     notes.extend(_lock_notes(lock))
     return {
         "success": True,
@@ -2098,6 +2159,7 @@ def move_entity(
         "ancestor_paths": [t["path"] for t in combined],
         "ancestors_source": [t["path"] for t in src_targets],
         "ancestors_target": [t["path"] for t in tgt_targets],
+        "referrer_paths": referrers,
         "ancestors": combined,
     }
 
@@ -2289,6 +2351,7 @@ def move_entities(
                 next_step="fix the cause, then re-run the batch with the remaining moves",
             )
         )
+    ref_notes, referrers = _reference_notes(kg_root, [(m["from"], m["to"]) for m in moved])
     if combined:
         notes.append(
             nt.note(
@@ -2303,6 +2366,7 @@ def move_entities(
                 next_step="kvault update-summaries",
             )
         )
+    notes.extend(ref_notes)
     notes.extend(_lock_notes(lock))
 
     result: Dict[str, Any] = {
@@ -2318,6 +2382,7 @@ def move_entities(
     result["count"] = len(moved)
     result["propagation_required"] = len(combined) > 0
     result["ancestor_paths"] = [t["path"] for t in combined]
+    result["referrer_paths"] = referrers
     result["ancestors"] = combined
     return result
 

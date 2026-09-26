@@ -12,8 +12,9 @@ Two classes of finding:
 - **hard** (exit 1, the ``[KB]`` line): ``PROPAGATE``, ``LOG``, ``WRITE``,
   ``BRANCH``. Fix before continuing.
 - **warn** (exit 0, one line per finding, bounded): ``SUMMARY``, ``PENDING``,
-  ``RETRACTED``, and since 0.15 the structural set ``GHOST``, ``SIBLINGS``,
-  ``LOOSE``, ``JOURNAL``. Maintenance work; ``kvault plan`` orders it.
+  ``RETRACTED``, and since 0.15 the structural set ``GHOST``, ``SERIES``,
+  ``SIBLINGS``, ``LOOSE``, ``JOURNAL`` (0.16 adds ``DANGLING``).
+  Maintenance work; ``kvault plan`` orders it.
 
 Every list in the document is bounded (``max_findings`` per code, with the
 hidden count recorded) because the 0.14 ``missing_child_coverage`` line on a
@@ -29,6 +30,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 
 from kvault._version import __version__
 from kvault.core import decisions as dc
+from kvault.core import references as rf
 from kvault.core import structure as st
 from kvault.core.events import pending_event_findings, retracted_reference_findings
 from kvault.core.frontmatter import parse_frontmatter
@@ -50,8 +52,18 @@ DEFAULT_PENDING_MAX_AGE = 7
 MAX_SIBLING_PAIRS_PER_PARENT = 5
 
 HARD_CODES = ("PROPAGATE", "LOG", "WRITE", "BRANCH")
-WARN_CODES = ("SUMMARY", "PENDING", "RETRACTED", "GHOST", "SERIES", "SIBLINGS", "LOOSE", "JOURNAL")
-STRUCTURE_CODES = ("GHOST", "SERIES", "SIBLINGS", "LOOSE", "JOURNAL")
+WARN_CODES = (
+    "SUMMARY",
+    "PENDING",
+    "RETRACTED",
+    "GHOST",
+    "SERIES",
+    "SIBLINGS",
+    "DANGLING",
+    "LOOSE",
+    "JOURNAL",
+)
+STRUCTURE_CODES = ("GHOST", "SERIES", "SIBLINGS", "DANGLING", "LOOSE", "JOURNAL")
 ALL_CODES = HARD_CODES + WARN_CODES
 
 _SUMMARY_FIX = {
@@ -529,6 +541,38 @@ def _node_title(kb_root: Path, rel_path: str) -> str:
     return ""
 
 
+def dangling_findings(kb_root: Path, ignore: Sequence[str]) -> List[Finding]:
+    """Summary references that resolve inside the KB to nothing (see core.references).
+
+    A deleted or moved child can never be newer than its parent, so
+    PROPAGATE is blind to it; this compares what summaries point at with
+    what is on disk.
+    """
+    out: List[Finding] = []
+    for ref in rf.dangling_references(kb_root, ignore):
+        hint = f" (same name at {', '.join(ref.moved_to)})" if ref.moved_to else ""
+        out.append(
+            Finding(
+                code="DANGLING",
+                path=ref.node,
+                message=f"{ref.kind} {ref.raw} → nothing at {ref.target}{hint}",
+                level="warn",
+                detail={
+                    "kind": ref.kind,
+                    "raw": ref.raw,
+                    "target": ref.target,
+                    "moved_to": list(ref.moved_to),
+                },
+                fix=(
+                    "point it at the node's current path"
+                    + (f" (likely {ref.moved_to[0]})" if ref.moved_to else "")
+                    + f", or drop it: kvault write {ref.node}"
+                ),
+            )
+        )
+    return out
+
+
 def journal_layout_findings(kb_root: Path, ignore: Sequence[str] = ()) -> List[Finding]:
     return [
         Finding(
@@ -659,6 +703,7 @@ def run_checks(
         ("GHOST", lambda: ghost_findings(root, ignore)),
         ("SERIES", lambda: series_findings(root, ignore)),
         ("SIBLINGS", lambda: sibling_findings(root, ignore)),
+        ("DANGLING", lambda: dangling_findings(root, ignore)),
         ("LOOSE", lambda: loose_findings(root, ignore)),
         ("JOURNAL", lambda: journal_layout_findings(root, ignore)),
     ]
@@ -730,6 +775,7 @@ __all__ = [
     "series_findings",
     "loose_findings",
     "sibling_findings",
+    "dangling_findings",
     "journal_layout_findings",
     "check_propagation",
     "check_journal",

@@ -461,7 +461,8 @@ def create_server(kb_root: Path | str) -> Any:
         Deletes the entire subtree. The result reports `nodes_deleted` /
         `files_deleted` and lists the now-stale ancestor summaries
         (`propagation_required`, `ancestor_paths`) — rewrite them next or
-        they keep describing nodes that no longer exist.
+        they keep describing nodes that no longer exist. `referrer_paths`
+        names other nodes whose summaries still point at the deleted path.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -484,6 +485,8 @@ def create_server(kb_root: Path | str) -> Any:
         BOTH ancestor chains are stale afterwards (`ancestors_source`,
         `ancestors_target`): the source chain still describes the moved
         subtree, the target chain doesn't describe it yet. Rewrite both.
+        `referrer_paths` names other nodes whose summaries still point at
+        the old path; the `propagate` note carries each reference's `now_at`.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:

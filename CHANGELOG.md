@@ -112,8 +112,9 @@ one was worse than reported (`parents="all"` on search added 510-640 KB).
 - **Frontmatter parsing is memoized** (bounded LRU on the exact block text;
   callers get a deep copy). One `check` parsed each summary's frontmatter
   about seven times; YAML was ~80% of its run time. `check` on a 496-node
-  KB copy: 1.62 s in 0.15.2, 1.42 s in 0.16.0 with the three new checks.
-  `check` and `plan` output are byte-identical with and without the cache.
+  KB copy: about 1.7 s in 0.15.2, 1.5 s in 0.16.0 with the three new
+  checks. `check` and `plan` output are byte-identical with and without
+  the cache.
 
 ### Not done
 

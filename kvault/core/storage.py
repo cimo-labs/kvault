@@ -377,8 +377,8 @@ def scan_entities(kg_root: Path) -> List[EntityRecord]:
 
         try:
             content = summary_path.read_text()
-        except OSError:
-            continue
+        except (OSError, UnicodeDecodeError):
+            continue  # validate reports undecodable files; a scan must not crash on one
 
         meta, body = parse_frontmatter(content)
         if not meta:

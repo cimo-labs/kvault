@@ -188,4 +188,60 @@ def test_validate_reports_an_impossible_date_instead_of_crashing(kb):
     )
     issues = ops.validate_kb(kb)["issues"]
     bad = [i for i in issues if i["type"] == "malformed_frontmatter"]
-    assert bad and "dates as text" in bad[0]["message"]
+    assert bad and "read leniently" in bad[0]["message"]
+
+
+def test_stale_reports_the_real_node_not_a_link_to_it(kb):
+    (kb / "projects" / "a_link").symlink_to(kb / "projects" / "release", target_is_directory=True)
+    paths = {f.path for f in stale_findings(kb, load_ignore(kb), today=date(2026, 9, 26))}
+    assert "projects/release" in paths and "projects/a_link" not in paths
+
+
+def test_mark_keeps_the_file_time_where_summaries_have_no_dates(tmp_path):
+    import os
+    import time
+
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "_summary.md").write_text("# Root\n\nRoot.\n")
+    (kb / "people").mkdir()
+    (kb / "people" / "_summary.md").write_text("# People\n\nAlice.\n")  # no frontmatter, no dates
+    (kb / "people" / "alice").mkdir()
+    alice = kb / "people" / "alice" / "_summary.md"
+    alice.write_text("---\nsource: manual\naliases: []\n---\n# Alice\n\nPending review.\n")
+    hour_ago = time.time() - 3600
+    for f in (kb / "_summary.md", kb / "people" / "_summary.md", alice):
+        os.utime(f, (hour_ago, hour_ago))
+    result = ops.mark_node(kb, "people/alice", verify_by="+14d")
+    assert result["success"] and result["changed"]
+    assert abs(alice.stat().st_mtime - (hour_ago + 1)) < 0.01
+    assert run_checks(kb, codes=["PROPAGATE"])["success"] is True
+
+
+def test_marking_the_same_value_twice_journals_once(kb):
+    first = ops.mark_node(kb, "projects/launch", verify_by="2999-06-01")
+    second = ops.mark_node(kb, "projects/launch", verify_by="2999-06-01")
+    assert first["journal_logged"] is True and second["journal_logged"] is False
+    assert second["changed"] is False
+
+
+def test_a_broken_journal_makes_mark_partial_not_a_crash(kb):
+    from click.testing import CliRunner
+    from kvault.cli.main import cli
+
+    month = date.today().strftime("%Y-%m")
+    (kb / "journal" / month).mkdir(parents=True)
+    (kb / "journal" / month / "log.md").write_bytes(b"# Journal\n\ncaf\xe9\n")
+    out = CliRunner().invoke(
+        cli, ["--kb-root", str(kb), "--json", "mark", "projects/launch", "--verify-by", "+3d"]
+    )
+    doc = json.loads(out.output)
+    assert doc["success"] is True and doc.get("partial") is True
+    assert any(n["code"] == "partial" for n in doc["notes"])
+
+
+def test_validate_survives_an_undecodable_summary(kb):
+    (kb / "projects" / "launch" / "_summary.md").write_bytes(
+        b"---\nsource: x\n---\n# L\n\ncaf\xe9\n"
+    )
+    assert "issues" in ops.validate_kb(kb)

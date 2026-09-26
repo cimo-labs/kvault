@@ -73,10 +73,17 @@ PRIORITY = {
 
 
 def _ignore_line(root: Path, rel_path: str) -> str:
-    """``echo <pattern> >> <root>/.kvaultignore`` for exactly *rel_path*: the pattern
-    is fnmatch-escaped (a ``[1]`` in a name is not a character class) and shell-quoted."""
-    pattern = shlex.quote(glob.escape(rel_path))
-    return f"echo {pattern} >> {shlex.quote(str(root / st.IGNORE_FILE))}"
+    """A shell line appending exactly *rel_path* to ``.kvaultignore``.
+
+    The pattern is fnmatch-escaped (a ``[1]`` in a name is not a character
+    class), a leading ``#`` is escaped (the file reads it as a comment), and
+    ``printf`` writes it (``echo`` mangles ``-n``, ``-e`` and backslashes).
+    """
+    pattern = glob.escape(rel_path)
+    if pattern.startswith("#"):
+        pattern = "[#]" + pattern[1:]
+    target = shlex.quote(str(root / st.IGNORE_FILE))
+    return f"printf '%s\\n' {shlex.quote(pattern)} >> {target}"
 
 
 def _join(parent: str, name: str) -> str:
@@ -561,7 +568,8 @@ def build_plan(
         )
 
     for node, group in dangling_groups.items():
-        if _moves_under(node):
+        suggested = [m for g in group for m in g["detail"].get("moved_to", [])]
+        if _moves_under(node) or any(_moves_under(m) for m in suggested):
             deferred.append({"kind": "dangling", "path": node})
             continue
         items.append(

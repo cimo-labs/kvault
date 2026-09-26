@@ -153,7 +153,8 @@ def _norm(path: Path) -> Path:
 
 
 def _exists(tree: _Tree, rel: str) -> bool:
-    return rel == "." or rel in tree.dirs or (tree.root / rel).exists()
+    # os.path.exists never raises (a 260-byte name, a permission error)
+    return rel == "." or rel in tree.dirs or os.path.exists(tree.root / rel)
 
 
 def _file_like(target: str) -> bool:
@@ -260,7 +261,7 @@ def _resolve_anchored(tree: _Tree, node: str, raw: str) -> Optional[Tuple[str, b
     candidates: List[str] = []
     for base in (_node_dir(tree, node), tree.root):
         anchored = _inside(tree, _norm(base / first)) in tree.anchors
-        if (base / first).is_dir() or anchored:
+        if os.path.isdir(base / first) or anchored:
             rel = _inside(tree, _norm(base / target))
             if rel is not None and rel not in candidates:
                 candidates.append(rel)
@@ -335,7 +336,13 @@ def _node_refs(tree: _Tree, node: str, body: str) -> List[Reference]:
         add("path", text, _resolve_anchored(tree, node, text))
 
     names = raw["list"]
-    listed = link_children or any(n in children for n in names)
+    # A child that a move or delete just took away (an anchor) is evidence too:
+    # otherwise a parent whose last child left keeps listing it unreported.
+    listed = (
+        link_children
+        or any(n in children for n in names)
+        or any(f"{prefix}{n}" in tree.anchors for n in names)
+    )
     if listed:
         for name in names:
             # the node's own name or an ancestor's is a heading, not a child

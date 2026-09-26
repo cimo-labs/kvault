@@ -1626,19 +1626,32 @@ def write_node(
     if reasoning:
         action_type = "create" if create else "update"
         source = journal_source or meta.get("source", "unknown")
-        journal_result = write_journal(
-            kg_root,
-            actions=[
-                {
-                    "action_type": action_type,
-                    "path": path,
-                    "reasoning": reasoning,
-                }
-            ],
-            source=source,
-        )
-        journal_logged = journal_result.get("success", False)
-        journal_path = journal_result.get("journal_path")
+        try:
+            journal_result = write_journal(
+                kg_root,
+                actions=[
+                    {
+                        "action_type": action_type,
+                        "path": path,
+                        "reasoning": reasoning,
+                    }
+                ],
+                source=source,
+            )
+            journal_logged = journal_result.get("success", False)
+            journal_path = journal_result.get("journal_path")
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            # The node is already on disk; a journal that cannot be appended
+            # to must not turn a completed write into a traceback.
+            notes.append(
+                nt.note(
+                    "partial",
+                    f"node written, but the journal entry failed: {type(exc).__name__}",
+                    detail={"error": str(exc)[:200]},
+                    why="the monthly journal file could not be read or written",
+                    next_step="repair journal/YYYY-MM/log.md, then kvault journal (stdin: this action)",
+                )
+            )
 
     # Fetch ancestor summaries for propagation.
     #
@@ -2706,6 +2719,12 @@ def mark_node(
         verify_by=due,
     )
     drops = [key for key in dc.DECISION_KEYS if key not in meta and key in (raw["meta"] or {})]
+    summary_file = _summary_path_for_node(kg_root, path)
+    try:
+        before = summary_file.stat()
+    except OSError:
+        before = None
+    changes = meta != (raw["meta"] or {}) or bool(drops)
     recorded = [
         label
         for label, given in (
@@ -2725,8 +2744,19 @@ def mark_node(
         create=False,
         drop_meta_keys=drops or None,
         preserve_dates=True,
-        reasoning="decision recorded with kvault mark: " + "; ".join(recorded),
+        reasoning=(
+            ("decision recorded with kvault mark: " + "; ".join(recorded)) if changes else None
+        ),
     )
+    if result.get("success") and result.get("changed") and before is not None:
+        # A decision is not a content change: the file keeps its time (plus a
+        # second, so a size-and-time sync such as rsync still sees the edit).
+        # Where summaries carry no dates, check compares file times, and a
+        # fresh time made the parent PROPAGATE.
+        try:
+            os.utime(summary_file, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+        except OSError:
+            pass
     if not result.get("success"):
         return result
     decisions = dc.read_decisions(kg_root, path)
@@ -2878,7 +2908,7 @@ def validate_kb(kg_root: Path) -> Dict[str, Any]:
         except FrontmatterError as exc:
             # An impossible date (2026-09-31) is still read, with its dates as
             # text; anything else malformed is read as empty.
-            how = "read with its dates as text" if parse_frontmatter(text)[0] else "read as empty"
+            how = "read leniently" if parse_frontmatter(text)[0] else "read as empty"
             issues.append(
                 {
                     "type": "malformed_frontmatter",

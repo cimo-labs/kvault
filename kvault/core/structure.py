@@ -319,31 +319,20 @@ def child_dirs(dir_path: Path, kg_root: Path, ignore: Sequence[str]) -> List[Pat
 def walk_dirs(kg_root: Path, ignore: Sequence[str]) -> Iterator[Path]:
     """Every managed directory under the root, depth-first, root excluded.
 
-    Each real directory is visited once, and a symlinked directory is
-    followed only when it resolves inside the KB. Without the guard a
-    symlink loop recursed until the path was too long, and 0.16 runs this
-    walk on every search (the loose-file note).
+    A symlinked directory is never walked. Its target, if it is inside the
+    KB, is walked at its real path; one outside the KB is not the KB's. A
+    walk that followed links looped on a cycle until the path was too long,
+    and 0.16 runs this walk on every search (the loose-file note). A link
+    that sorted before its target also hid the real node from every rule.
     """
     root = Path(kg_root)
-    try:
-        real_root = root.resolve()
-    except (OSError, RuntimeError):
-        return
-    seen = {real_root}
-    stack = [(c, real_root / c.name) for c in reversed(child_dirs(root, root, ignore))]
+    stack = list(reversed(child_dirs(root, root, ignore)))
     while stack:
-        current, real = stack.pop()
+        current = stack.pop()
         if current.is_symlink():
-            try:
-                real = current.resolve()
-                real.relative_to(real_root)
-            except (OSError, RuntimeError, ValueError):
-                continue  # a loop, a dead link, or a way out of the KB
-        if real in seen:
             continue
-        seen.add(real)
         yield current
-        stack.extend((c, real / c.name) for c in reversed(child_dirs(current, root, ignore)))
+        stack.extend(reversed(child_dirs(current, root, ignore)))
 
 
 def inside_root(path: Path, kg_root: Path) -> bool:

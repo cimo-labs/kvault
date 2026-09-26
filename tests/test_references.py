@@ -299,3 +299,19 @@ def test_an_impossible_date_never_fails_a_move_that_already_happened(tmp_path):
     moved = ops.move_entity(kb, "projects/causal/uplift_routing", "tech/uplift_routing")
     assert moved["success"] is True and moved["referrer_paths"] == ["people"]
     assert run_checks(kb, codes=["DANGLING", "DUPLICATE"])["success"] is True
+
+
+def test_a_parent_whose_last_child_moved_away_is_a_referrer(tmp_path):
+    kb = _kb(tmp_path)
+    _node(kb, "projects/causal", "# Causal\n\n## Children\n\n- `uplift_routing/` — routing work\n")
+    moved = ops.move_entity(kb, "projects/causal/uplift_routing", "tech/uplift_routing")
+    assert "projects/causal" in moved["referrer_paths"]
+    ref = [n for n in moved["notes"] if (n.get("detail") or {}).get("kind") == "references"][0]
+    homes = {(r["node"], r["now_at"]) for r in ref["detail"]["references"]}
+    assert ("projects/causal", "tech/uplift_routing") in homes
+
+
+def test_absurdly_long_targets_do_not_crash_check(tmp_path):
+    kb = _kb(tmp_path)
+    _node(kb, "tech", "# Tech\n\n[t](" + "x" * 260 + ") and `projects/" + "y" * 260 + "`\n")
+    run_checks(kb, codes=["DANGLING"])  # used to raise OSError: File name too long

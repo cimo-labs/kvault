@@ -429,3 +429,19 @@ def test_items_under_a_batch_are_deferred_and_parking_names_are_free(tmp_path):
         (kb2 / rel / "_summary.md").write_text(f"---\nsource: m\naliases: []\n---\n{text}\n")
     (item,) = [i for i in build_plan(kb2, limit=0)["items"] if i["kind"] == "duplicate"]
     assert any("a/keeper/deep_context/twin_2" in c for c in item["commands"])
+
+
+def test_ignore_lines_survive_awkward_names(tmp_path):
+    import subprocess
+
+    from kvault.core.plan import _ignore_line
+    from kvault.core.structure import is_ignored, load_ignore
+
+    for shell in ("sh", "bash"):
+        kb = tmp_path / shell
+        kb.mkdir()
+        names = ["-n", "-e", "#tag", "back\\slash", "sp ace", "notes[1]", "it's"]
+        for name in names:
+            subprocess.run([shell, "-c", _ignore_line(kb, f"journal/{name}")], check=True)
+        patterns = load_ignore(kb)
+        assert all(is_ignored(f"journal/{name}", patterns) for name in names), patterns

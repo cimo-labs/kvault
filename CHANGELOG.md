@@ -20,7 +20,8 @@ one was worse than reported (`parents="all"` on search added 510-640 KB).
   exempt), the same title words, shared aliases (two, an email/phone, or
   mutual naming; never from a dated record *about* the subject), and
   near-identical bodies (5-word shingles, Jaccard >= 0.5 or containment
-  >= 0.8). Ancestor/descendant pairs, date-series members, stubs,
+  >= 0.8). Names and titles made only of dates (`2026_05_13`) are a day,
+  not a subject, and never count. Ancestor/descendant pairs, date-series members, stubs,
   `journal/`, `deep_context/` and `distinct_from` pairs are never reported.
   `plan` emits one `duplicate` item per pair with the reversible default:
   fold, then park the other node under the keeper's `deep_context/`. On a
@@ -74,12 +75,13 @@ one was worse than reported (`parents="all"` on search added 510-640 KB).
 - **MCP `parents` parameters are enums in the tool schemas** (`none`,
   `gist`, `immediate`, `all`; `none`/`gist` for `kvault_read_nodes`), so an
   invalid value is refused by the schema before the tool runs.
-- **Symlinks.** The tree walk behind `check`, `plan`, `tree` and the search
-  note follows a symlinked directory only when it resolves inside the KB,
-  and visits each real directory once (a symlink loop made 0.15 `check`
-  recurse until the path was too long). A `_summary.md` that resolves
-  outside the KB is not a node: `read` does not return it and search lists
-  it as skipped (`outside_kb`).
+- **Symlinks.** The tree walk behind `check`, `plan` and the search note
+  never walks a symlinked directory: a target inside the KB is walked at
+  its real path, and one outside is not the KB's (a symlink loop made 0.15
+  `check` recurse until the path was too long, and a link could hide the
+  real node from a rule). A `_summary.md` that resolves outside the KB is
+  not a node: `read` does not return it and search lists it as skipped
+  (`outside_kb`).
 - `kvault_tree` JSON nodes carry `loose_count`.
 - **`parents="immediate"|"all"` on search are bounded**: full documents are
   attached only while they fit in `total_max_chars` (the first hit
@@ -113,7 +115,11 @@ one was worse than reported (`parents="all"` on search added 510-640 KB).
   `updated` on the node, so the parent reported `PROPAGATE` (and a leaf
   `LOG`) while the result said `propagation_required: false`; a nightly
   job that ran its own marks finished red. A decision now keeps the node's
-  dates and is journaled.
+  dates and its file time (plus one second, so rsync still sees the edit),
+  and a change is journaled; repeating the same mark is a quiet no-op.
+- **A journal that cannot be appended to no longer crashes a write.** With
+  `--reasoning` (and every `mark`), an unreadable `journal/YYYY-MM/log.md`
+  raised after the node was written; it is now a `partial` note.
 - **Search and batch reads survive what they could not before**: a
   symlink loop (the search note's tree walk recursed until the path was
   too long, or hung the MCP server), one non-UTF-8 summary (gist parents

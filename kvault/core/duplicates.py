@@ -54,7 +54,7 @@ MAX_GROUP = 5
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[a-z]{2,}$", re.IGNORECASE)
 _PHONE_RE = re.compile(r"^\+?[\d\s().\-]{10,}$")
-_NOT_PHONE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}|^\d{1,3}(?:\.\d{1,3}){3}$|^\d{4}\s*[-–]\s*\d{4}$")
+_NOT_PHONE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$|^\d{1,3}(?:\.\d{1,3}){3}$|^\d{4}\s*[-–]\s*\d{4}$")
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 
 
@@ -116,11 +116,14 @@ def _load(root: Path, ignore: Sequence[str]) -> Dict[str, _Doc]:
         rel = st.rel(root, d)
         title = _title(meta, body if meta else raw, d.name)
         stems = frozenset(st.stem(t) for t in _tokens(title))
+        # A title needs two words that are not dates to identify anything:
+        # two notes titled "2026-05-13" are the same day, not the same thing.
+        topical = [t for t in stems if not st.is_date_token(t)]
         doc = _Doc(
             path=rel,
             title=title,
             title_stems=stems,
-            title_key=stems if len(stems) >= 2 else frozenset(),
+            title_key=stems if len(topical) >= 2 else frozenset(),
             title_norm=_norm(title),
         )
         raw_aliases = meta.get("aliases")
@@ -250,7 +253,9 @@ def duplicate_pairs(kg_root: Path, ignore: Optional[Sequence[str]] = None) -> Li
         # its own words beyond the name and those words differ ("Standard
         # Customers" vs "Other Industrial Suppliers — Standard"). Identical or
         # bare titles ("Models" twice) stay: that is the split-brain case.
-        same_name = p.same_name and not (da and db and _homonyms(da, db))
+        # A name made only of dates (2026_05_13) names a day, not a thing.
+        date_only = not st.series_key(name_a)[0]
+        same_name = p.same_name and not date_only and not (da and db and _homonyms(da, db))
         signals: List[str] = []
         if body:
             signals.append("similar_body")

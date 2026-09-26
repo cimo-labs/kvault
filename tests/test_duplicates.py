@@ -207,3 +207,26 @@ def test_dates_and_addresses_are_not_phone_numbers(tmp_path):
     _node(kb, "sales/ann", "# Ann\n\nBuyer.\n", aliases=["+1 (415) 555-0100"])
     _node(kb, "suppliers/ann_lee", "# Ann Lee\n\nRep.\n", aliases=["+1 415 555 0100"])
     assert set(_pairs(kb)) == {("sales/ann", "suppliers/ann_lee")}
+
+
+def test_notes_named_by_a_date_are_not_twins(tmp_path):
+    """Two notes from the same day in two folders share a date, not a subject."""
+    kb = _kb(tmp_path)
+    _node(kb, "projects/2026_05_13", "# 2026-05-13\n\nStandup.\n")
+    _node(kb, "sales/2026_05_13", "# 2026-05-13\n\nCall notes.\n")
+    assert _pairs(kb) == {}
+
+
+def test_a_symlink_never_hides_the_real_node(tmp_path):
+    kb = _kb(tmp_path)
+    _node(kb, "sales/acme", "# Acme\n\nCustomer.\n", aliases=["Acme Corp", "ACME"])
+    _node(kb, "suppliers/acme_supply", "# Acme supply\n\nVendor.\n", aliases=["Acme Corp", "ACME"])
+    (kb / "projects" / "a_link").symlink_to(kb / "sales" / "acme", target_is_directory=True)
+    assert set(_pairs(kb)) == {("sales/acme", "suppliers/acme_supply")}
+
+
+def test_toll_free_numbers_are_identifiers_not_dates():
+    from kvault.core.duplicates import _identifier
+
+    assert _identifier("0120-12-3456") == "0120123456"
+    assert _identifier("2026-09-26") is None

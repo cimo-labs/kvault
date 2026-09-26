@@ -5,7 +5,7 @@ warn-class findings print one bounded group per prefix. The human output is
 tier-invariant and ``--json`` is one document (frozen since 0.13). The
 prefix vocabulary is ``[KB]``, ``SUMMARY:``, ``PENDING:``, ``RETRACTED:``,
 since 0.15 ``GHOST:``, ``SERIES:``, ``SIBLINGS:``, ``LOOSE:``, ``JOURNAL:``,
-and since 0.16 ``DANGLING:``.
+and since 0.16 ``DUPLICATE:`` and ``DANGLING:``.
 
 Exit codes:
     0 = All hard checks pass (warn-class findings are warn-only)
@@ -44,6 +44,8 @@ _STRUCTURE_FIX_LINE = {
     "SERIES": "chronology as nodes → kvault plan folds them under one current-state node's "
     "deep_context/; new entries go to journal/",
     "SIBLINGS": "same thing → merge; subtopic → kvault move; kvault plan lists the moves",
+    "DUPLICATE": "read both; same thing → fold into one node and park the other under its "
+    "deep_context/; different things → kvault mark <a> --distinct-from <b>",
     "DANGLING": "point each reference at the node's current path (see 'same name at') or "
     "drop it; kvault plan groups them per node",
     "LOOSE": "move into <node>/deep_context/, make it a node, or list it in .kvaultignore",

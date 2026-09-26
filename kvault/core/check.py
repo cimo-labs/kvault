@@ -13,7 +13,8 @@ Two classes of finding:
   ``BRANCH``. Fix before continuing.
 - **warn** (exit 0, one line per finding, bounded): ``SUMMARY``, ``PENDING``,
   ``RETRACTED``, and since 0.15 the structural set ``GHOST``, ``SERIES``,
-  ``SIBLINGS``, ``LOOSE``, ``JOURNAL`` (0.16 adds ``DANGLING``).
+  ``SIBLINGS``, ``LOOSE``, ``JOURNAL`` (0.16 adds ``DUPLICATE`` and
+  ``DANGLING``).
   Maintenance work; ``kvault plan`` orders it.
 
 Every list in the document is bounded (``max_findings`` per code, with the
@@ -30,6 +31,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 
 from kvault._version import __version__
 from kvault.core import decisions as dc
+from kvault.core import duplicates as du
 from kvault.core import references as rf
 from kvault.core import structure as st
 from kvault.core.events import pending_event_findings, retracted_reference_findings
@@ -59,11 +61,12 @@ WARN_CODES = (
     "GHOST",
     "SERIES",
     "SIBLINGS",
+    "DUPLICATE",
     "DANGLING",
     "LOOSE",
     "JOURNAL",
 )
-STRUCTURE_CODES = ("GHOST", "SERIES", "SIBLINGS", "DANGLING", "LOOSE", "JOURNAL")
+STRUCTURE_CODES = ("GHOST", "SERIES", "SIBLINGS", "DUPLICATE", "DANGLING", "LOOSE", "JOURNAL")
 ALL_CODES = HARD_CODES + WARN_CODES
 
 _SUMMARY_FIX = {
@@ -448,7 +451,12 @@ def sibling_findings(
     ignore: Sequence[str],
     pairs_per_parent: int = MAX_SIBLING_PAIRS_PER_PARENT,
 ) -> List[Finding]:
-    """Near-duplicate sibling names, and the same basename at several depths."""
+    """Near-duplicate sibling names under one parent.
+
+    The same basename at several depths moved to ``DUPLICATE`` in 0.16: it
+    was appended after every per-parent pair here, and on a large KB the
+    output cap hid it.
+    """
     out: List[Finding] = []
     for node_dir in _node_dirs(kb_root, ignore):
         names = [d.name for d in st.child_dirs(node_dir, kb_root, ignore)]
@@ -491,33 +499,6 @@ def sibling_findings(
                     fix=f"kvault plan {parent}",
                 )
             )
-    for name, paths in sorted(st.basename_duplicates(kb_root, ignore).items()):
-        # a_m/n_z buckets under two branches, and one basename under sibling
-        # parents (customers/{key,standard}/oem), are layouts, not twins.
-        if st.is_bucket_name(name) or st.is_facet_layout(paths):
-            continue
-        # a recorded `distinct_from` between any two of them settles it
-        paths = [
-            p for p in paths if not any(dc.are_distinct(kb_root, p, o) for o in paths if o != p)
-        ]
-        if len(paths) < 2:
-            continue
-        titled = [f"{p} «{_node_title(kb_root, p)}»" for p in paths[:4]]
-        out.append(
-            Finding(
-                code="SIBLINGS",
-                path=name,
-                message=f"'{name}' exists at {len(paths)} places: {', '.join(titled)}"
-                + (" …" if len(paths) > 4 else ""),
-                level="warn",
-                detail={
-                    "kind": "same_name_elsewhere",
-                    "paths": paths,
-                    "titles": [_node_title(kb_root, p) for p in paths],
-                },
-                fix="same thing: merge; different things: rename one so the name is not ambiguous",
-            )
-        )
     return out
 
 
@@ -525,20 +506,28 @@ def _child(parent: str, name: str) -> str:
     return name if parent == "." else f"{parent}/{name}"
 
 
-def _node_title(kb_root: Path, rel_path: str) -> str:
-    summary = kb_root / rel_path / st.SUMMARY_NAME
-    try:
-        meta, body = parse_frontmatter(summary.read_text(encoding="utf-8", errors="replace"))
-    except OSError:
-        return ""
-    for key in ("name", "title", "topic"):
-        value = (meta or {}).get(key)
-        if value:
-            return str(value)[:40]
-    for line in body.splitlines():
-        if line.startswith("#"):
-            return line.lstrip("# ").strip()[:40]
-    return ""
+def duplicate_findings(kb_root: Path, ignore: Sequence[str]) -> List[Finding]:
+    """The same thing filed in two places, anywhere in the KB (see core.duplicates)."""
+    out: List[Finding] = []
+    for pair in du.duplicate_pairs(kb_root, ignore):
+        a, b = pair["a"], pair["b"]
+        other = b.rsplit("/", 1)[-1]
+        out.append(
+            Finding(
+                code="DUPLICATE",
+                path=a,
+                message=f"and {b}: {du.describe(pair)}",
+                level="warn",
+                detail=dict(pair),
+                fix=(
+                    "read both; same thing → keep the richer node, fold the other's unique "
+                    f"facts into it, then park the other under its deep_context/ (kvault move "
+                    f"--confirm {b} {a}/deep_context/{other}); different things → kvault mark "
+                    f"{a} --distinct-from {b}"
+                ),
+            )
+        )
+    return out
 
 
 def dangling_findings(kb_root: Path, ignore: Sequence[str]) -> List[Finding]:
@@ -703,6 +692,7 @@ def run_checks(
         ("GHOST", lambda: ghost_findings(root, ignore)),
         ("SERIES", lambda: series_findings(root, ignore)),
         ("SIBLINGS", lambda: sibling_findings(root, ignore)),
+        ("DUPLICATE", lambda: duplicate_findings(root, ignore)),
         ("DANGLING", lambda: dangling_findings(root, ignore)),
         ("LOOSE", lambda: loose_findings(root, ignore)),
         ("JOURNAL", lambda: journal_layout_findings(root, ignore)),
@@ -775,6 +765,7 @@ __all__ = [
     "series_findings",
     "loose_findings",
     "sibling_findings",
+    "duplicate_findings",
     "dangling_findings",
     "journal_layout_findings",
     "check_propagation",

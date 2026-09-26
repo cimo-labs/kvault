@@ -96,18 +96,21 @@ def test_ghosts_are_found(tmp_path):
 
 def test_sibling_collisions_and_same_name_elsewhere(tmp_path):
     kb = _sprawl_kb(tmp_path)
-    sib = [f for f in run_checks(kb)["findings"] if f["code"] == "SIBLINGS"]
+    doc = run_checks(kb)
+    sib = [f for f in doc["findings"] if f["code"] == "SIBLINGS"]
     pairs = {(f["detail"].get("a"), f["detail"].get("b")) for f in sib if f["path"] == "."}
     assert ("infra", "infrastructure") in pairs
     assert ("code_reviews", "reviews") in pairs
-    elsewhere = {
-        f["path"]: f["detail"]["paths"]
-        for f in sib
-        if f["detail"].get("kind") == "same_name_elsewhere"
+    # 0.16: the same name at two depths is a DUPLICATE, not a SIBLINGS tail line
+    assert not [f for f in sib if f["detail"].get("kind") == "same_name_elsewhere"]
+    same_name = {
+        (f["detail"]["a"], f["detail"]["b"])
+        for f in doc["findings"]
+        if f["code"] == "DUPLICATE" and "same_name" in f["detail"]["signals"]
     }
-    assert set(elsewhere["people"]) == {"people", "org/people"}
-    assert set(elsewhere["models"]) == {"models", "tech/models"}
-    assert set(elsewhere["infrastructure"]) == {"infrastructure", "tech/infrastructure"}
+    assert ("org/people", "people") in same_name
+    assert ("models", "tech/models") in same_name
+    assert ("infrastructure", "tech/infrastructure") in same_name  # a ghost twin counts
     # semantic pairs are out of scope by design
     assert ("people", "team") not in pairs and ("customers", "partners") not in pairs
 
@@ -254,9 +257,11 @@ def test_same_name_elsewhere_exempts_buckets_and_facets(tmp_path):
     same = [
         f
         for f in run_checks(kb)["findings"]
-        if f["code"] == "SIBLINGS" and f["detail"].get("kind") == "same_name_elsewhere"
+        if f["code"] == "DUPLICATE" and "same_name" in f["detail"]["signals"]
     ]
-    assert [f["path"] for f in same] == ["strategic"]
+    assert [(f["detail"]["a"], f["detail"]["b"]) for f in same] == [
+        ("customers/strategic", "strategic")
+    ]
     assert "«" in same[0]["message"]  # titles ride along so an agent can dismiss quickly
 
 

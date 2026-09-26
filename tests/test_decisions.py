@@ -70,17 +70,9 @@ def test_distinct_from_silences_same_name_elsewhere(empty_kb):
     # different depths: not a facet layout, so it is reported until recorded
     _n(empty_kb, "people/family")
     _n(empty_kb, "people/friends/family")
-    assert [
-        f
-        for f in run_checks(empty_kb)["findings"]
-        if f["detail"].get("kind") == "same_name_elsewhere"
-    ]
+    assert [f for f in run_checks(empty_kb)["findings"] if f["code"] == "DUPLICATE"]
     ops.mark_node(empty_kb, "people/family", distinct_from=["people/friends/family"])
-    assert not [
-        f
-        for f in run_checks(empty_kb)["findings"]
-        if f["detail"].get("kind") == "same_name_elsewhere"
-    ]
+    assert not [f for f in run_checks(empty_kb)["findings"] if f["code"] == "DUPLICATE"]
 
 
 # ── max_children ───────────────────────────────────────────────────────

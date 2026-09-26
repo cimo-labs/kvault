@@ -61,11 +61,12 @@ PRIORITY = {
     "cluster": 1,
     "ghost": 2,
     "series": 3,
-    "siblings": 4,
-    "dangling": 5,
-    "loose": 6,
-    "journal": 7,
-    "summary": 8,
+    "duplicate": 4,
+    "siblings": 5,
+    "dangling": 6,
+    "loose": 7,
+    "journal": 8,
+    "summary": 9,
 }
 
 
@@ -215,16 +216,28 @@ def build_plan(
                 )
             continue
 
-        if code not in ("GHOST", "SERIES", "SIBLINGS", "DANGLING", "LOOSE", "JOURNAL", "SUMMARY"):
+        if code not in (
+            "GHOST",
+            "SERIES",
+            "SIBLINGS",
+            "DUPLICATE",
+            "DANGLING",
+            "LOOSE",
+            "JOURNAL",
+            "SUMMARY",
+        ):
             continue
         anchor = fpath
         if code == "SUMMARY":
             anchor = fpath[: -len("/_summary.md")] if fpath.endswith("/_summary.md") else "."
-        if code == "SIBLINGS" and finding["detail"].get("kind") == "same_name_elsewhere":
-            anchor = finding["detail"]["paths"][0]
         if code == "LOOSE":
             anchor = finding["detail"].get("parent", ".")
-        if not _in_scope(anchor, scope):
+        if code == "DUPLICATE":
+            if not (
+                _in_scope(finding["detail"]["a"], scope) or _in_scope(finding["detail"]["b"], scope)
+            ):
+                continue
+        elif not _in_scope(anchor, scope):
             continue
 
         if code == "SERIES":
@@ -306,10 +319,7 @@ def build_plan(
                 )
             items.append(item)
             continue
-        if code == "SIBLINGS" and finding["detail"].get("kind") not in (
-            "same_name_elsewhere",
-            "more_pairs",
-        ):
+        if code == "SIBLINGS" and finding["detail"].get("kind") != "more_pairs":
             sibling_groups.setdefault(fpath, []).append(finding)
             continue
         if code == "LOOSE":
@@ -334,44 +344,29 @@ def build_plan(
                     ],
                 }
             )
-        elif code == "SIBLINGS":
-            detail = finding["detail"]
-            if detail.get("kind") == "more_pairs":
-                continue
-            if detail.get("kind") == "same_name_elsewhere":
-                questions.append(
-                    f"'{fpath}' lives at {len(detail['paths'])} places "
-                    f"({', '.join(detail['paths'][:4])}): which one is home? — default: read both; "
-                    "different things → kvault mark <one> --distinct-from <other>"
-                )
-                items.append(
-                    {
-                        "kind": "siblings",
-                        "priority": PRIORITY["siblings"],
-                        "path": detail["paths"][0],
-                        "why": finding["message"],
-                        "commands": [f"kvault read {p} --kb-root {q}" for p in detail["paths"][:4]]
-                        + ["# then: kvault move --confirm <loser> <winner>/<name>, or delete"],
-                    }
-                )
-            else:
-                a, b = detail.get("a"), detail.get("b")
-                items.append(
-                    {
-                        "kind": "siblings",
-                        "priority": PRIORITY["siblings"],
-                        "path": fpath,
-                        "why": finding["message"],
-                        "commands": [
-                            f"kvault read {_join(fpath, a)} --kb-root {q}",
-                            f"kvault read {_join(fpath, b)} --kb-root {q}",
-                            "# same thing → merge and delete one; subtopic → "
-                            f"kvault move --confirm {_join(fpath, b)} {_join(fpath, a)}/{b}",
-                            f"# different things → kvault mark {_join(fpath, a)} --distinct-from {b} "
-                            f"--kb-root {q}  (the finding stops)",
-                        ],
-                    }
-                )
+        elif code == "DUPLICATE":
+            d = finding["detail"]
+            a, b = d["a"], d["b"]
+            other = b.rsplit("/", 1)[-1]
+            items.append(
+                {
+                    "kind": "duplicate",
+                    "priority": PRIORITY["duplicate"],
+                    "path": a,
+                    "other": b,
+                    "why": f"{a} and {b}: {finding['message'].split(': ', 1)[-1]}",
+                    "signals": d.get("signals", []),
+                    "commands": [
+                        f"kvault read {a} --kb-root {q}",
+                        f"kvault read {b} --kb-root {q}",
+                        "# same thing → fold the unique facts of one into the other "
+                        "(kvault write <keeper>), then park the other where one move undoes it:",
+                        f"kvault move --confirm {b} {a}/deep_context/{other} --kb-root {q}",
+                        f"# different things → kvault mark {a} --distinct-from {b} --kb-root {q}"
+                        "  (the finding stops)",
+                    ],
+                }
+            )
         elif code == "JOURNAL":
             items.append(
                 {

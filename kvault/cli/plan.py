@@ -19,9 +19,13 @@ MAX_COMMANDS_SHOWN = 6
 
 
 def _echo_item(index: int, item: Dict[str, Any]) -> None:
-    head = f"{index}. {item['kind']:<9}{item['path']}"
+    kind = item["kind"]
+    # 9-wide column as before; a kind that fills it ("duplicate") still gets a space
+    head = f"{index}. {kind:<9}{'' if len(kind) < 9 else ' '}{item['path']}"
     if item["kind"] == "cluster":
         head += f" → {item['new_parent']}"
+    elif item["kind"] == "duplicate":
+        head += f" ~ {item['other']}"
     click.echo(head)
     click.echo(f"     {item['why']}")
     commands = item.get("commands", [])

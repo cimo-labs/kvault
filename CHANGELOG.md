@@ -2,7 +2,7 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
-## 0.16.1 - Unreleased
+## 0.16.1 - 2026-09-26
 
 The work agent ran 0.16.0 on its ~1,000-node KB and judged every finding
 by hand:

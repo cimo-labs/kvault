@@ -2,6 +2,68 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.16.1 - 2026-09-26
+
+The work agent ran 0.16.0 on its ~1,000-node KB and judged every finding
+by hand:
+- DUPLICATE: 41 pairs, 39 real, 2 unclear, no noise found.
+- DANGLING: 109 findings, 84 real, 24 noise, 1 unclear.
+
+This release removes the DANGLING noise patterns, stops filler words in
+titles from hiding DUPLICATE twins, and reports how alike a pair's texts
+are.
+
+### Fixed
+
+- **DANGLING noise.**
+  - A root category named in a child list is named, not listed as a
+    missing child. Boilerplate that mentions the top-level folder was 22
+    of the 24 false findings. The price: a removed child named like a root
+    category goes unreported.
+  - A relative link is a tracker shortlink, not a KB path, when:
+    - its first and last parts are plain words (no underscore, not a
+      reserved name);
+    - the last part names no node;
+    - the first part is not a KB directory.
+
+    `issue/123` was read as a child. Links into a moved or removed child
+    (`models/bayes_routing/`, `gone_child/spec/`) and into a
+    `deep_context/` are still checked.
+  - A backticked `name/` in running prose is not a child-list entry; it is
+    as often a code directory.
+    - A nested list item or a table row still is when its first token is a
+      directory (`` `name/` ``).
+    - A bare one is not, since it is as often a config key or a column
+      name.
+  - A child-list entry written as a link (`- [name](../name/)`) is judged
+    by its link alone. A Related list linking a sibling, or an entry
+    linking an external page, was reported as a missing child (in 0.16.0
+    too). Such an entry still shows that the summary lists children.
+- **DUPLICATE: filler words hid twins.** The homonym rule ignores words
+  that name the kind of page (Category Summary, Overview, Project,
+  Architecture, …). They made one customer's three nodes look like three
+  different things. A filler word still tells two same-name nodes apart
+  when their texts share under 40% of their words.
+- **DUPLICATE: measured overlap, never a false 0.00.** Every pair reports:
+  - shingle `jaccard` and `containment`;
+  - `words`, the share of the smaller node's content words found in the
+    other.
+
+  A value is `None` when a node is too short to measure. In 0.16.0 an
+  unmeasured value read 0.00. Paraphrased copies (the usual kind when a
+  model rewrites a node) scored 0.00 on shingles while sharing 83% of their
+  words. Messages end with "N% of words shared". Word overlap is reported,
+  not a signal.
+
+### Changed
+
+- The DANGLING fix line lists every same-name node ("one of a, b") instead
+  of calling the first one likely. After a rename or a delete, the name's
+  remaining holder can be an unrelated namesake.
+- `references.extract_refs`: `list` holds child-list entries only. Two new
+  keys are evidence that a summary lists children: `linked` (entries
+  written as links) and `dirs` (single-directory code spans).
+
 ## 0.16.0 - 2026-09-26
 
 What an agent could not see, and reads that stay small. The work agent (MCP
@@ -172,8 +234,8 @@ guidance gap, all from that report.
   rewritten summary now carries today's date (and `created` is preserved
   or set); an identical rewrite is a detected no-op (`unchanged` note,
   dates untouched), like `write`. Results carry `changed` and `updated`.
-- **`plan` never clusters a hub by its own name.** Twelve `aio_*` nodes
-  under `projects/aio/` proposed a hub `projects/aio/aio`. The clusterer
+- **`plan` never clusters a hub by its own name.** Twelve `atlas_*` nodes
+  under `projects/atlas/` proposed a hub `projects/atlas/atlas`. The clusterer
   now skips the parent's own words when choosing a leading token, so those
   nodes group by their next word (or stay put).
 
@@ -249,7 +311,7 @@ over MCP. Reproduced on a synthetic fixture before any of this was written.
   when it would add a root category to a KB that already has roots
   (`--new-root` / `new_root=true` to do it deliberately; a bare KB's first
   roots are allowed and noted) or when a sibling has the same words
-  (`ai_overview` beside `ai_overviews`; `--allow-similar` /
+  (`release_note` beside `release_notes`; `--allow-similar` /
   `allow_similar=true` to override). Near-duplicate names (token prefix,
   4+ character prefix on single words, stemmed Jaccard ≥ 0.5), the same
   basename elsewhere in the tree, and a parent pushed past

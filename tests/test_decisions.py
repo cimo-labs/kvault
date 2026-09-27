@@ -47,14 +47,14 @@ def test_mark_distinct_silences_siblings_finding_and_guard(empty_kb):
 
 
 def test_distinct_from_lets_a_same_words_twin_be_created(empty_kb):
-    _n(empty_kb, "projects/ai_overview")
-    refused = ops.write_node(empty_kb, "projects/ai_overviews", BODY, META, create=True)
+    _n(empty_kb, "projects/release_note")
+    refused = ops.write_node(empty_kb, "projects/release_notes", BODY, META, create=True)
     assert refused["success"] is False
     allowed = ops.write_node(
         empty_kb,
-        "projects/ai_overviews",
+        "projects/release_notes",
         BODY,
-        {**META, "distinct_from": ["ai_overview"]},
+        {**META, "distinct_from": ["release_note"]},
         create=True,
     )
     assert allowed["success"], allowed
@@ -80,7 +80,7 @@ def test_distinct_from_silences_same_name_elsewhere(empty_kb):
 
 def test_max_children_override_is_honored_everywhere(empty_kb):
     for i in range(12):
-        _n(empty_kb, f"projects/aio_{i:02d}", allow_similar=True)
+        _n(empty_kb, f"projects/atlas_{i:02d}", allow_similar=True)
     assert [f for f in run_checks(empty_kb)["findings"] if f["code"] == "BRANCH"]
     assert [i for i in build_plan(empty_kb, limit=0)["items"] if i["kind"] == "cluster"]
     result = ops.mark_node(empty_kb, "projects", max_children=30)
@@ -179,19 +179,19 @@ def test_batch_new_root_only_when_roots_do_not_increase(tmp_path):
     kb.mkdir()
     (kb / ".kvault").mkdir()
     (kb / "_summary.md").write_text("# Root\n\nRoot.\n")
-    for name in ("aio_a", "aio_b", "aio_c", "people"):
+    for name in ("atlas_a", "atlas_b", "atlas_c", "people"):
         _n(kb, f"{name}/item", new_root=True)
     assert len(_roots(kb)) == 4
     # consolidation: 3 roots into 1 new hub → 2 roots after; allowed
     fold = ops.move_entities(
-        kb, [{"from": f"aio_{c}", "to": f"aio/aio_{c}"} for c in "abc"], new_root=True
+        kb, [{"from": f"atlas_{c}", "to": f"atlas/atlas_{c}"} for c in "abc"], new_root=True
     )
     assert fold["success"], fold
-    assert _roots(kb) == ["aio", "people"]
+    assert _roots(kb) == ["atlas", "people"]
     # a batch that adds a root (deep node → brand-new root) is refused even with the flag
     add = ops.move_entities(kb, [{"from": "people/item", "to": "extra/item"}], new_root=True)
     assert add["success"] is False and "increase" in add["error"]
-    assert _roots(kb) == ["aio", "people"]
+    assert _roots(kb) == ["atlas", "people"]
     # a rename of a root is net zero; allowed
     rename = ops.move_entities(kb, [{"from": "people", "to": "humans"}], new_root=True)
     assert rename["success"], rename

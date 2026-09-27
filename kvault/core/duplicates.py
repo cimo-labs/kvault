@@ -23,6 +23,23 @@ Signals, computed in one pass over the node summaries:
   shingles that occur in at most ten nodes. Jaccard >= 0.5, or containment
   >= 0.8 (one body is mostly inside the other), for bodies of 40+ words.
 
+Every reported pair also carries its *measured* overlap: shingle
+``jaccard``/``containment`` and ``words``, the share of the smaller node's
+content words found in the other (``None`` when a node is too short to
+measure; before 0.16.1 an unmeasured value read 0.00). Model-written copies
+are paraphrases, so shingles miss them while word overlap does not: on a
+real KB, twins shared 83-100% of their words, while facets and homonyms
+shared 18-37%. Word overlap is reported, not a signal: short templated
+nodes about different companies reach 0.8.
+
+The homonym rule ignores filler words that tools and agents append to
+titles (``Category Summary``, ``Overview``, ``Project``,
+``Architecture``): on a 1,000-node KB they made one customer's three nodes
+look like three different things. A filler word still tells two same-name
+nodes apart when their texts share under 40% of their words, since it is
+sometimes the subject ("Search Project", a staffing plan, beside "Search
+Architecture", a cluster design).
+
 Never compared: a node with its own ancestors or descendants (a rollup
 repeats its children by design), two members of one date series (``SERIES``
 reports those), kvault's placeholder stubs, anything under ``journal/`` or
@@ -51,6 +68,46 @@ SHINGLE_WORDS = 5
 MAX_SHINGLE_NODES = 10
 MAX_GROUP = 5
 
+#: Below this share of the smaller node's content words found in the other,
+#: same-name nodes whose titles differ only by filler words are homonyms
+#: (twins measured 0.83-1.0 on a real KB, facets and homonyms 0.18-0.37).
+WORD_DIFFERENT = 0.4
+#: A node with fewer distinct content words than this is too short to measure.
+MIN_CONTENT_WORDS = 20
+#: Title words that describe the kind of page, not the subject (stemmed);
+#: the homonym rule ignores them.
+FILLER_TITLE_WORDS = frozenset(
+    {
+        "category",
+        "summary",
+        "overview",
+        "index",
+        "hub",
+        "note",
+        "project",
+        "architecture",
+        "system",
+        "program",
+        "page",
+        "home",
+        "main",
+        "info",
+        "detail",
+        "readme",
+        "doc",
+        "document",
+    }
+)
+_CONTENT_STOP = frozenset(
+    """the and for with that this from are was were been has have had not but all any can
+    will would should could into onto over under about after before between during their
+    there them they then than when where which while who whom whose what why how its our
+    out off own per via etc also more most much many some such each every other only same
+    very just like one two three new use used using based within without across upon both
+    either neither nor yet still even ever once here these those your you his her him she
+    may might must shall does did doing done being""".split()
+)
+
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[a-z]{2,}$", re.IGNORECASE)
 _PHONE_RE = re.compile(r"^\+?[\d\s().\-]{10,}$")
@@ -66,6 +123,17 @@ def _norm(text: str) -> str:
     return " ".join(_tokens(text))
 
 
+def _content_words(text: str) -> FrozenSet[str]:
+    return frozenset(
+        t for t in _tokens(text) if len(t) >= 3 and not t.isdigit() and t not in _CONTENT_STOP
+    )
+
+
+def _core(stems: FrozenSet[str]) -> FrozenSet[str]:
+    """Title stems without the filler words that name the kind of page."""
+    return frozenset(s for s in stems if s not in FILLER_TITLE_WORDS)
+
+
 @dataclass
 class _Doc:
     path: str
@@ -77,6 +145,7 @@ class _Doc:
     identifiers: Set[str] = field(default_factory=set)
     shingles: Set[int] = field(default_factory=set)
     words: int = 0
+    content: FrozenSet[str] = frozenset()
 
 
 def _title(meta: Dict[str, Any], body: str, name: str) -> str:
@@ -137,8 +206,10 @@ def _load(root: Path, ignore: Sequence[str]) -> Dict[str, _Doc]:
             norm = _norm(str(alias))
             if len(norm) >= 3:
                 doc.aliases.add(norm)
-        words = _tokens(body if meta else raw)
+        text = body if meta else raw
+        words = _tokens(text)
         doc.words = len(words)
+        doc.content = _content_words(text)
         if doc.words >= MIN_BODY_WORDS:
             doc.shingles = {
                 zlib.crc32(" ".join(words[i : i + SHINGLE_WORDS]).encode())
@@ -148,10 +219,35 @@ def _load(root: Path, ignore: Sequence[str]) -> Dict[str, _Doc]:
     return docs
 
 
-def _homonyms(a: _Doc, b: _Doc) -> bool:
+def _homonyms(a: _Doc, b: _Doc, filler: bool = False) -> bool:
+    """Each title adds its own, different words to the shared name.
+
+    Filler words count only with *filler*: "Search Project" and "Search
+    Architecture" are one thing unless their texts say otherwise.
+    """
     name = frozenset(st.stem(t) for t in _tokens(a.path.rsplit("/", 1)[-1]))
-    extra_a, extra_b = a.title_stems - name, b.title_stems - name
+    words_a = a.title_stems if filler else _core(a.title_stems)
+    words_b = b.title_stems if filler else _core(b.title_stems)
+    extra_a, extra_b = words_a - name, words_b - name
     return bool(extra_a and extra_b and not extra_a & extra_b)
+
+
+def _word_overlap(a: _Doc, b: _Doc) -> Optional[float]:
+    """Share of the smaller node's content words found in the other, or None."""
+    small = min(len(a.content), len(b.content))
+    if small < MIN_CONTENT_WORDS:
+        return None
+    return round(len(a.content & b.content) / small, 2)
+
+
+def _shingle_overlap(a: _Doc, b: _Doc) -> Tuple[Optional[float], Optional[float]]:
+    if not a.shingles or not b.shingles:
+        return None, None
+    shared = len(a.shingles & b.shingles)
+    return (
+        round(shared / len(a.shingles | b.shingles), 2),
+        round(shared / min(len(a.shingles), len(b.shingles)), 2),
+    )
 
 
 def _related(a: str, b: str) -> bool:
@@ -245,6 +341,7 @@ def duplicate_pairs(kg_root: Path, ignore: Optional[Sequence[str]] = None) -> Li
         da, db = docs.get(a), docs.get(b)
         mutual = bool(da and db and da.title_norm in db.aliases and db.title_norm in da.aliases)
         body = p.jaccard >= BODY_JACCARD or p.containment >= BODY_CONTAINMENT
+        words = _word_overlap(da, db) if da and db else None
         # A dated record (meeting note, review, daily card) carries the names
         # of what it is about; sharing them is not evidence of being it.
         dated = st.series_key(a.rsplit("/", 1)[-1])[1] or st.series_key(b.rsplit("/", 1)[-1])[1]
@@ -255,7 +352,14 @@ def duplicate_pairs(kg_root: Path, ignore: Optional[Sequence[str]] = None) -> Li
         # bare titles ("Models" twice) stay: that is the split-brain case.
         # A name made only of dates (2026_05_13) names a day, not a thing.
         date_only = not st.series_key(name_a)[0]
-        same_name = p.same_name and not date_only and not (da and db and _homonyms(da, db))
+        # Filler words ("Acme Project" / "Acme Architecture") make no homonym,
+        # unless the texts share under 40% of their words: then the filler
+        # word is the subject ("Search Project" vs "Search Architecture").
+        differ = words is not None and words < WORD_DIFFERENT
+        homonym = bool(
+            da and db and (_homonyms(da, db) or (differ and _homonyms(da, db, filler=True)))
+        )
+        same_name = p.same_name and not date_only and not homonym
         signals: List[str] = []
         if body:
             signals.append("similar_body")
@@ -269,11 +373,13 @@ def duplicate_pairs(kg_root: Path, ignore: Optional[Sequence[str]] = None) -> Li
             continue  # shared names alone: supporting evidence only
         if dc.are_distinct(root, a, b):
             continue
+        measured_j, measured_c = _shingle_overlap(da, db) if da and db else (None, None)
         strength = (
-            3.0 * max(p.jaccard, p.containment * 0.9)
+            3.0 * max(measured_j or 0.0, (measured_c or 0.0) * 0.9)
             + (2.0 if p.same_title else 0.0)
             + (1.5 if strong_alias else 0.5 if p.shared_aliases else 0.0)
             + (1.0 if same_name else 0.0)
+            + (words or 0.0)
         )
         out.append(
             {
@@ -283,8 +389,10 @@ def duplicate_pairs(kg_root: Path, ignore: Optional[Sequence[str]] = None) -> Li
                 "titles": [da.title if da else "", db.title if db else ""],
                 "shared_aliases": sorted(p.shared_aliases)[:5],
                 "shared_identifier": p.identifier,
-                "jaccard": p.jaccard,
-                "containment": p.containment,
+                # measured for every pair; None = too short to measure
+                "jaccard": measured_j,
+                "containment": measured_c,
+                "words": words,
                 "strength": round(strength, 2),
             }
         )
@@ -297,12 +405,17 @@ def describe(pair: Dict[str, Any]) -> str:
     parts: List[str] = []
     ta, tb = pair["titles"]
     if "similar_body" in pair["signals"]:
-        if pair["jaccard"] >= BODY_JACCARD:
+        if (pair["jaccard"] or 0.0) >= BODY_JACCARD:
             parts.append(f"body {round(pair['jaccard'] * 100)}% alike")
         else:
-            parts.append(f"{round(pair['containment'] * 100)}% of one body is in the other")
+            parts.append(
+                f"{round((pair['containment'] or 0.0) * 100)}% of one body is in the other"
+            )
     if "same_title" in pair["signals"]:
-        parts.append(f"same title «{ta[:40]}»")
+        if _norm(ta) == _norm(tb):
+            parts.append(f"same title «{ta[:40]}»")
+        else:
+            parts.append(f"titles alike «{ta[:35]}» / «{tb[:35]}»")
     if "shared_alias" in pair["signals"]:
         if pair["shared_identifier"]:
             parts.append("shared identifier")
@@ -314,6 +427,8 @@ def describe(pair: Dict[str, Any]) -> str:
     if "same_name" in pair["signals"]:
         titles = f" («{ta[:30]}» / «{tb[:30]}»)" if ta or tb else ""
         parts.append(f"same name{titles}")
+    if pair.get("words") is not None:
+        parts.append(f"{round(pair['words'] * 100)}% of words shared")
     return "; ".join(parts)
 
 
@@ -323,6 +438,8 @@ __all__ = [
     "BODY_JACCARD",
     "BODY_CONTAINMENT",
     "MAX_GROUP",
+    "WORD_DIFFERENT",
+    "FILLER_TITLE_WORDS",
     "duplicate_pairs",
     "describe",
 ]

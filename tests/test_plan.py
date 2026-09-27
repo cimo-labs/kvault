@@ -13,13 +13,13 @@ BODY = "# Node\n\nA node with enough words to describe itself briefly.\n"
 META = {"source": "manual", "aliases": ["Node"]}
 
 FLAT = [
-    "aio",
-    "aio_architecture",
-    "aio_reporting",
-    "aio_scaling",
-    "pdp_prompts",
-    "pdp_prompt_ranking",
-    "pdp_assortment",
+    "atlas",
+    "atlas_architecture",
+    "atlas_reporting",
+    "atlas_scaling",
+    "crm_prompts",
+    "crm_prompt_ranking",
+    "crm_segments",
     "orchid",
     "quartz",
     "tundra",
@@ -39,27 +39,27 @@ def test_plan_clusters_over_fanout_parent(empty_kb):
     plan = build_plan(empty_kb, limit=0)
     assert plan["success"]
     clusters = [i for i in plan["items"] if i["kind"] == "cluster"]
-    assert [c["new_parent"] for c in clusters] == ["projects/aio", "projects/pdp"]
-    aio = clusters[0]
-    assert aio["new_parent_exists"] is True
-    assert {m["from"] for m in aio["moves"]} == {
-        "projects/aio_architecture",
-        "projects/aio_reporting",
-        "projects/aio_scaling",
+    assert [c["new_parent"] for c in clusters] == ["projects/atlas", "projects/crm"]
+    atlas = clusters[0]
+    assert atlas["new_parent_exists"] is True
+    assert {m["from"] for m in atlas["moves"]} == {
+        "projects/atlas_architecture",
+        "projects/atlas_reporting",
+        "projects/atlas_scaling",
     }
-    assert all(m["to"].startswith("projects/aio/") for m in aio["moves"])
-    assert "kvault move --batch --confirm" in aio["commands"][0]
-    assert aio["hub_name_is_placeholder"] is False  # projects/aio already exists
-    pdp = clusters[1]
-    assert pdp["hub_name_is_placeholder"] is True and "rename the hub" in pdp["then"]
-    assert pdp["members_total"] == 3
-    assert {m["name"] for m in pdp["members"]} == {
-        "pdp_prompts",
-        "pdp_prompt_ranking",
-        "pdp_assortment",
+    assert all(m["to"].startswith("projects/atlas/") for m in atlas["moves"])
+    assert "kvault move --batch --confirm" in atlas["commands"][0]
+    assert atlas["hub_name_is_placeholder"] is False  # projects/atlas already exists
+    crm = clusters[1]
+    assert crm["hub_name_is_placeholder"] is True and "rename the hub" in crm["then"]
+    assert crm["members_total"] == 3
+    assert {m["name"] for m in crm["members"]} == {
+        "crm_prompts",
+        "crm_prompt_ranking",
+        "crm_segments",
     }
     assert all(
-        m["gist"] and m["gist"].startswith("A node with enough words") for m in pdp["members"]
+        m["gist"] and m["gist"].startswith("A node with enough words") for m in crm["members"]
     )
     assert any("stay in place" in q for q in plan["questions"])
     assert plan["items"][0]["kind"] == "cluster"
@@ -92,10 +92,10 @@ def test_plan_executes_end_to_end(empty_kb):
         assert result["success"] and not result.get("partial"), result
     after = run_checks(empty_kb)
     assert not [f for f in after["findings"] if f["code"] == "BRANCH"]
-    assert (empty_kb / "projects" / "pdp" / "_summary.md").exists()  # stubbed hub
-    assert (empty_kb / "projects" / "aio" / "aio_scaling" / "_summary.md").exists()
+    assert (empty_kb / "projects" / "crm" / "_summary.md").exists()  # stubbed hub
+    assert (empty_kb / "projects" / "atlas" / "atlas_scaling" / "_summary.md").exists()
     outline = ops.build_outline(empty_kb, "projects")
-    assert outline["children_count"] == 7  # aio, pdp + 5 leftovers
+    assert outline["children_count"] == 7  # atlas, crm + 5 leftovers
     assert outline["ghost_count"] == 0
 
 
@@ -105,7 +105,7 @@ def test_cli_plan_human_and_json(empty_kb):
     human = runner.invoke(cli, ["plan", "--kb-root", str(empty_kb)])
     assert human.exit_code == 0, human.output
     assert human.output.startswith("Plan for .:")
-    assert "1. cluster  projects → projects/aio" in human.output
+    assert "1. cluster  projects → projects/atlas" in human.output
     assert "Decisions (each has a default" in human.output
     as_json = runner.invoke(cli, ["plan", "--json", "--limit", "1", "--kb-root", str(empty_kb)])
     doc = json.loads(as_json.output)
@@ -201,7 +201,7 @@ def test_plan_quotes_the_root_and_flags_root_clusters(tmp_path):
     kb.mkdir()
     (kb / ".kvault").mkdir()
     (kb / "_summary.md").write_text("# Root\n\nRoot.\n")
-    for name in [f"aio_{c}" for c in "abc"] + [f"pdp_{c}" for c in "abc"] + list("uvwxyz"):
+    for name in [f"atlas_{c}" for c in "abc"] + [f"crm_{c}" for c in "abc"] + list("uvwxyz"):
         r = ops.write_node(kb, f"{name}/item", BODY, META, create=True, new_root=True)
         assert r["success"], r
     plan = build_plan(kb, limit=0)
@@ -290,9 +290,9 @@ def test_reserved_series_key_is_a_question(empty_kb):
 
 def test_cluster_batch_drops_series_items_under_its_sources(empty_kb):
     for name in (
-        "aio_a",
-        "aio_b",
-        "aio_c",
+        "atlas_a",
+        "atlas_b",
+        "atlas_c",
         "orchid",
         "quartz",
         "tundra",
@@ -303,11 +303,11 @@ def test_cluster_batch_drops_series_items_under_its_sources(empty_kb):
         "zephyr",
     ):
         assert ops.write_node(empty_kb, f"projects/{name}", BODY, META, create=True)["success"]
-    _series(empty_kb, "projects/aio_a", "standup")
+    _series(empty_kb, "projects/atlas_a", "standup")
     plan = build_plan(empty_kb, limit=0)
     kinds = [(i["kind"], i["path"]) for i in plan["items"] if i["kind"] in ("cluster", "series")]
     assert ("cluster", "projects") in kinds
-    assert ("series", "projects/aio_a") not in kinds  # the cluster moves projects/aio_a
+    assert ("series", "projects/atlas_a") not in kinds  # the cluster moves projects/atlas_a
 
 
 def test_dated_parent_question_only_for_surviving_series(empty_kb):
@@ -340,31 +340,31 @@ def test_plan_scope_accepts_dot_slash(empty_kb):
 
 
 def test_hub_is_not_clustered_by_its_own_name(empty_kb):
-    """Real KB, first weekly run after consolidation: projects/aio held 12 aio_* nodes
-    and the plan proposed projects/aio/aio."""
+    """A real KB's first weekly run after consolidation (names changed): projects/atlas
+    held 12 atlas_* nodes and the plan proposed projects/atlas/atlas."""
     names = [
-        "aio",
-        "aio_architecture",
-        "aio_reporting",
-        "aio_scaling",
-        "aio_search",
-        "aio_experiments",
-        "aio_experiment_evaluation",
-        "aio_daily_standups",
-        "aio_commerce_search",
-        "aio_modeling",
-        "aio_routing_model",
-        "aio_mendel_insights",
+        "atlas",
+        "atlas_architecture",
+        "atlas_reporting",
+        "atlas_scaling",
+        "atlas_search",
+        "atlas_experiments",
+        "atlas_experiment_evaluation",
+        "atlas_daily_standups",
+        "atlas_catalog_search",
+        "atlas_modeling",
+        "atlas_routing_model",
+        "atlas_funnel_insights",
     ]
     for n in names:
         assert ops.write_node(
-            empty_kb, f"projects/aio/{n}", BODY, META, create=True, allow_similar=True
+            empty_kb, f"projects/atlas/{n}", BODY, META, create=True, allow_similar=True
         )["success"]
     clusters = [i for i in build_plan(empty_kb, limit=0)["items"] if i["kind"] == "cluster"]
-    assert not any(i["new_parent"].endswith("/aio/aio") for i in clusters)
+    assert not any(i["new_parent"].endswith("/atlas/atlas") for i in clusters)
     # grouping falls through to the next word where there is one
     hubs = {i["new_parent"] for i in clusters}
-    assert hubs <= {"projects/aio/experiment", "projects/aio/search"} or hubs == set()
+    assert hubs <= {"projects/atlas/experiment", "projects/atlas/search"} or hubs == set()
 
 
 def test_ignore_lines_are_quoted_and_escaped(tmp_path):

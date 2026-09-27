@@ -28,26 +28,26 @@ def _notes(result, code=None, kind=None):
 
 
 def test_same_words_sibling_is_refused(empty_kb):
-    assert ops.write_node(empty_kb, "projects/ai_overview", BODY, META, create=True)["success"]
-    result = ops.write_node(empty_kb, "projects/ai_overviews", BODY, META, create=True)
+    assert ops.write_node(empty_kb, "projects/release_note", BODY, META, create=True)["success"]
+    result = ops.write_node(empty_kb, "projects/release_notes", BODY, META, create=True)
     assert result["success"] is False
     assert result["error_code"] == "validation_error"
     assert result["details"]["reason"] == "similar"
-    assert result["details"]["existing"] == "projects/ai_overview"
+    assert result["details"]["existing"] == "projects/release_note"
     assert "allow-similar" in result["hint"]
-    assert not (empty_kb / "projects" / "ai_overviews").exists()
+    assert not (empty_kb / "projects" / "release_notes").exists()
 
 
 def test_allow_similar_creates_and_notes(empty_kb):
-    ops.write_node(empty_kb, "projects/ai_overview", BODY, META, create=True)
+    ops.write_node(empty_kb, "projects/release_note", BODY, META, create=True)
     result = ops.write_node(
-        empty_kb, "projects/ai_overviews", BODY, META, create=True, allow_similar=True
+        empty_kb, "projects/release_notes", BODY, META, create=True, allow_similar=True
     )
     assert result["success"]
     similar = _notes(result, "structure", "similar")
     assert len(similar) == 1
     assert similar[0]["detail"]["siblings"][0]["kind"] == "same_words"
-    assert "projects/ai_overview" in similar[0]["next"]
+    assert "projects/release_note" in similar[0]["next"]
 
 
 def test_prefix_sibling_warns_but_creates(empty_kb):
@@ -206,12 +206,12 @@ def test_cli_new_root_and_allow_similar_flags(empty_kb):
     ok = _write(empty_kb, "topics/x", "--new-root")
     assert ok.exit_code == 0, ok.output
     assert json.loads(ok.output)["success"]
-    ok1 = _write(empty_kb, "topics/ai_overview")
+    ok1 = _write(empty_kb, "topics/release_note")
     assert json.loads(ok1.output)["success"], ok1.output
-    twin = json.loads(_write(empty_kb, "topics/ai_overviews").output)
+    twin = json.loads(_write(empty_kb, "topics/release_notes").output)
     assert twin["success"] is False and twin["details"]["reason"] == "similar"
     assert "--allow-similar" in twin["hint"]
-    ok2 = _write(empty_kb, "topics/ai_overviews", "--allow-similar")
+    ok2 = _write(empty_kb, "topics/release_notes", "--allow-similar")
     assert ok2.exit_code == 0, ok2.output
 
 

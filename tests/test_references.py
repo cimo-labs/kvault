@@ -56,18 +56,19 @@ def test_extract_refs_kinds_and_prose_exclusions():
         "## Children\n\n"
         "- `weekly_reporting/` — weekly pipeline\n"
         "- **power_analysis** — a plan\n"
-        "- [guided_shopping](guided_shopping/) — a project\n\n"
+        "- [onboarding_flow](onboarding_flow/) — a project\n\n"
         "See `tech/models/bayes_routing` and projects/causal/uplift_router.\n"
         "Pros and cons: and/or, family/startup reconnects, A/B tests.\n"
         "Repo `cimo-labs/kvault`, file `notes/plan.md`.\n\n"
         "```\nprojects/inside/a_fence\n```\n"
     )
     refs = rf.extract_refs(body)
-    assert refs["link"] == ["guided_shopping/"]
+    assert refs["link"] == ["onboarding_flow/"]
     assert "tech/models/bayes_routing" in refs["code"]
     assert "cimo-labs/kvault" in refs["code"]  # extracted; resolution drops it later
     assert refs["path"] == ["projects/causal/uplift_router"]
-    assert {"weekly_reporting", "power_analysis", "guided_shopping"} <= set(refs["list"])
+    assert {"weekly_reporting", "power_analysis"} <= set(refs["list"])
+    assert "onboarding_flow" not in refs["list"]  # an entry written as a link is its link
     assert "projects/inside/a_fence" not in refs["path"]
 
 
@@ -79,11 +80,11 @@ def test_child_list_entries_that_are_not_on_disk(tmp_path):
         "# Hub\n\n## Children\n\n"
         "- `weekly_reporting/` — weekly pipeline\n"
         "- **power_analysis** — a plan that was never created\n"
-        "- [guided_shopping](guided_shopping/) — moved away\n",
+        "- [onboarding_flow](onboarding_flow/) — moved away\n",
     )
     found = _dangling(kb)
     assert ("projects/hub", "list", "projects/hub/power_analysis") in found
-    assert ("projects/hub", "link", "projects/hub/guided_shopping") in found
+    assert ("projects/hub", "link", "projects/hub/onboarding_flow") in found
     assert not any(t.endswith("weekly_reporting") for _, _, t in found)
 
 
@@ -315,3 +316,163 @@ def test_absurdly_long_targets_do_not_crash_check(tmp_path):
     kb = _kb(tmp_path)
     _node(kb, "tech", "# Tech\n\n[t](" + "x" * 260 + ") and `projects/" + "y" * 260 + "`\n")
     run_checks(kb, codes=["DANGLING"])  # used to raise OSError: File name too long
+
+
+# ── 0.16.1: from the first run on a ~1,000-node KB ───────────────────────
+
+
+def test_root_categories_are_named_but_siblings_are_findings(tmp_path):
+    """Boilerplate that mentions the top-level tech/ folder was 22 of 24
+    false DANGLING findings on a 1,000-node KB. A sibling is different: a
+    child that moved up a level is what its old parent must stop listing."""
+    kb = _kb(tmp_path)
+    _node(kb, "projects/moved_up")
+    _node(
+        kb,
+        "projects/hub",
+        "# Hub\n\n- `weekly_reporting/` — the pipeline\n- `tech/` — architecture lives there\n"
+        "- `moved_up/` — moved up a level\n- `gone_child/` — removed\n",
+    )
+    refs = {r.target: r for r in rf.dangling_references(kb) if r.node == "projects/hub"}
+    assert set(refs) == {"projects/hub/moved_up", "projects/hub/gone_child"}
+    assert refs["projects/hub/moved_up"].moved_to == ("projects/moved_up",)
+
+
+def test_child_tables_are_child_lists(tmp_path):
+    kb = _kb(tmp_path)
+    _node(
+        kb,
+        "projects/hub",
+        "# Hub\n\n| Child | What |\n|---|---|\n| `weekly_reporting/` | the pipeline |\n"
+        "| `gone_child/` | removed |\n| **old_report/** | moved |\n"
+        "| max_batch_size | 64 |\n"  # a bare first cell is a column or a flag
+        "| [prod_dashboard](https://grafana.example.com/d/abc) | external |\n"
+        "| rate_limit(req/s) | 100 |\n",
+    )
+    found = {(r.kind, r.target) for r in rf.dangling_references(kb) if r.node == "projects/hub"}
+    assert found == {("list", "projects/hub/gone_child"), ("list", "projects/hub/old_report")}
+
+
+def test_nested_child_lists_are_read(tmp_path):
+    kb = _kb(tmp_path)
+    _node(
+        kb,
+        "projects/hub",
+        "# Hub\n\n- Children:\n    - `weekly_reporting/` — the pipeline\n"
+        "    - `gone_child/` — removed\n        - max_batch_size: 64\n",  # a config key
+    )
+    found = {r.target for r in rf.dangling_references(kb) if r.node == "projects/hub"}
+    assert found == {"projects/hub/gone_child"}
+
+
+def test_entries_written_as_links_are_judged_by_their_link(tmp_path):
+    kb = _kb(tmp_path)
+    _node(kb, "projects/support_agents")
+    _node(kb, "projects/atlas/atlas_core")
+    _node(
+        kb,
+        "projects/atlas",
+        "# Atlas\n\n- `atlas_core/` — the core\n\n## Related\n\n"
+        "- [support_agents](../support_agents/) — the sibling project\n"
+        "- [training_runs](https://runs.example.com/atlas) — the dashboard\n",
+    )
+    assert not [r for r in rf.dangling_references(kb) if r.node == "projects/atlas"]
+
+
+def test_linked_entries_show_that_a_summary_lists_its_children(tmp_path):
+    kb = _kb(tmp_path)
+    _node(kb, "projects/repos/alpha_svc")
+    _node(
+        kb,
+        "projects/repos",
+        "# Repos\n\n- [alpha_svc](https://git.example.com/alpha_svc) — the service\n"
+        "- `gone_svc/` — retired\n",
+    )
+    found = {(r.kind, r.target) for r in rf.dangling_references(kb) if r.node == "projects/repos"}
+    assert found == {("list", "projects/repos/gone_svc")}
+
+
+def test_issue_links_and_code_directories_in_prose_are_not_kb_paths(tmp_path):
+    kb = _kb(tmp_path)
+    _node(
+        kb,
+        "tech",
+        "# Tech\n\n- `models/` — model notes\n\nFixed in [issue/4821](issue/4821) and "
+        "`issue/4821`. Built from `render_service/` in the service repo. "
+        "Old child: [gone](gone_child/).\n",
+    )
+    found = {(r.kind, r.target) for r in rf.dangling_references(kb) if r.node == "tech"}
+    assert found == {("link", "tech/gone_child")}
+
+
+def test_a_tracker_link_ending_in_a_journal_month_is_not_a_kb_path(tmp_path):
+    kb = _kb(tmp_path)
+    (kb / "journal" / "2026-09").mkdir(parents=True)
+    (kb / "journal" / "2026-09" / "log.md").write_text("# September\n")
+    _node(kb, "tech", "# Tech\n\nShipped in [September](releases/2026-09).\n")
+    assert not [r for r in rf.dangling_references(kb) if r.node == "tech"]
+
+
+def test_links_into_a_gone_child_or_a_deep_context_are_still_checked(tmp_path):
+    """Only plain words at both ends mark a tracker link."""
+    kb = _kb(tmp_path)
+    _node(kb, "projects/hub/weekly_reporting/deep_context/kickoff_notes")
+    _node(
+        kb,
+        "projects/hub",
+        "# Hub\n\n- `weekly_reporting/` — the pipeline\n\n[s](gone_child/spec/), "
+        "[t](gone_child/sub/_summary.md), [k](deep_context/kickoff_notes/), "
+        "[i](issue/4821).\n",
+    )
+    found = {(r.kind, r.target) for r in rf.dangling_references(kb) if r.node == "projects/hub"}
+    assert found == {
+        ("link", "projects/hub/gone_child/spec"),
+        ("link", "projects/hub/gone_child/sub"),
+        ("link", "projects/hub/deep_context/kickoff_notes"),
+    }
+
+
+def test_links_into_a_moved_or_removed_plain_word_child(tmp_path):
+    """Plain-word children (models/, reports/) are the common case: a link
+    into one is checked even after the child's directory is gone."""
+    import shutil
+
+    kb = _kb(tmp_path)
+    _node(
+        kb,
+        "tech",
+        "# Tech\n\nSee [Bayes routing](models/bayes_routing/), [Q3](reports/q3_review/) "
+        "and [the bug](issue/4821).\n",
+    )
+    _node(kb, "tech/ml")
+    shutil.move(str(kb / "tech" / "models"), str(kb / "tech" / "ml" / "models"))
+    refs = {r.raw: r for r in rf.dangling_references(kb) if r.node == "tech"}
+    assert set(refs) == {"models/bayes_routing/", "reports/q3_review/"}
+    assert refs["models/bayes_routing/"].moved_to == ("tech/ml/models/bayes_routing",)
+
+
+def test_a_node_citing_its_own_old_path_is_hinted_at_itself(tmp_path):
+    """41 of 109 findings on a real KB were nodes citing their own path from
+    before a move; the hint names the node itself."""
+    kb = _kb(tmp_path)
+    _node(
+        kb,
+        "projects/causal/uplift_routing",
+        "# Routing\n\nCanonical path: `projects/uplift_routing`.\n",
+    )
+    (finding,) = run_checks(kb, codes=["DANGLING"])["findings"]
+    assert "(same name at projects/causal/uplift_routing)" in finding["message"]
+
+
+def test_hints_never_say_which_namesake_to_write(tmp_path):
+    """projects/roadmap was renamed; the name's remaining holder is a
+    namesake that nothing in the tree tells apart from a moved node, so the
+    finding lists it as one of the same-name nodes and does not claim more."""
+    kb = _kb(tmp_path)
+    _node(kb, "projects/atlas/roadmap")
+    _node(kb, "projects/roadmap_2026")
+    _node(kb, "people", "# People\n\nPlanning: `projects/roadmap`.\n")
+    (finding,) = run_checks(kb, codes=["DANGLING"])["findings"]
+    assert "(same name at projects/atlas/roadmap)" in finding["message"]
+    assert "(one of projects/atlas/roadmap)" in finding["fix"]
+    assert set(finding["detail"]) == {"kind", "raw", "target", "moved_to"}

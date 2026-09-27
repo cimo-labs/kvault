@@ -90,9 +90,9 @@ def test_plan_then_move_entities_over_mcp(tmp_path):
     kb = _make_kb(tmp_path)
     server = create_server(kb)
     names = [
-        "aio_a",
-        "aio_b",
-        "aio_c",
+        "atlas_a",
+        "atlas_b",
+        "atlas_c",
         "orchid",
         "quartz",
         "tundra",
@@ -111,12 +111,12 @@ def test_plan_then_move_entities_over_mcp(tmp_path):
         assert r["success"], r
     plan = _run_tool(server, "kvault_plan", {"path": "people/contacts", "limit": 0})
     clusters = [i for i in plan["items"] if i["kind"] == "cluster"]
-    assert clusters and clusters[0]["new_parent"] == "people/contacts/aio"
+    assert clusters and clusters[0]["new_parent"] == "people/contacts/atlas"
     dry = _run_tool(
         server, "kvault_move_entities", {"moves": clusters[0]["moves"], "dry_run": True}
     )
-    assert dry["dry_run"] and dry["stubs"] == ["people/contacts/aio"]
+    assert dry["dry_run"] and dry["stubs"] == ["people/contacts/atlas"]
     moved = _run_tool(server, "kvault_move_entities", {"moves": clusters[0]["moves"]})
     assert moved["success"] and moved["count"] == 3 and not moved.get("partial")
-    assert "people/contacts/aio" in moved["ancestor_paths"]
-    assert (kb / "people" / "contacts" / "aio" / "aio_c" / "_summary.md").exists()
+    assert "people/contacts/atlas" in moved["ancestor_paths"]
+    assert (kb / "people" / "contacts" / "atlas" / "atlas_c" / "_summary.md").exists()

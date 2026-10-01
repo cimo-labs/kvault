@@ -969,12 +969,16 @@ def _join_path(parent: str, name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def get_kb_info(kg_root: Path, include_root_summary: bool = False) -> Dict[str, Any]:
+def get_kb_info(
+    kg_root: Path, include_root_summary: bool = False, hierarchy: bool = True
+) -> Dict[str, Any]:
     """Return version, hierarchy, entity count, and (opt-in) root summary.
 
     ``root_summary`` is opt-in since 0.14.0: on a mature KB it was ~97% of a
     56 KB status payload that agents read at session start. The size is
-    always reported so a caller can decide whether to fetch it.
+    always reported so a caller can decide whether to fetch it. With
+    *hierarchy* False the outline is left empty for the caller to render
+    under its own budget (the MCP status tool, 0.17.1).
     """
     root_summary_path = kg_root / "_summary.md"
     root_summary = (
@@ -982,7 +986,7 @@ def get_kb_info(kg_root: Path, include_root_summary: bool = False) -> Dict[str, 
         if root_summary_path.exists() and st.inside_root(root_summary_path, kg_root)
         else ""
     )
-    outline = build_outline(kg_root, depth=2)
+    outline = build_outline(kg_root, depth=2) if hierarchy else None
     info: Dict[str, Any] = {
         "version": __version__,
         "kg_root": str(kg_root),

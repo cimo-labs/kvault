@@ -146,20 +146,20 @@ def _get_updated_date(path: Path) -> Optional[date]:
     return None
 
 
-def _find_entities(kb_root: Path) -> List[Path]:
-    """All entity ``_summary.md`` files (leaf nodes at depth >= 3)."""
+def _find_entities(kb_root: Path, ignore: Optional[Sequence[str]] = None) -> List[Path]:
+    """Entity ``_summary.md`` files: leaf nodes at least two levels down.
+
+    Managed directories only (0.17.1): paths in ``.kvaultignore`` and the
+    reserved names (``journal/``, ``deep_context/``) are skipped, as every
+    other check skips them.
+    """
+    patterns = list(ignore) if ignore is not None else st.load_ignore(kb_root)
     entities = []
-    for summary in kb_root.rglob(st.SUMMARY_NAME):
-        parent_dir = summary.parent
-        rel_path = summary.relative_to(kb_root)
-        if parent_dir == kb_root or len(rel_path.parts) < 3:
+    for node_dir in st.walk_dirs(kb_root, patterns):
+        summary = node_dir / st.SUMMARY_NAME
+        if not summary.is_file() or len(summary.relative_to(kb_root).parts) < 3:
             continue
-        has_child_summaries = any(
-            (child / st.SUMMARY_NAME).exists()
-            for child in parent_dir.iterdir()
-            if child.is_dir() and not child.name.startswith(".")
-        )
-        if not has_child_summaries:
+        if not any(st.has_summary(c) for c in st.child_dirs(node_dir, kb_root, patterns)):
             entities.append(summary)
     return entities
 
@@ -174,8 +174,16 @@ def _node_dirs(kb_root: Path, ignore: Sequence[str]) -> List[Path]:
 # -- hard findings -----------------------------------------------------------
 
 
-def propagation_findings(kb_root: Path, threshold_minutes: int) -> List[Finding]:
+def propagation_findings(
+    kb_root: Path, threshold_minutes: int, ignore: Optional[Sequence[str]] = None
+) -> List[Finding]:
     """Parents should be at least as recent as their children.
+
+    Managed directories only (0.17.1): a path in ``.kvaultignore`` or under
+    a reserved name (``journal/``, ``deep_context/``) is neither a parent
+    nor a child here, as in every other check. The walk used to cover every
+    summary file, so a custom journal layout the owner had ignored was still
+    reported, and a node's own ``deep_context/`` notes counted as a child.
 
     Frontmatter ``updated`` dates first (they survive git); mtime with the
     threshold as the fallback when either side has no date. Equal days use
@@ -188,14 +196,15 @@ def propagation_findings(kb_root: Path, threshold_minutes: int) -> List[Finding]
     """
     findings: List[Finding] = []
     threshold = timedelta(minutes=threshold_minutes)
-    for summary in kb_root.rglob(st.SUMMARY_NAME):
-        parent_dir = summary.parent
+    patterns = list(ignore) if ignore is not None else st.load_ignore(kb_root)
+    for parent_dir in _node_dirs(kb_root, patterns):
+        summary = parent_dir / st.SUMMARY_NAME
+        if not summary.is_file():
+            continue  # the root without a summary: nothing to compare against
         children = [
             child_dir / st.SUMMARY_NAME
-            for child_dir in parent_dir.iterdir()
-            if child_dir.is_dir()
-            and not child_dir.name.startswith(".")
-            and (child_dir / st.SUMMARY_NAME).exists()
+            for child_dir in st.child_dirs(parent_dir, kb_root, patterns)
+            if st.has_summary(child_dir)
         ]
         if not children:
             continue
@@ -237,10 +246,10 @@ def propagation_findings(kb_root: Path, threshold_minutes: int) -> List[Finding]
     return findings
 
 
-def journal_findings(kb_root: Path) -> List[Finding]:
+def journal_findings(kb_root: Path, ignore: Optional[Sequence[str]] = None) -> List[Finding]:
     """Entities modified today need a journal entry today."""
     today = date.today()
-    modified = [e for e in _find_entities(kb_root) if _get_mtime(e).date() == today]
+    modified = [e for e in _find_entities(kb_root, ignore) if _get_mtime(e).date() == today]
     if not modified:
         return []
     journal_file = kb_root / "journal" / today.strftime("%Y-%m") / "log.md"
@@ -769,9 +778,9 @@ def run_checks(
 
     hard: List[Finding] = []
     if wanted("PROPAGATE"):
-        hard.extend(propagation_findings(root, threshold_minutes))
+        hard.extend(propagation_findings(root, threshold_minutes, ignore))
     if wanted("LOG"):
-        hard.extend(journal_findings(root))
+        hard.extend(journal_findings(root, ignore))
     if wanted("WRITE"):
         hard.extend(frontmatter_findings(root))
     if wanted("BRANCH"):

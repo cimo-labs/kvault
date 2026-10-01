@@ -244,12 +244,12 @@ running with defaults.
 | Step | Tool | Keep it small |
 |------|------|---------------|
 | Capture | `kvault_capture`, `kvault_events` | one source record per event; promote with `event_ids` on `kvault_write_node`, or close with `kvault_events(action="resolve", outcome=..., note=...)`; `kvault_events(limit=0)` lists every pending event |
-| Orient | `kvault_tree` | the outline stays under `max_chars` (3,500 by default) at the deepest depth that fits; `path=` + `depth=` to zoom; `gist=true` for one line per node |
-| Research | `kvault_search` | 8 compact hits by default; `parents="gist"` adds where each hit sits; a match under `deep_context/` is folded into its node when that node matches about as well and is in the results (the note lists the folded paths; `include_background=true` returns them); avoid `parents="all"` (full documents per hit, cut off by `total_max_chars`) |
+| Orient | `kvault_tree`, `kvault_status` | the outline (and status's hierarchy) stays under `max_chars` (3,500 by default) at the deepest depth that fits; `path=` + `depth=` to zoom; `gist=true` for one line per node |
+| Research | `kvault_search` | 8 compact hits by default, cut from the end to stay under `max_chars` (a `truncated` note says how many); `parents="gist"` adds where each hit sits; a match under `deep_context/` is folded into its node when that node matches about as well and is in the results (the note lists the folded paths; `include_background=true` returns them); avoid `parents="all"` (full documents per hit, cut off by `total_max_chars`) |
 | Read | `kvault_read_nodes` | the hits you picked, up to 25 per call, one budget over whole nodes (3,500 characters by default, `total_max_chars` to raise it; `omitted` and `content_truncated` say what did not fit); `kvault_read_node` for one node, `parents="gist"` for its ancestry |
 | Write | `kvault_write_node` | `patches=[{old_str, new_str}]` to change part of an existing node; `ancestors="paths"` (the default) |
 | Propagate | `kvault_prepare_summary_update` → `kvault_write_parent_summary`, or `kvault_update_summaries` | items are `{path, content \| patches, meta}`; at most 10 ancestors per `kvault_update_summaries` call |
-| Health | `kvault_check` | `codes=["DUPLICATE"]` for one code; `max_findings=0` for its full list |
+| Health | `kvault_check`, `kvault_validate_kb` | `codes=["DUPLICATE"]` for one code; `max_findings=0` for its full list; `findings` is the whole list (`legacy_lists=true` adds the CLI document's per-category copies). Validate: `issue_types` has each type's message and fix once; `issues` lists type and path (`max_issues`) |
 | Worklist | `kvault_plan` | `limit=5` per run |
 | Decisions | `kvault_mark` | `distinct_from`, `max_children`, `series_ok`, `verify_by` |
 | Moves | `kvault_move_entity`, `kvault_move_entities`, `kvault_delete_entity` | ancestor paths only (`ancestors="content"` for the documents); then fix `ancestor_paths` and `referrer_paths` |

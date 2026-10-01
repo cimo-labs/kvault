@@ -152,11 +152,11 @@ ops log groups one task's commands — review with `kvault log tail`.
 
 MCP results are sized for clients that inline about 4 KB of tool output, and a result cut to fit
 says so in a `truncated` note: `kvault_tree` shows the deepest outline that fits `max_chars`;
-`kvault_search` returns 8 compact hits, `parents="gist"` adds where each hit sits (path, title,
-one line per ancestor), and a match under `deep_context/` is folded into its node when that node
-matches about as well and is in the results (`include_background=true` lists them);
-`kvault_read_nodes` reads the hits you pick in one call under a 3,500-character budget
-(`total_max_chars`); writes, moves and deletes return ancestor paths, not documents;
+`kvault_search` returns 8 compact hits under the same budget, `parents="gist"` adds where each
+hit sits (path, title, one line per ancestor), and a match under `deep_context/` is folded into
+its node when that node matches about as well and is in the results (`include_background=true`
+lists them); `kvault_read_nodes` reads the hits you pick in one call under a 3,500-character
+budget (`total_max_chars`); writes, moves and deletes return ancestor paths, not documents;
 `kvault_check` with `codes=[...]` and `max_findings=0` returns one code's full list. Avoid
 `parents="all"` on search: it attaches every ancestor's full document to each hit until
 `total_max_chars` runs out, usually after one or two hits. Unknown arguments are refused, so a

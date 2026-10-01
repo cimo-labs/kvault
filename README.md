@@ -350,6 +350,9 @@ ancestor's path, title, and first line, where `parents="all"` attaches every anc
 document to every hit (capped by `total_max_chars`).
 `kvault_read_nodes` reads up to 25 picked hits in one call under one budget that counts whole
 nodes (3,500 characters by default over MCP; raise it when the client can take more).
+`kvault_status` and `kvault_search` keep their results under `max_chars` the same way (0.17.1);
+`kvault_check` returns `findings` once, without the CLI document's per-category copies, and
+`kvault_validate_kb` carries each issue type's message and fix once.
 
 ## It's just files
 

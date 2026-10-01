@@ -54,8 +54,9 @@ kvault/
     `_forbid_unknown_arguments` in `kvault/mcp/server.py` rebuilds every tool's argument
     model with `extra="forbid"`. Accept a common alternative name as an explicit alias
     parameter rather than loosening this. Pinned by `tests/test_mcp_surface.py`.
-14. **MCP results fit clients that inline about 4 KB** by default (tree outline, search,
-    read_nodes, write/move/delete ancestors, daily artifact); anything larger is opt-in.
+14. **MCP results fit clients that inline about 4 KB** by default (tree outline, status
+    hierarchy, search, read_nodes, write/move/delete ancestors, daily artifact, check without
+    its legacy lists, validate with one message per issue type); anything larger is opt-in.
     A result cut to fit carries a `truncated` note; documents left out by default
     (ancestor documents, the artifact's markdown) are named in the tool's docstring. Register tools with `_tool(...)`
     (never `server.tool` directly): it sends the result as compact JSON text, and the

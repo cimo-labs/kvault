@@ -262,3 +262,91 @@ def test_tree_budget_counts_the_text_as_sent(tmp_path):
     as_json = _run(server, "kvault_tree", {"max_chars": 100, "format": "json"})
     note = next(n for n in as_json["notes"] if n["code"] == "truncated")
     assert note["detail"]["shown_chars"] > 100 and "still" in note["text"]  # json is not cut
+
+
+def _sent(server, name, args):
+    """The bytes a client receives for a call."""
+    return asyncio.run(server.call_tool(name, args))[0].text.encode()
+
+
+def test_status_hierarchy_fits_its_budget(tmp_path):
+    kb = _kb(tmp_path)
+    for i in range(40):
+        ops.write_node(
+            kb,
+            f"people/person_{i:02d}",
+            f"# Person number {i:02d} with a long descriptive title\n\nx.\n",
+            meta=dict(META),
+            create=True,
+        )
+    server = create_server(kb)
+    raw = _sent(server, "kvault_status", {"max_chars": 700})  # depth 2 alone is ~665 bytes
+    assert len(raw) <= 700
+    status = json.loads(raw)
+    note = next(n for n in status["notes"] if n["code"] == "truncated")
+    assert note["text"].startswith("hierarchy shown at depth 1")
+    assert list(status).index("notes") < list(status).index("hierarchy")
+    full = _run(server, "kvault_status", {"max_chars": 0})
+    assert "notes" not in full and full["hierarchy"].count("\n") > status["hierarchy"].count("\n")
+    assert "max_chars" in _run(server, "kvault_status", {"max_chars": 10})["error"]
+
+
+def test_search_result_fits_max_chars(tmp_path):
+    kb = _kb(tmp_path)
+    ops.write_node(kb, "teams", "# Teams\n\nTeams.\n", meta=dict(META), create=True, new_root=True)
+    for i in range(6):
+        ops.write_node(
+            kb,
+            f"people/p{i:02d}",
+            f"# Zebra keeper {i}\n\nKeeps zebras; a long snippet line about the zebra pens.\n",
+            meta=dict(META),
+            create=True,
+        )
+        ops.write_node(
+            kb,
+            f"teams/t{i:02d}",
+            f"# Team {i}\n\nA team that once saw a zebra at the fair.\n",
+            meta=dict(META),
+            create=True,
+        )
+    server = create_server(kb)
+    args = {"query": "zebra", "parents": "gist", "limit": 8}
+    raw = _sent(server, "kvault_search", {**args, "max_chars": 1500})
+    assert len(raw) <= 1500
+    fitted = json.loads(raw)
+    unbounded = _run(server, "kvault_search", {**args, "max_chars": 0})
+    assert unbounded["count"] == 8 and 0 < fitted["count"] < 8
+    assert fitted["total_matched"] == unbounded["total_matched"]
+    note = next(n for n in fitted["notes"] if "to stay under" in n["text"])
+    assert set(note) <= {"code", "text", "next"}  # compact keeps code, text and next
+    keys = list(fitted)
+    assert keys.index("notes") < keys.index("results") < keys.index("parents")
+    needed = {p for hit in fitted["results"] for p in ops.ancestor_paths(hit["path"])}
+    assert set(fitted["parents"]) == needed  # gists of dropped hits go with them
+    assert any(p.startswith("teams/") for p in (h["path"] for h in unbounded["results"]))
+    assert "teams" not in fitted["parents"]
+
+
+def test_check_drops_the_legacy_duplicate_lists(tmp_path):
+    kb = _kb(tmp_path)
+    (kb / "ghostly").mkdir()
+    server = create_server(kb)
+    doc = _run(server, "kvault_check", {})
+    assert doc["findings"] and doc["structure_warning_count"] >= 1
+    assert not {"warnings", "structure_warnings", "summary_warnings"} & set(doc)
+    legacy = _run(server, "kvault_check", {"legacy_lists": True})
+    assert "warnings" in legacy and legacy["structure_warnings"]
+
+
+def test_validate_reports_one_message_per_issue_type(tmp_path):
+    kb = _kb(tmp_path)
+    for i in range(5):
+        (kb / f"ghost_{i}").mkdir()
+    server = create_server(kb)
+    doc = _run(server, "kvault_validate_kb", {"max_issues": 3})
+    assert doc["issue_count"] == 5 and len(doc["issues"]) == 3
+    kind = doc["issue_types"]["ghost_directory"]
+    assert kind["count"] == 5 and kind["message"] and kind["severity"] == "warning"
+    assert "message" not in doc["issues"][0] and doc["issues"][0]["type"] == "ghost_directory"
+    assert doc["notes"][0]["detail"]["hidden"] == 2
+    assert len(_run(server, "kvault_validate_kb", {"max_issues": 0})["issues"]) == 5

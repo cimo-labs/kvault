@@ -61,7 +61,7 @@ def test_mcp_cli_requires_bound_root(monkeypatch):
 
 def test_mcp_server_exposes_compatible_tools_and_calls(tmp_path):
     kb = _make_kb(tmp_path)
-    server = create_server(kb)
+    server = create_server(kb, legacy_tools=True)
 
     tool_names = {tool.name for tool in asyncio.run(server.list_tools())}
 
@@ -268,7 +268,7 @@ def test_mcp_root_bound_mismatch_rejected(tmp_path):
 
 def test_mcp_legacy_summary_tools_remain_callable(tmp_path):
     kb = _make_kb(tmp_path)
-    server = create_server(kb)
+    server = create_server(kb, legacy_tools=True)
 
     write = _run_tool(
         server,
@@ -366,7 +366,7 @@ def test_mcp_allowed_roots_blocks_disallowed_root(tmp_path, monkeypatch):
     with pytest.raises(click.ClickException):
         resolve_bound_root(other)
 
-    server = create_server(allowed)
+    server = create_server(allowed, legacy_tools=True)
     result = _run_tool(server, "kvault_init", {"kg_root": str(other)})
 
     assert result["success"] is False
@@ -417,7 +417,7 @@ def test_mcp_log_phase_shares_one_session_per_server(tmp_path):
     """N calls used to mint N sessions (146 rows / 61 sessions in one
     production DB); one server process is now one session."""
     kb = _make_kb(tmp_path)
-    server = create_server(kb)
+    server = create_server(kb, legacy_tools=True)
 
     first = _run_tool(server, "kvault_log_phase", {"phase": "decide", "data": {"n": 1}})
     second = _run_tool(server, "kvault_log_phase", {"phase": "decide", "data": {"n": 2}})
@@ -510,7 +510,7 @@ def test_mcp_log_phase_degrades_instead_of_raising_on_bad_db(tmp_path):
 
     kb = _make_kb(tmp_path)
     (kb / ".kvault" / "logs.db").write_bytes(_os.urandom(2048))
-    server = create_server(kb)
+    server = create_server(kb, legacy_tools=True)
 
     result = _run_tool(server, "kvault_log_phase", {"phase": "decide", "data": {}})
 
@@ -521,7 +521,7 @@ def test_mcp_log_phase_degrades_instead_of_raising_on_bad_db(tmp_path):
 
 def test_mcp_write_summary_narrates_created_and_dropped_meta(tmp_path):
     kb = _make_kb(tmp_path)
-    server = create_server(kb)
+    server = create_server(kb, legacy_tools=True)
 
     created = _run_tool(
         server,
@@ -554,7 +554,7 @@ def test_mcp_write_surfaces_failed_oplog_append_as_skipped_note(tmp_path):
 def test_mcp_write_tools_default_ancestors_is_paths(tmp_path):
     """Announced in 0.13.0, flipped in 0.14.0: the ~45 KB chain is opt-in."""
     kb = _make_kb(tmp_path)
-    server = create_server(kb)
+    server = create_server(kb, legacy_tools=True)
     for tool in ("kvault_write_node", "kvault_write_entity"):
         result = _run_tool(
             server,
@@ -564,3 +564,20 @@ def test_mcp_write_tools_default_ancestors_is_paths(tmp_path):
         assert result["success"] is True
         assert "ancestors" not in result
         assert result["ancestor_paths"] == ["people/contacts", "people", "."]
+
+
+def test_legacy_tools_are_registered_only_on_request(tmp_path):
+    """0.17: the eight epoch-1 tools are hidden unless asked for."""
+    from kvault.mcp.server import LEGACY_TOOLS
+
+    kb = _make_kb(tmp_path)
+    default = {tool.name for tool in asyncio.run(create_server(kb).list_tools())}
+    assert not default & set(LEGACY_TOOLS)
+    assert {
+        "kvault_capture",
+        "kvault_events",
+        "kvault_read_summary",
+        "kvault_validate_kb",
+    } <= default
+    legacy = {tool.name for tool in asyncio.run(create_server(kb, legacy_tools=True).list_tools())}
+    assert set(LEGACY_TOOLS) <= legacy

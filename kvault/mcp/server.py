@@ -6,6 +6,7 @@ knowledge base root supplied by ``--kb-root`` or ``KVAULT_KB_ROOT``.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from importlib import import_module
@@ -13,7 +14,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import click
+from pydantic import BaseModel, ConfigDict
 
+from kvault.core import events as ev
 from kvault.core import notes as nt
 from kvault.core import operations as ops
 from kvault.core.check import (
@@ -38,7 +41,32 @@ except ImportError:  # pragma: no cover - exercised when optional extra is absen
 KVAULT_KB_ROOT_ENV = "KVAULT_KB_ROOT"
 #: Enums in the tool schemas, so an MCP-only agent sees the allowed values.
 ParentsMode = Literal["none", "gist", "immediate", "all"]
+EventAction = Literal["list", "show", "resolve", "retract"]
+EventOutcome = Literal["promoted", "journal_only", "duplicate", "no_op", "rejected"]
 BatchParentsMode = Literal["none", "gist"]
+
+
+class Patch(BaseModel):
+    """One exact edit to a body: ``old_str`` must occur in it exactly once."""
+
+    model_config = ConfigDict(extra="forbid")
+    old_str: str
+    new_str: str
+
+
+class SummaryUpdate(BaseModel):
+    """One kvault_update_summaries item: the new body (``content``) or ``patches``.
+
+    ``meta`` merges onto the existing frontmatter; a null value deletes a key.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    content: Optional[str] = None
+    patches: Optional[List[Patch]] = None
+    meta: Optional[Dict[str, Any]] = None
+
+
 _NOT_UTF8 = "could not be read (not UTF-8, or no permission); check its _summary.md"
 
 
@@ -93,26 +121,77 @@ def _status_payload(root: Path, include_root_summary: bool = False) -> Dict[str,
     return success_response(info)
 
 
-def _serialize_daily_result(root: Path, result: Any) -> Dict[str, Any]:
-    return success_response(
-        {
-            "artifact_date": result.artifact_date.isoformat(),
-            "path": str(result.path),
-            "relative_path": str(result.path.relative_to(root)),
-            "content": result.content,
-            "written": result.written,
-        }
-    )
+def _serialize_daily_result(
+    root: Path, result: Any, include_content: bool = True
+) -> Dict[str, Any]:
+    payload = {
+        "artifact_date": result.artifact_date.isoformat(),
+        "path": str(result.path),
+        "relative_path": str(result.path.relative_to(root)),
+        "content_chars": len(result.content),
+        "written": result.written,
+    }
+    if include_content:
+        payload["content"] = result.content
+    return success_response(payload)
 
 
-def create_server(kb_root: Path | str) -> Any:
-    """Create a FastMCP server bound to *kb_root*."""
+#: Epoch-1 tools superseded by the node tools; registered only on request (0.17).
+LEGACY_TOOLS = (
+    "kvault_init",
+    "kvault_read_entity",
+    "kvault_write_entity",
+    "kvault_list_entities",
+    "kvault_write_summary",
+    "kvault_get_ancestors",
+    "kvault_propagate_all",
+    "kvault_log_phase",
+)
+KVAULT_MCP_LEGACY_TOOLS_ENV = "KVAULT_MCP_LEGACY_TOOLS"
+
+
+def _forbid_unknown_arguments(server: Any) -> None:
+    """Reject argument names a tool does not have (0.17).
+
+    FastMCP drops unknown keys, so `budget=2000` on kvault_read_nodes ran at
+    the default budget without a word. Each tool's argument model now
+    forbids extra keys: the call fails with a validation error naming the
+    argument, and the schema says additionalProperties: false. Best effort
+    against FastMCP internals: if they change, tools keep working leniently.
+    """
+    tools = getattr(getattr(server, "_tool_manager", None), "_tools", None) or {}
+    for tool in tools.values():
+        model = getattr(getattr(tool, "fn_metadata", None), "arg_model", None)
+        if model is None:
+            continue
+        try:
+            model.model_config["extra"] = "forbid"
+            model.model_rebuild(force=True)
+            tool.parameters = model.model_json_schema(by_alias=True)
+        except Exception:  # pragma: no cover - depends on the installed mcp
+            continue
+
+
+def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> Any:
+    """Create a FastMCP server bound to *kb_root*.
+
+    The epoch-1 tools in ``LEGACY_TOOLS`` are registered only with
+    *legacy_tools* (or ``KVAULT_MCP_LEGACY_TOOLS=1``): clients that load
+    every schema spent calls reading 30 of them and mixed both generations
+    in one turn.
+    """
     if FastMCP is None:
         raise click.ClickException(
             "MCP dependencies not installed. Run: pip install 'knowledgevault[mcp]'"
         )
 
     bound_root = resolve_bound_root(kb_root)
+    if legacy_tools is None:
+        legacy_tools = os.environ.get(KVAULT_MCP_LEGACY_TOOLS_ENV, "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
     server = FastMCP(
         "kvault",
         instructions=(
@@ -126,6 +205,11 @@ def create_server(kb_root: Path | str) -> Any:
             "codes=[...] and max_findings=0 returns one finding code's full list."
         ),
     )
+
+    def _legacy_tool(name: str) -> Any:
+        if legacy_tools:
+            return server.tool(name=name)
+        return lambda fn: fn
 
     # ONE session per server process. Constructing a logger per tool call
     # minted a fresh session id every time — a production DB accumulated 146
@@ -167,7 +251,7 @@ def create_server(kb_root: Path | str) -> Any:
                 ),
             )
 
-    @server.tool(name="kvault_init")
+    @_legacy_tool("kvault_init")
     def kvault_init(kg_root: Optional[str] = None) -> Dict[str, Any]:
         """Return bound-root status and reject mismatched roots."""
         root, err = _tool_root(bound_root, kg_root)
@@ -189,7 +273,7 @@ def create_server(kb_root: Path | str) -> Any:
 
     _PARENTS_ERROR = "parents must be one of: " + ", ".join(ops.PARENTS_MODES)
 
-    @server.tool(name="kvault_read_entity")
+    @_legacy_tool("kvault_read_entity")
     def kvault_read_entity(
         path: str, parents: ParentsMode = "none", kg_root: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -236,14 +320,19 @@ def create_server(kb_root: Path | str) -> Any:
     def kvault_read_nodes(
         paths: List[str],
         parents: BatchParentsMode = "none",
-        total_max_chars: int = ops.READ_NODES_MCP_MAX_CHARS,
+        total_max_chars: Optional[int] = None,
+        max_total_chars: Optional[int] = None,
+        budget: Optional[int] = None,
+        max_chars: Optional[int] = None,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Read up to 25 nodes in one call, under one shared budget (default 8,000).
+        """Read up to 25 nodes in one call, under one shared budget (default 3,500).
 
         The budget counts whole nodes as compact JSON (content, meta, child
-        paths), sized for clients that inline about 10 KB; raise it when you
-        can take more. A node past the budget comes back cut
+        paths), sized so the result fits clients that inline about 4 KB of
+        tool output; raise it when you can take more. `max_total_chars`
+        (the CLI flag's name), `budget` and `max_chars` are accepted as
+        aliases of total_max_chars. A node past the budget comes back cut
         (`content_truncated`); one whose metadata alone does not fit is listed
         in `omitted`; a `truncated` note names both. Each node: path, kind,
         title, meta, content, up to 50 child paths (`children_count` past
@@ -256,7 +345,11 @@ def create_server(kb_root: Path | str) -> Any:
         if err:
             return err
         assert root is not None
-        return ops.read_nodes(root, paths, parents=parents, total_max_chars=total_max_chars)
+        chosen = next(
+            (v for v in (total_max_chars, max_total_chars, budget, max_chars) if v is not None),
+            ops.READ_NODES_MCP_MAX_CHARS,
+        )
+        return ops.read_nodes(root, paths, parents=parents, total_max_chars=chosen)
 
     def _strip_ancestors(result: Dict[str, Any], ancestors: str) -> Dict[str, Any]:
         """ancestors='paths' (the default since 0.14.0) keeps ancestor_paths and
@@ -270,7 +363,14 @@ def create_server(kb_root: Path | str) -> Any:
             result.pop("ancestors", None)
         return result
 
-    @server.tool(name="kvault_write_entity")
+    def _ancestors_error(ancestors: str) -> Optional[Dict[str, Any]]:
+        if ancestors in {"content", "paths"}:
+            return None
+        return error_response(
+            ErrorCode.VALIDATION_ERROR, "ancestors must be one of: content, paths"
+        )
+
+    @_legacy_tool("kvault_write_entity")
     def kvault_write_entity(
         path: str,
         content: str,
@@ -322,7 +422,7 @@ def create_server(kb_root: Path | str) -> Any:
     @server.tool(name="kvault_write_node")
     def kvault_write_node(
         path: str,
-        content: str,
+        content: Optional[str] = None,
         meta: Optional[Dict[str, Any]] = None,
         create: bool = False,
         reasoning: Optional[str] = None,
@@ -330,9 +430,20 @@ def create_server(kb_root: Path | str) -> Any:
         ancestors: str = "paths",
         new_root: bool = False,
         allow_similar: bool = False,
+        event_ids: Optional[List[str]] = None,
+        patches: Optional[List[Patch]] = None,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create or update any node summary.
+
+        Pass the body in `content`, or edit an existing node with `patches`:
+        `[{old_str, new_str}]`, each old_str matching the current body
+        (without frontmatter) exactly once, applied in order; any miss writes
+        nothing. A patch sends only what changes instead of the whole body.
+
+        `event_ids` promotes captured events (kvault_capture) into this node in
+        the same write: each must be pending, the node's source_refs gain
+        `journal:<id>`, and the events resolve as promoted to this path.
 
         A create is refused when it would add a root category (pass
         new_root=true deliberately) or collide with a sibling of the same
@@ -370,11 +481,13 @@ def create_server(kb_root: Path | str) -> Any:
             default_source="auto:mcp",
             new_root=new_root,
             allow_similar=allow_similar,
+            event_ids=event_ids,
+            patches=[p.model_dump() for p in patches] if patches is not None else None,
         )
         _record("write", result, started)
         return _strip_ancestors(result, ancestors)
 
-    @server.tool(name="kvault_list_entities")
+    @_legacy_tool("kvault_list_entities")
     def kvault_list_entities(
         category: Optional[str] = None, kg_root: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -407,6 +520,7 @@ def create_server(kb_root: Path | str) -> Any:
         max_children: int = 20,
         gist: bool = False,
         format: str = "text",
+        max_chars: int = 3500,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Annotated outline of the node tree — orient here before reading.
@@ -414,6 +528,11 @@ def create_server(kb_root: Path | str) -> Any:
         Shows titles, child/descendant counts, and most-recent activity per
         node, with explicit markers for anything pruned by depth or
         max_children. Text format is the cheapest full-tree view.
+
+        The outline stays under max_chars (default 3,500; 0 = no limit): it
+        is shown at the deepest depth that fits (the requested one, then 3,
+        2, 1), and cut at a line past that. A `truncated` note gives the
+        depth shown; drill into a branch with path=<node>.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -424,21 +543,65 @@ def create_server(kb_root: Path | str) -> Any:
                 ErrorCode.VALIDATION_ERROR,
                 "format must be one of: text, json",
             )
-        outline = ops.build_outline(
-            root, path=path, depth=depth, max_children=max_children, include_gist=gist
-        )
+
+        def render(level: Optional[int]) -> Tuple[Any, Any, int]:
+            tree = ops.build_outline(
+                root, path=path, depth=level, max_children=max_children, include_gist=gist
+            )
+            if tree is None:
+                return None, None, 0
+            text: Any = ops.render_outline_text(tree) if format == "text" else tree
+            return tree, text, len(text) if isinstance(text, str) else len(json.dumps(text))
+
+        outline, rendered, size = render(depth)
         if outline is None:
             return error_response(ErrorCode.NOT_FOUND, f"Node not found: {path}")
+        notes: List[Dict[str, Any]] = []
+        if max_chars and size > max_chars:
+            # A root outline at depth 2 was ~10 KB on a 700-node KB and an
+            # unbounded one ~40 KB on 500 nodes: past ~4 KB many clients write
+            # the result to a file, and agents oriented on nothing (0.17).
+            full = size
+            shown = depth
+            for level in (3, 2, 1):
+                if depth is not None and level >= depth:
+                    continue
+                outline, rendered, size = render(level)
+                shown = level
+                if size <= max_chars:
+                    break
+            cut = 0
+            if size > max_chars and isinstance(rendered, str):
+                lines = rendered.splitlines()
+                kept: List[str] = []
+                used = len(f"\n… (+{len(lines)} more lines)")  # room for the marker
+                for line in lines:
+                    if used + len(line) + 1 > max_chars:
+                        break
+                    kept.append(line)
+                    used += len(line) + 1
+                cut = len(lines) - len(kept)
+                rendered = "\n".join(kept) + f"\n… (+{cut} more lines)"
+            notes.append(
+                nt.note(
+                    "truncated",
+                    f"outline shown at depth {shown}"
+                    + (f" and cut by {cut} lines" if cut else "")
+                    + f" to stay under {max_chars} chars (full: {full})",
+                    detail={"depth_shown": shown, "max_chars": max_chars, "full_chars": full},
+                    next_step="drill down with path=<node>, or raise max_chars",
+                )
+            )
         counts = ops.outline_counts(outline)
-        rendered: Any = ops.render_outline_text(outline) if format == "text" else outline
-        return success_response(
-            {
-                "path": outline["path"],
-                "total_nodes": counts["total_nodes"],
-                "shown_nodes": counts["shown_nodes"],
-                "outline": rendered,
-            }
-        )
+        payload: Dict[str, Any] = {
+            "path": outline["path"],
+            "total_nodes": counts["total_nodes"],
+            "shown_nodes": counts["shown_nodes"],
+            "outline": rendered,
+        }
+        if notes:
+            payload["notes"] = notes
+        return success_response(payload)
 
     @server.tool(name="kvault_search")
     def kvault_search(
@@ -510,7 +673,9 @@ def create_server(kb_root: Path | str) -> Any:
         return success_response(result)
 
     @server.tool(name="kvault_delete_entity")
-    def kvault_delete_entity(path: str, kg_root: Optional[str] = None) -> Dict[str, Any]:
+    def kvault_delete_entity(
+        path: str, ancestors: str = "paths", kg_root: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Delete an entity directory — DESTRUCTIVE and unconfirmed over MCP.
 
         Deletes the entire subtree. The result reports `nodes_deleted` /
@@ -518,21 +683,28 @@ def create_server(kb_root: Path | str) -> Any:
         (`propagation_required`, `ancestor_paths`) — rewrite them next or
         they keep describing nodes that no longer exist. `referrer_paths`
         names other nodes whose summaries still point at the deleted path.
+        The ancestor documents are left out unless ancestors='content'.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
+        bad = _ancestors_error(ancestors)
+        if bad:
+            return bad
         started = time.monotonic()
         result = ops.delete_entity(root, path)
         _record("delete", result, started)
-        return result
+        return _strip_ancestors(result, ancestors)
 
     @server.tool(name="kvault_move_entity")
     def kvault_move_entity(
-        source_path: str,
-        target_path: str,
+        source_path: Optional[str] = None,
+        target_path: Optional[str] = None,
         new_root: bool = False,
+        ancestors: str = "paths",
+        old_path: Optional[str] = None,
+        new_path: Optional[str] = None,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Move an entity to a new path.
@@ -542,21 +714,33 @@ def create_server(kb_root: Path | str) -> Any:
         subtree, the target chain doesn't describe it yet. Rewrite both.
         `referrer_paths` names other nodes whose summaries still point at
         the old path; the `propagate` note carries each reference's `now_at`.
+        The ancestor documents (often 30-45 KB) are left out unless
+        ancestors='content'; their paths are always in `ancestor_paths`.
+        `old_path`/`new_path` are accepted as aliases of source_path/target_path.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
+        source, target = source_path or old_path, target_path or new_path
+        if not source or not target:
+            return error_response(
+                ErrorCode.VALIDATION_ERROR, "move needs source_path and target_path"
+            )
+        bad = _ancestors_error(ancestors)
+        if bad:
+            return bad
         started = time.monotonic()
-        result = ops.move_entity(root, source_path, target_path, new_root=new_root)
+        result = ops.move_entity(root, source, target, new_root=new_root)
         _record("move", result, started)
-        return result
+        return _strip_ancestors(result, ancestors)
 
     @server.tool(name="kvault_move_entities")
     def kvault_move_entities(
         moves: List[Dict[str, str]],
         new_root: bool = False,
         dry_run: bool = False,
+        ancestors: str = "paths",
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Move several nodes under one lock: `moves` is a list of {from, to}.
@@ -571,10 +755,13 @@ def create_server(kb_root: Path | str) -> Any:
             return err
         assert root is not None
         started = time.monotonic()
+        bad = _ancestors_error(ancestors)
+        if bad:
+            return bad
         result = ops.move_entities(root, moves, new_root=new_root, dry_run=dry_run)
         if not dry_run:
             _record("move-batch", result, started)
-        return result
+        return _strip_ancestors(result, ancestors)
 
     @server.tool(name="kvault_read_summary")
     def kvault_read_summary(path: str = ".", kg_root: Optional[str] = None) -> Dict[str, Any]:
@@ -588,7 +775,7 @@ def create_server(kb_root: Path | str) -> Any:
             return error_response(ErrorCode.NOT_FOUND, f"Summary not found: {path}")
         return success_response(result)
 
-    @server.tool(name="kvault_write_summary")
+    @_legacy_tool("kvault_write_summary")
     def kvault_write_summary(
         path: str,
         content: str,
@@ -654,6 +841,94 @@ def create_server(kb_root: Path | str) -> Any:
         _record("mark", result, started)
         return result
 
+    @server.tool(name="kvault_capture")
+    def kvault_capture(
+        content: str,
+        source: str,
+        source_ref: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        allow_suspicious: bool = False,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Capture one coherent piece of evidence verbatim, before writing from it.
+
+        The returned event id is the hand-off: promote it with
+        kvault_write_node(event_ids=[...]), which stamps `journal:<id>`
+        provenance, or close it with kvault_events(action="resolve"). One
+        source record is one event. Idempotent: the same (source,
+        source_ref, content) returns the existing event, and a reused
+        source_ref with different content is refused as a conflict. Content
+        that looks shell-mangled is refused unless allow_suspicious=true
+        after you verified the wording.
+        """
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        started = time.monotonic()
+        result = ev.capture_event(
+            root,
+            body=content,
+            source=source,
+            source_ref=source_ref,
+            tags=tags,
+            allow_suspicious=allow_suspicious,
+        )
+        _record("capture", result, started)
+        return result
+
+    @server.tool(name="kvault_events")
+    def kvault_events(
+        action: EventAction = "list",
+        event_id: Optional[str] = None,
+        status: Optional[str] = "pending",
+        limit: int = 10,
+        since: Optional[str] = None,
+        outcome: Optional[EventOutcome] = None,
+        note: Optional[str] = None,
+        reason: Optional[str] = None,
+        superseded_by: Optional[str] = None,
+        kg_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List, show, resolve or retract captured events.
+
+        - list: newest first, `status` pending (default), resolved, retracted
+          or null for all; `limit` (0 = all; check total_matched); `since`
+          YYYY-MM-DD.
+        - show: one event with its full body (`event_id`).
+        - resolve: close an event that needs no node write, with `outcome`
+          (journal_only, duplicate, no_op, rejected) and a factual `note`.
+          Promote into a node with kvault_write_node(event_ids=[...]) instead.
+        - retract: the captured text is wrong evidence (`reason`, optional
+          `superseded_by`); works on resolved events too, so nodes that cite
+          it get repaired.
+        """
+        root, err = _tool_root(bound_root, kg_root)
+        if err:
+            return err
+        assert root is not None
+        if action == "list":
+            return ev.list_events(root, status=status or None, limit=limit, since=since)
+        if not event_id:
+            return error_response(ErrorCode.VALIDATION_ERROR, f"action={action} needs event_id")
+        if action == "show":
+            return ev.get_event(root, event_id)
+        started = time.monotonic()
+        if action == "resolve":
+            if not outcome:
+                return error_response(
+                    ErrorCode.VALIDATION_ERROR,
+                    "action=resolve needs outcome: journal_only, duplicate, no_op or rejected",
+                )
+            result = ev.resolve_event(root, event_id, outcome, note=note)
+            _record("events-resolve", result, started)
+            return result
+        if not reason:
+            return error_response(ErrorCode.VALIDATION_ERROR, "action=retract needs reason")
+        result = ev.retract_event(root, event_id, reason, superseded_by=superseded_by)
+        _record("events-retract", result, started)
+        return result
+
     @server.tool(name="kvault_prepare_summary_update")
     def kvault_prepare_summary_update(
         path: str,
@@ -695,9 +970,13 @@ def create_server(kb_root: Path | str) -> Any:
     # `updated` on every rewritten summary (0.15.2).
     @server.tool(name="kvault_update_summaries")
     def kvault_update_summaries(
-        updates: List[Dict[str, Any]], kg_root: Optional[str] = None
+        updates: List[SummaryUpdate], kg_root: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Batch-update summaries.
+        """Batch-update existing summaries: `{path, content | patches, meta}` per item.
+
+        `content` replaces the body; `patches` (`[{old_str, new_str}]`, each
+        matching exactly once) edits it. `meta` merges onto the frontmatter
+        (null deletes a key). Paths without a summary are refused.
 
         CAUTION: `success: true` means the BATCH ran, not that every item
         succeeded — check `partial`, `failed`, and `errors[]`. Per-item
@@ -708,7 +987,7 @@ def create_server(kb_root: Path | str) -> Any:
             return err
         assert root is not None
         started = time.monotonic()
-        result = ops.update_summaries(root, updates)
+        result = ops.update_summaries(root, [u.model_dump(exclude_unset=True) for u in updates])
         _record("update-summaries", result, started)
         return result
 
@@ -731,14 +1010,14 @@ def create_server(kb_root: Path | str) -> Any:
             )
         return ops.get_ancestors(root, path, include_content=(ancestors == "content"))
 
-    @server.tool(name="kvault_get_ancestors")
+    @_legacy_tool("kvault_get_ancestors")
     def kvault_get_ancestors(
         path: str, ancestors: str = "content", kg_root: Optional[str] = None
     ) -> Dict[str, Any]:
         """Alias for kvault_get_parent_summaries."""
         return kvault_get_parent_summaries(path=path, ancestors=ancestors, kg_root=kg_root)
 
-    @server.tool(name="kvault_propagate_all")
+    @_legacy_tool("kvault_propagate_all")
     def kvault_propagate_all(
         path: str, ancestors: str = "content", kg_root: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -770,9 +1049,14 @@ def create_server(kb_root: Path | str) -> Any:
     def kvault_generate_daily_artifact(
         artifact_date: Optional[str] = None,
         force: bool = False,
+        include_content: bool = False,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Generate a daily artifact markdown file."""
+        """Generate a daily artifact markdown file.
+
+        The result names the file and its size; the markdown itself (often
+        tens of KB) comes back only with include_content=true.
+        """
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
@@ -782,7 +1066,7 @@ def create_server(kb_root: Path | str) -> Any:
             result = generate_daily_artifact(root, artifact_date=parsed_date, force=force)
         except ValueError as exc:
             return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
-        return _serialize_daily_result(root, result)
+        return _serialize_daily_result(root, result, include_content=include_content)
 
     @server.tool(name="kvault_check")
     def kvault_check(
@@ -858,7 +1142,7 @@ def create_server(kb_root: Path | str) -> Any:
         assert root is not None
         return success_response(ops.validate_kb(root))
 
-    @server.tool(name="kvault_log_phase")
+    @_legacy_tool("kvault_log_phase")
     def kvault_log_phase(
         phase: str,
         data: Dict[str, Any],
@@ -909,6 +1193,7 @@ def create_server(kb_root: Path | str) -> Any:
         rows = OpLog(root, session_id=server_session).tail(limit=limit, session=session)
         return success_response({"count": len(rows), "ops": rows})
 
+    _forbid_unknown_arguments(server)
     return server
 
 
@@ -919,9 +1204,15 @@ def create_server(kb_root: Path | str) -> Any:
     default=None,
     help=f"Knowledge base root. May also be set with {KVAULT_KB_ROOT_ENV}.",
 )
-def main(kb_root: Optional[Path]) -> None:
+@click.option(
+    "--legacy-tools",
+    is_flag=True,
+    default=None,
+    help=f"Also register the epoch-1 tools (or set {KVAULT_MCP_LEGACY_TOOLS_ENV}=1).",
+)
+def main(kb_root: Optional[Path], legacy_tools: Optional[bool]) -> None:
     """Run the kvault MCP compatibility server over stdio."""
-    server = create_server(resolve_bound_root(kb_root))
+    server = create_server(resolve_bound_root(kb_root), legacy_tools=legacy_tools or None)
     server.run(transport="stdio")
 
 

@@ -76,9 +76,10 @@ MAX_DIRECT_CHILDREN = 10
 PARENTS_MODES = ("none", "gist", "immediate", "all")
 READ_NODES_MAX_PATHS = 25
 #: read_nodes' shared budget in characters of compact JSON (whole nodes, not
-#: just content). MCP defaults lower: its first user inlines ~10 KB.
+#: just content). MCP defaults lower, so a read fits clients that inline about
+#: 4 KB of tool output (0.17; 8,000 before, which spilled to a file).
 READ_NODES_MAX_CHARS = 20000
-READ_NODES_MCP_MAX_CHARS = 8000
+READ_NODES_MCP_MAX_CHARS = 3500
 #: Child paths listed per node in read_nodes; past this, children_count says how many.
 READ_NODES_MAX_CHILDREN = 50
 
@@ -1345,6 +1346,51 @@ def _is_noop_node_write(
     ) == _stable(resolved_meta)
 
 
+def _apply_patches(text: str, patches: Any) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Apply ``{old_str, new_str}`` edits to a body, in order (0.17).
+
+    Each ``old_str`` must match exactly once in the text as patched so far,
+    or nothing is written. Rewriting a 15-19 KB hub to change a line cost
+    agents 40-90 KB of output per propagation chain and some abandoned it
+    midway; a patch sends only what changes. Returns ``(new_text, None)`` or
+    ``(None, error)``.
+    """
+    if not isinstance(patches, list) or not patches:
+        return None, error_response(
+            ErrorCode.VALIDATION_ERROR, "patches must be a non-empty list of {old_str, new_str}"
+        )
+    for index, patch in enumerate(patches, 1):
+        if (
+            not isinstance(patch, dict)
+            or set(patch) != {"old_str", "new_str"}
+            or not all(isinstance(patch[k], str) for k in ("old_str", "new_str"))
+        ):
+            return None, error_response(
+                ErrorCode.VALIDATION_ERROR,
+                f"patch {index}: needs exactly old_str and new_str, both strings",
+            )
+        old = patch["old_str"]
+        count = text.count(old) if old else 0
+        if count != 1:
+            return None, error_response(
+                ErrorCode.VALIDATION_ERROR,
+                f"patch {index}: old_str "
+                + (
+                    "is empty"
+                    if not old
+                    else (
+                        "not found"
+                        if count == 0
+                        else f"matches {count} places; add surrounding text"
+                    )
+                ),
+                details={"patch": index, "matches": count},
+                hint="patches apply to the body without frontmatter, in order; nothing was written",
+            )
+        text = text.replace(old, patch["new_str"], 1)
+    return text, None
+
+
 def _summary_warnings(kg_root: Path, path: str) -> List[Dict[str, Any]]:
     """The SUMMARY rules for the node just written (0.17), in check's shape.
 
@@ -1407,7 +1453,7 @@ def _embedded_note(taken: List[str]) -> Dict[str, Any]:
 def write_node(
     kg_root: Path,
     path: str,
-    content: str,
+    content: Optional[str] = None,
     meta: Optional[Dict[str, Any]] = None,
     create: bool = False,
     reasoning: Optional[str] = None,
@@ -1418,8 +1464,59 @@ def write_node(
     allow_similar: bool = False,
     drop_meta_keys: Optional[Sequence[str]] = None,
     preserve_dates: bool = False,
+    patches: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Write any node summary with YAML frontmatter.
+
+    See :func:`_write_node`. A patch is read, applied and written under one
+    hold of the (reentrant) write lock, so no other writer lands between the
+    read it was matched against and the write.
+    """
+    args: Dict[str, Any] = dict(
+        content=content,
+        meta=meta,
+        create=create,
+        reasoning=reasoning,
+        journal_source=journal_source,
+        default_source=default_source,
+        event_ids=event_ids,
+        new_root=new_root,
+        allow_similar=allow_similar,
+        drop_meta_keys=drop_meta_keys,
+        preserve_dates=preserve_dates,
+        patches=patches,
+    )
+    if patches is None:
+        return _write_node(kg_root, path, **args)
+    with KBWriteLock(kg_root) as lock:
+        result = _write_node(kg_root, path, **args)
+    lock_notes = _lock_notes(lock)
+    if lock_notes and result.get("success"):
+        result["notes"] = list(result.get("notes") or []) + lock_notes
+    return result
+
+
+def _write_node(
+    kg_root: Path,
+    path: str,
+    content: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
+    create: bool = False,
+    reasoning: Optional[str] = None,
+    journal_source: Optional[str] = None,
+    default_source: str = "auto:cli",
+    event_ids: Optional[List[str]] = None,
+    new_root: bool = False,
+    allow_similar: bool = False,
+    drop_meta_keys: Optional[Sequence[str]] = None,
+    preserve_dates: bool = False,
+    patches: Optional[List[Dict[str, str]]] = None,
+) -> Dict[str, Any]:
+    """Write any node summary with YAML frontmatter.
+
+    *patches* (0.17) edits an existing node's body instead of replacing it:
+    a list of ``{old_str, new_str}``, each matching exactly once, applied in
+    order; any miss writes nothing. Pass *content* or *patches*, not both.
 
     *preserve_dates* keeps an existing node's ``created``/``updated`` (used by
     ``mark``: a recorded decision is not a content change, and stamping
@@ -1455,6 +1552,24 @@ def write_node(
         promotable = check_events_promotable(kg_root, event_ids)
         if not promotable.get("success"):
             return promotable
+
+    if patches is not None:
+        if content not in (None, ""):
+            return error_response(ErrorCode.VALIDATION_ERROR, "pass content or patches, not both")
+        if create:
+            return error_response(
+                ErrorCode.VALIDATION_ERROR, "patches edit an existing node; a create needs content"
+            )
+        current = _read_node_raw(kg_root, path)
+        if current is None:
+            return error_response(ErrorCode.NOT_FOUND, f"Node doesn't exist: {path}")
+        content, patch_error = _apply_patches(current["content"], patches)
+        if patch_error is not None:
+            return patch_error
+    elif content is None:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR, "content is required (or patches, for an existing node)"
+        )
 
     content, meta, embedded_keys = _split_embedded_frontmatter(content, meta)
 
@@ -2092,6 +2207,9 @@ def _write_parent_summary_locked(
     return out
 
 
+UPDATE_SUMMARY_KEYS = frozenset({"path", "content", "patches", "meta"})
+
+
 def update_summaries(
     kg_root: Path,
     updates: List[Dict[str, Any]],
@@ -2112,11 +2230,30 @@ def _update_summaries_locked(
     item_notes: List[Dict[str, Any]] = []
     summary_warnings: List[Dict[str, Any]] = []
     for item in updates:
+        if not isinstance(item, dict):
+            errors.append({"path": "<missing>", "error": "Each update must be a JSON object"})
+            continue
+        # An unknown key is refused (0.17): a typo such as "metadata" for
+        # "meta" was dropped without a word while the rest of the item wrote.
+        unknown = sorted(set(item) - UPDATE_SUMMARY_KEYS)
+        if unknown:
+            errors.append(
+                {
+                    "path": item.get("path") or "<missing>",
+                    "error": f"Unknown keys: {', '.join(unknown)} "
+                    f"(allowed: {', '.join(sorted(UPDATE_SUMMARY_KEYS))})",
+                }
+            )
+            continue
         p = item.get("path")
         c = item.get("content")
         m = item.get("meta")
-        if not p or c is None:
+        patch_list = item.get("patches")
+        if not p or (c is None and patch_list is None):
             errors.append({"path": p or "<missing>", "error": "Missing path or content"})
+            continue
+        if c is not None and patch_list is not None:
+            errors.append({"path": p, "error": "Pass content or patches, not both"})
             continue
         # update-summaries rewrites summaries that exist (0.17): a typo'd path
         # used to create its directories and a new summary silently.
@@ -2133,8 +2270,21 @@ def _update_summaries_locked(
                 }
             )
             continue
+        body: Any = c
+        if patch_list is not None:
+            current = _read_node_raw(kg_root, p)
+            if current is None:
+                errors.append({"path": p, "error": "Summary could not be read for patching"})
+                continue
+            patched, patch_error = _apply_patches(current["content"], patch_list)
+            if patched is None:
+                errors.append(
+                    {"path": p, "error": (patch_error or {}).get("error", "patch failed")}
+                )
+                continue
+            body = patched
         try:
-            r = write_summary(kg_root, path=p, content=c, meta=m)
+            r = write_summary(kg_root, path=p, content=body, meta=m)
             if r.get("success"):
                 updated.append(p)
                 item_notes.extend(r.get("notes") or [])

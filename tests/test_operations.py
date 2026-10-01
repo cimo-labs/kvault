@@ -702,7 +702,9 @@ class TestSearchNodes:
         # by default background material is counted, not returned (0.17)
         default = ops.search_nodes(ops_kb, "Sven Schmit", limit=10)
         assert [r["path"] for r in default["results"]] == ["people/friends/sven_schmit"]
-        note = next(n for n in default["notes"] if (n.get("detail") or {}).get("kind") == "background")
+        note = next(
+            n for n in default["notes"] if (n.get("detail") or {}).get("kind") == "background"
+        )
         assert note["detail"]["hidden"] == 1
 
     def test_background_child_never_collapses_its_parent(self, ops_kb):

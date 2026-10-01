@@ -107,7 +107,9 @@ def test_same_day_child_edit_after_its_parent_is_stale(tmp_path):
     parent_dir = kb / "category"
     _write_summary(kb / "_summary.md", "# Root\n", meta={"updated": "2026-02-01"})
     _write_summary(parent_dir / "_summary.md", "# Category\n", meta={"updated": "2026-02-01"})
-    _write_summary(parent_dir / "entity" / "_summary.md", "# Entity\n", meta={"updated": "2026-02-01"})
+    _write_summary(
+        parent_dir / "entity" / "_summary.md", "# Entity\n", meta={"updated": "2026-02-01"}
+    )
     morning = time.time() - 6 * 3600
     os.utime(parent_dir / "_summary.md", (morning, morning))  # the parent's 01:00 rewrite
     stale = [w for w in check_propagation(kb, threshold_minutes=5) if "entity" in w]

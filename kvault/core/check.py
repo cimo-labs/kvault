@@ -176,7 +176,11 @@ def propagation_findings(kb_root: Path, threshold_minutes: int) -> List[Finding]
     """Parents should be at least as recent as their children.
 
     Frontmatter ``updated`` dates first (they survive git); mtime with the
-    threshold as the fallback when either side has no date.
+    threshold as the fallback when either side has no date, and when both
+    carry the same day: ``updated`` has day granularity, so a child edited
+    after its parent on the same day was never reported (a parent stamped by
+    a 01:00 job hid every daytime child edit). A fresh clone gives every file
+    the same mtime, within the threshold, so it adds nothing there.
     """
     findings: List[Finding] = []
     threshold = timedelta(minutes=threshold_minutes)
@@ -196,7 +200,7 @@ def propagation_findings(kb_root: Path, threshold_minutes: int) -> List[Finding]
             child_date = _get_updated_date(child)
             stale = False
             detail = ""
-            if child_date is not None and parent_date is not None:
+            if child_date is not None and parent_date is not None and child_date != parent_date:
                 if child_date > parent_date:
                     stale = True
                     detail = f"child updated {child_date}, parent updated {parent_date}"

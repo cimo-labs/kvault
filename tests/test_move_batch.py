@@ -302,4 +302,5 @@ def test_fold_does_not_stub_a_summary_inside_deep_context(empty_kb):
     created = [n for n in result["notes"] if n["code"] == "created"][0]
     assert created["detail"]["paths"] == ["projects/hub"]
     assert ops.build_outline(empty_kb, "projects/hub")["children_count"] == 0
-    assert ops.search_nodes(empty_kb, "alpha")["results"]
+    # the parked node is background: counted by default, returned on request (0.17)
+    assert ops.search_nodes(empty_kb, "alpha", include_background=True)["results"]

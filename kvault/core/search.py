@@ -47,6 +47,9 @@ class SearchDocument:
     content: str
     summary_path: str
     last_updated: str
+    #: Under a background child such as ``deep_context/`` (parked or supporting
+    #: material): found by search only with ``include_background``.
+    background: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,8 +115,16 @@ def search_nodes(
     path_prefix: Optional[str] = None,
     compact: bool = False,
     snippet_chars: Optional[int] = None,
+    include_background: bool = False,
 ) -> Dict[str, Any]:
     """Search visible kvault nodes and return ranked results.
+
+    Nodes under ``deep_context/`` (a duplicate parked under its keeper, or
+    supporting material) are background: they are scored, so IDF and the
+    blind-spot note stay honest, but returned only with
+    ``include_background`` (0.17). Before, a parked copy competed with its
+    keeper and could collapse the keeper's parents out of the results.
+    Paths listed in ``.kvaultignore`` are never searched.
 
     ``compact`` returns ``path``, ``title``, ``kind``, ``last_updated`` and a
     one-line snippet per hit (``COMPACT_SNIPPET_CHARS`` unless
@@ -143,6 +154,7 @@ def search_nodes(
     )
 
     documents, unreadable = _scan_documents(kg_root)
+    hidden_background = 0
     query_tokens = _tokens(query)
     if not query_tokens:
         return {"query": query, "count": 0, "total_matched": 0, "results": []}
@@ -160,6 +172,9 @@ def search_nodes(
         scored = [item for item in scored if item[1].kind in wanted_kinds]
     if prefix is not None:
         scored = [item for item in scored if _under_prefix(item[1].path, prefix)]
+    if not include_background:
+        hidden_background = sum(1 for item in scored if item[1].background)
+        scored = [item for item in scored if not item[1].background]
 
     collapsed_by: Dict[str, str] = {}
     if collapse:
@@ -238,6 +253,15 @@ def search_nodes(
                 "kvault_read_summary); kvault plan adopts legacy node files as nodes",
             )
         )
+    if hidden_background:
+        notes.append(
+            nt.note(
+                "truncated",
+                f"{hidden_background} match(es) under deep_context/ (parked or supporting material) not shown",
+                detail={"kind": "background", "hidden": hidden_background},
+                next_step="re-run with include_background (CLI --include-background)",
+            )
+        )
     if total_matched > len(results):
         notes.append(
             nt.note(
@@ -276,6 +300,11 @@ def search_nodes(
             )
         )
 
+    if compact:
+        # A compact result is read inline by agents whose clients spill output
+        # above ~4 KB: notes keep what to do (next_step), not why (0.17).
+        for item in notes:
+            item.pop("why", None)
     out: Dict[str, Any] = {
         "query": query,
         "did": f"matched {total_matched} node(s), returning {len(results)}",
@@ -381,7 +410,7 @@ def _justifier(item: _Scored, pool: List[_Scored]) -> Optional[str]:
         (other_score, other.path)
         for other_score, other, _ in pool
         if _is_strict_descendant(other.path, doc.path)
-        and not is_background_child(other.path.rsplit("/", 1)[-1])
+        and not any(is_background_child(part) for part in other.path.split("/"))
         and other_score >= _COLLAPSE_SCORE_RATIO * score
     ]
     if not candidates:
@@ -438,6 +467,7 @@ def _scan_documents(kg_root: Path) -> Tuple[List[SearchDocument], List[Dict[str,
     kg_root = Path(kg_root)
     documents: List[SearchDocument] = []
     unreadable: List[Dict[str, str]] = []
+    ignore = st.load_ignore(kg_root)
     for summary_path in sorted(kg_root.rglob("_summary.md")):
         try:
             rel_summary = summary_path.relative_to(kg_root)
@@ -449,6 +479,8 @@ def _scan_documents(kg_root: Path) -> Tuple[List[SearchDocument], List[Dict[str,
         node_path = (
             "." if summary_path.parent == kg_root else str(summary_path.parent.relative_to(kg_root))
         )
+        if node_path != "." and st.is_ignored(node_path, ignore):
+            continue
         if not st.inside_root(summary_path, kg_root):
             # a _summary.md symlinked out of the KB is never read
             unreadable.append({"path": str(rel_summary), "error": "outside_kb"})
@@ -471,6 +503,7 @@ def _scan_documents(kg_root: Path) -> Tuple[List[SearchDocument], List[Dict[str,
                 content=content,
                 summary_path=str(rel_summary),
                 last_updated=_meta_date(meta) or _mtime_date(summary_path),
+                background=any(is_background_child(part) for part in node_path.split("/")),
             )
         )
     return documents, unreadable
@@ -535,7 +568,9 @@ def _phrase_score(
     if query == field_text and exact:
         matched_fields.add(field_name)
         return exact
-    if query in field_text:
+    # Whole tokens only (0.17): "ai" used to match inside "email" and "detail",
+    # earning the phrase bonus and blocking ancestor collapse.
+    if f" {query} " in f" {field_text} ":
         matched_fields.add(field_name)
         return contains
     return 0.0

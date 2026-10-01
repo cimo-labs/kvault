@@ -78,121 +78,144 @@ def audit_summary_quality(
     """
     root = Path(kg_root)
     issues: List[SummaryQualityIssue] = []
-
     for summary_path in sorted(root.rglob(_SUMMARY_NAME)):
-        parent_dir = summary_path.parent
-        if _is_hidden_path(root, parent_dir):
-            continue
+        issues.extend(_audit_summary_file(root, summary_path, max_words, max_dated_sections))
 
-        children = _child_summary_dirs(parent_dir)
-        if not children:
-            continue
+    return issues
 
-        relative_path = _display_summary_path(root, summary_path)
-        raw = _safe_read(summary_path)
-        _, body = parse_frontmatter(raw)
-        word_count = _word_count(body)
-        descendant_count = _descendant_summary_count(root, parent_dir)
 
-        min_words = _minimum_word_count(len(children), descendant_count)
-        if word_count < min_words:
-            issues.append(
-                SummaryQualityIssue(
-                    path=relative_path,
-                    code="too_short",
-                    message=(
-                        f"too short for {len(children)} children/{descendant_count} "
-                        f"descendants ({word_count} words < {min_words})"
-                    ),
-                    details={
-                        "word_count": word_count,
-                        "minimum_words": min_words,
-                        "child_count": len(children),
-                        "descendant_count": descendant_count,
-                    },
-                )
+def audit_summary_node(
+    kg_root: Path,
+    path: str,
+    max_words: Optional[int] = None,
+    max_dated_sections: int = DEFAULT_MAX_DATED_SECTIONS,
+) -> List[SummaryQualityIssue]:
+    """The same rules for one node's summary (0.17): writes report them at once."""
+    root = Path(kg_root)
+    summary_path = (root if path in ("", ".") else root / path) / _SUMMARY_NAME
+    if not summary_path.is_file():
+        return []
+    return _audit_summary_file(root, summary_path, max_words, max_dated_sections)
+
+
+def _audit_summary_file(
+    root: Path,
+    summary_path: Path,
+    max_words: Optional[int],
+    max_dated_sections: int,
+) -> List[SummaryQualityIssue]:
+    issues: List[SummaryQualityIssue] = []
+    parent_dir = summary_path.parent
+    if _is_hidden_path(root, parent_dir):
+        return issues
+
+    children = _child_summary_dirs(parent_dir)
+    if not children:
+        return issues
+
+    relative_path = _display_summary_path(root, summary_path)
+    raw = _safe_read(summary_path)
+    _, body = parse_frontmatter(raw)
+    word_count = _word_count(body)
+    descendant_count = _descendant_summary_count(root, parent_dir)
+
+    min_words = _minimum_word_count(len(children), descendant_count)
+    if word_count < min_words:
+        issues.append(
+            SummaryQualityIssue(
+                path=relative_path,
+                code="too_short",
+                message=(
+                    f"too short for {len(children)} children/{descendant_count} "
+                    f"descendants ({word_count} words < {min_words})"
+                ),
+                details={
+                    "word_count": word_count,
+                    "minimum_words": min_words,
+                    "child_count": len(children),
+                    "descendant_count": descendant_count,
+                },
             )
+        )
 
-        missing_children = _missing_child_coverage(body, children)
-        if missing_children:
-            # Bounded on purpose: on a 118-child parent the 0.14 line was 4.7 KB,
-            # a finding that was itself unbounded output. The full list stays
-            # in details for consumers that fix the parent.
-            shown = ", ".join(missing_children[:MAX_MISSING_CHILDREN_SHOWN])
-            hidden = len(missing_children) - MAX_MISSING_CHILDREN_SHOWN
-            if hidden > 0:
-                shown += f" (+{hidden} more)"
-            issues.append(
-                SummaryQualityIssue(
-                    path=relative_path,
-                    code="missing_child_coverage",
-                    message=(
-                        f"missing immediate child coverage ({len(missing_children)} of "
-                        f"{len(children)}): {shown}"
-                    ),
-                    details={
-                        "missing_children": missing_children,
-                        "missing_count": len(missing_children),
-                        "child_count": len(children),
-                    },
-                )
+    missing_children = _missing_child_coverage(body, children)
+    if missing_children:
+        # Bounded on purpose: on a 118-child parent the 0.14 line was 4.7 KB,
+        # a finding that was itself unbounded output. The full list stays
+        # in details for consumers that fix the parent.
+        shown = ", ".join(missing_children[:MAX_MISSING_CHILDREN_SHOWN])
+        hidden = len(missing_children) - MAX_MISSING_CHILDREN_SHOWN
+        if hidden > 0:
+            shown += f" (+{hidden} more)"
+        issues.append(
+            SummaryQualityIssue(
+                path=relative_path,
+                code="missing_child_coverage",
+                message=(
+                    f"missing immediate child coverage ({len(missing_children)} of "
+                    f"{len(children)}): {shown}"
+                ),
+                details={
+                    "missing_children": missing_children,
+                    "missing_count": len(missing_children),
+                    "child_count": len(children),
+                },
             )
+        )
 
-        placeholder_hits = _placeholder_hits(body)
-        if placeholder_hits:
-            issues.append(
-                SummaryQualityIssue(
-                    path=relative_path,
-                    code="placeholder_language",
-                    message="contains placeholder/redirect language: "
-                    + ", ".join(placeholder_hits),
-                    details={"matches": placeholder_hits},
-                )
+    placeholder_hits = _placeholder_hits(body)
+    if placeholder_hits:
+        issues.append(
+            SummaryQualityIssue(
+                path=relative_path,
+                code="placeholder_language",
+                message="contains placeholder/redirect language: " + ", ".join(placeholder_hits),
+                details={"matches": placeholder_hits},
             )
+        )
 
-        if only_background_children(children):
-            # An entity that keeps its long-form notes in deep_context/ is a
-            # leaf for budgeting purposes, not an index page.
-            continue
+    if only_background_children(children):
+        # An entity that keeps its long-form notes in deep_context/ is a
+        # leaf for budgeting purposes, not an index page.
+        return issues
 
-        max_allowed = _resolve_maximum_words(max_words, len(children), descendant_count)
-        if max_allowed is not None and word_count > max_allowed:
-            issues.append(
-                SummaryQualityIssue(
-                    path=relative_path,
-                    code="too_long",
-                    message=(
-                        f"too long for {len(children)} children/{descendant_count} "
-                        f"descendants ({word_count} words > {max_allowed}) — rewrite as a "
-                        "current-state rollup"
-                    ),
-                    details={
-                        "word_count": word_count,
-                        "maximum_words": max_allowed,
-                        "child_count": len(children),
-                        "descendant_count": descendant_count,
-                    },
-                )
+    max_allowed = _resolve_maximum_words(max_words, len(children), descendant_count)
+    if max_allowed is not None and word_count > max_allowed:
+        issues.append(
+            SummaryQualityIssue(
+                path=relative_path,
+                code="too_long",
+                message=(
+                    f"too long for {len(children)} children/{descendant_count} "
+                    f"descendants ({word_count} words > {max_allowed}) — rewrite as a "
+                    "current-state rollup"
+                ),
+                details={
+                    "word_count": word_count,
+                    "maximum_words": max_allowed,
+                    "child_count": len(children),
+                    "descendant_count": descendant_count,
+                },
             )
+        )
 
-        dated = _dated_headings(body)
-        if max_dated_sections > 0 and len(dated) > max_dated_sections:
-            issues.append(
-                SummaryQualityIssue(
-                    path=relative_path,
-                    code="stale_history",
-                    message=(
-                        f"{len(dated)} dated/delta sections (> {max_dated_sections}) — fold "
-                        "history into current state; e.g. " + ", ".join(dated[:3])
-                    ),
-                    details={
-                        "dated_sections": len(dated),
-                        "maximum": max_dated_sections,
-                        "examples": dated[:3],
-                    },
-                )
+    dated = _dated_headings(body)
+    if max_dated_sections > 0 and len(dated) > max_dated_sections:
+        issues.append(
+            SummaryQualityIssue(
+                path=relative_path,
+                code="stale_history",
+                message=(
+                    f"{len(dated)} dated/delta sections (> {max_dated_sections}) — fold "
+                    "history into current state; e.g. " + ", ".join(dated[:3])
+                ),
+                details={
+                    "dated_sections": len(dated),
+                    "maximum": max_dated_sections,
+                    "examples": dated[:3],
+                },
             )
-
+        )
     return issues
 
 
@@ -356,5 +379,6 @@ __all__ = [
     "DEFAULT_MAX_DATED_SECTIONS",
     "SummaryQualityIssue",
     "audit_summary_quality",
+    "audit_summary_node",
     "format_summary_quality_warnings",
 ]

@@ -100,6 +100,25 @@ def test_propagation_falls_back_to_mtime(tmp_path):
     assert "newer" in prop_warnings[0]
 
 
+def test_same_day_child_edit_after_its_parent_is_stale(tmp_path):
+    """0.17: `updated` has day granularity, so a child rewritten hours after its
+    parent on the same day was never reported. Equal days fall back to mtime."""
+    kb = tmp_path / "kb"
+    parent_dir = kb / "category"
+    _write_summary(kb / "_summary.md", "# Root\n", meta={"updated": "2026-02-01"})
+    _write_summary(parent_dir / "_summary.md", "# Category\n", meta={"updated": "2026-02-01"})
+    _write_summary(parent_dir / "entity" / "_summary.md", "# Entity\n", meta={"updated": "2026-02-01"})
+    morning = time.time() - 6 * 3600
+    os.utime(parent_dir / "_summary.md", (morning, morning))  # the parent's 01:00 rewrite
+    stale = [w for w in check_propagation(kb, threshold_minutes=5) if "entity" in w]
+    assert len(stale) == 1 and "newer" in stale[0]
+    # a fresh clone gives every file the same mtime: nothing to report
+    now = time.time()
+    for f in kb.rglob("_summary.md"):
+        os.utime(f, (now, now))
+    assert not [w for w in check_propagation(kb, threshold_minutes=5) if "entity" in w]
+
+
 # ── write_entity ancestors tests ─────────────────────────────────────
 
 

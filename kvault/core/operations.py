@@ -1345,6 +1345,65 @@ def _is_noop_node_write(
     ) == _stable(resolved_meta)
 
 
+def _summary_warnings(kg_root: Path, path: str) -> List[Dict[str, Any]]:
+    """The SUMMARY rules for the node just written (0.17), in check's shape.
+
+    Until 0.17 a rollup that missed a child, outgrew its ceiling or kept
+    dated sections was reported only by the next ``kvault check``, after the
+    writer had moved on.
+    """
+    from kvault.core.summary_quality import audit_summary_node
+
+    try:
+        issues = audit_summary_node(kg_root, path)
+    except (OSError, ValueError, RuntimeError):
+        return []
+    return [
+        {"path": i.path, "code": i.code, "message": i.message, "details": i.details} for i in issues
+    ]
+
+
+def _split_embedded_frontmatter(
+    content: Any, meta: Optional[Dict[str, Any]]
+) -> Tuple[Any, Optional[Dict[str, Any]], Optional[List[str]]]:
+    """Content that opens with its own frontmatter block (0.17).
+
+    The CLI parses a leading block out of stdin; the Python and MCP surfaces
+    passed it through, so the file got two stacked blocks (the second one
+    shown as body text, its keys never read). Its keys now fill in *meta*,
+    where explicit *meta* keys win, and the block is not written again.
+    Returns ``(body, meta, keys_taken)``; ``keys_taken`` is None when there
+    was no block.
+    """
+    if not isinstance(content, str) or not content.lstrip().startswith("---"):
+        return content, meta, None
+    if meta is not None and not isinstance(meta, dict):
+        return content, meta, None  # the caller reports the type error
+    stripped = content.lstrip()
+    embedded, body = parse_frontmatter(stripped)
+    if body is stripped:
+        return content, meta, None  # malformed block: written as given, validate reports it
+    merged = dict(embedded)
+    merged.update(meta or {})
+    taken = sorted(k for k in embedded if k not in (meta or {}))
+    return body, merged, taken
+
+
+def _embedded_note(taken: List[str]) -> Dict[str, Any]:
+    return nt.note(
+        "guessed",
+        "content began with its own frontmatter block; "
+        + (
+            f"used its keys as metadata ({', '.join(taken)})"
+            if taken
+            else "it was not written twice"
+        ),
+        detail={"keys": taken},
+        why="a second block would have been written below the real one and read as body text",
+        next_step="pass metadata in meta and the body alone in content",
+    )
+
+
 def write_node(
     kg_root: Path,
     path: str,
@@ -1396,6 +1455,8 @@ def write_node(
         promotable = check_events_promotable(kg_root, event_ids)
         if not promotable.get("success"):
             return promotable
+
+    content, meta, embedded_keys = _split_embedded_frontmatter(content, meta)
 
     full_path = kg_root if path == "." else kg_root / path
     summary_path = _summary_path_for_node(kg_root, path)
@@ -1577,6 +1638,8 @@ def write_node(
     if stubs_written:
         notes.append(_stub_note(stubs_written))
     notes.extend(structure_notes)
+    if embedded_keys is not None:
+        notes.append(_embedded_note(embedded_keys))
     if is_noop:
         preserved = ", ".join(f"{k} {v}" for k, v in sorted(noop_dates.items()))
         notes.append(
@@ -1740,6 +1803,7 @@ def write_summary(
     meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Write a single ``_summary.md``."""
+    content, meta, embedded_keys = _split_embedded_frontmatter(content, meta)
     path = _normalize_node_path(path)
     if not validate_within_root(kg_root, path):
         return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
@@ -1760,18 +1824,20 @@ def write_summary(
         if existing and isinstance(existing.get("meta"), dict)
         else {}
     )
-    preserved_meta = existing_meta if meta is None else {}
-    final_meta: Dict[str, Any] = dict(meta) if meta is not None else dict(preserved_meta)
-
-    # When the caller passes meta explicitly it REPLACES the existing
-    # frontmatter rather than merging — keys the caller didn't repeat are
-    # gone. That was silent; now it is a note. created/updated are excluded
-    # from the drop list because they are re-stamped below.
+    # meta MERGES onto the existing frontmatter (0.17); a key set to None is
+    # deleted. Until 0.17 an explicit meta replaced the frontmatter wholesale,
+    # so a rollup that passed only a title dropped source, aliases and the
+    # recorded `kvault mark` decisions (distinct_from came back as findings).
+    final_meta: Dict[str, Any] = dict(existing_meta)
     dropped_keys: List[str] = []
-    if meta is not None and existing_meta:
-        dropped_keys = sorted(
-            k for k in existing_meta if k not in meta and k not in ("created", "updated")
-        )
+    for key, value in (meta or {}).items():
+        if value is None:
+            if key in final_meta and key not in ("created", "updated"):
+                dropped_keys.append(key)
+            final_meta.pop(key, None)
+        else:
+            final_meta[key] = value
+    dropped_keys.sort()
 
     # Dates (0.15.2): a rewritten summary carries today's `updated`, else the
     # 2-call workflow's second call left the parent older than its child and
@@ -1832,14 +1898,13 @@ def write_summary(
         notes.append(
             nt.note(
                 "removed",
-                "frontmatter replaced wholesale — dropped keys: " + ", ".join(dropped_keys),
+                "frontmatter keys deleted (set to null in meta): " + ", ".join(dropped_keys),
                 detail={"path": path, "dropped_keys": dropped_keys},
-                why=(
-                    "meta passed to write-summary replaces existing frontmatter "
-                    "instead of merging; omit meta to preserve it"
-                ),
+                why="meta merges onto the existing frontmatter; only a key set to null is deleted",
             )
         )
+    if embedded_keys is not None:
+        notes.append(_embedded_note(embedded_keys))
     notes.extend(_lock_notes(lock))
 
     result: Dict[str, Any] = {
@@ -1852,6 +1917,10 @@ def write_summary(
     }
     if notes:
         result["notes"] = notes
+    if not is_noop:
+        warnings = _summary_warnings(kg_root, path)
+        if warnings:
+            result["summary_warnings"] = warnings
     return result
 
 
@@ -2009,6 +2078,8 @@ def _write_parent_summary_locked(
     }
     if result.get("notes"):
         out["notes"] = result["notes"]
+    if result.get("summary_warnings"):
+        out["summary_warnings"] = result["summary_warnings"]
     out.update(
         {
             "child_count": prepared["child_count"],
@@ -2039,6 +2110,7 @@ def _update_summaries_locked(
     errors: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     item_notes: List[Dict[str, Any]] = []
+    summary_warnings: List[Dict[str, Any]] = []
     for item in updates:
         p = item.get("path")
         c = item.get("content")
@@ -2046,11 +2118,27 @@ def _update_summaries_locked(
         if not p or c is None:
             errors.append({"path": p or "<missing>", "error": "Missing path or content"})
             continue
+        # update-summaries rewrites summaries that exist (0.17): a typo'd path
+        # used to create its directories and a new summary silently.
+        try:
+            exists = _summary_path_for_node(kg_root, _normalize_node_path(p)).is_file()
+        except Exception:
+            exists = False
+        if not exists:
+            errors.append(
+                {
+                    "path": p,
+                    "error": "No summary at this path; update-summaries only rewrites existing "
+                    "summaries (create a node with kvault write --create)",
+                }
+            )
+            continue
         try:
             r = write_summary(kg_root, path=p, content=c, meta=m)
             if r.get("success"):
                 updated.append(p)
                 item_notes.extend(r.get("notes") or [])
+                summary_warnings.extend(r.get("summary_warnings") or [])
             else:
                 errors.append({"path": p, "error": r.get("error", "Unknown error")})
         except Exception as e:
@@ -2089,6 +2177,8 @@ def _update_summaries_locked(
         result["notes"] = notes
     if errors:
         result["errors"] = errors
+    if summary_warnings:
+        result["summary_warnings"] = summary_warnings
     return result
 
 
@@ -2142,8 +2232,12 @@ def search_nodes(
     compact: bool = False,
     snippet_chars: Optional[int] = None,
     parents: str = "none",
+    include_background: bool = False,
 ) -> Dict[str, Any]:
     """Search visible kvault node summaries.
+
+    Nodes under ``deep_context/`` are returned only with *include_background*
+    (0.17); a note counts the matches it held back.
 
     ``parents`` (0.16, CLI and MCP alike): ``gist`` adds one shared
     ``parents`` map from every ancestor path of the hits to ``{title,
@@ -2168,6 +2262,7 @@ def search_nodes(
         path_prefix=path_prefix,
         compact=compact,
         snippet_chars=snippet_chars,
+        include_background=include_background,
     )
     if parents != "none":
         # One budget for the whole result: what include_content used is gone.
@@ -2939,7 +3034,21 @@ def validate_kb(kg_root: Path) -> Dict[str, Any]:
             continue
         try:
             text = summary_file.read_text(encoding="utf-8")
-            parse_frontmatter_strict(text)
+            _first, body = parse_frontmatter_strict(text)
+            if (
+                _first
+                and body.lstrip().startswith("---")
+                and parse_frontmatter(body.lstrip())[1] is not body.lstrip()
+            ):
+                issues.append(
+                    {
+                        "type": "stacked_frontmatter",
+                        "severity": "warning",
+                        "path": str(Path(*rel_parts)) if rel_parts else ".",
+                        "message": "A second frontmatter block follows the first; its keys are read as body text",
+                        "fix": "Rewrite the node with kvault write: content that starts with a frontmatter block is merged into its metadata",
+                    }
+                )
         except FrontmatterError as exc:
             # An impossible date (2026-09-31) is still read, with its dates as
             # text; anything else malformed is read as empty.

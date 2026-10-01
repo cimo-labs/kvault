@@ -443,7 +443,7 @@ def create_server(kb_root: Path | str) -> Any:
     @server.tool(name="kvault_search")
     def kvault_search(
         query: str,
-        limit: int = 10,
+        limit: int = 8,
         compact: bool = True,
         parents: ParentsMode = "none",
         include_content: bool = False,
@@ -453,13 +453,14 @@ def create_server(kb_root: Path | str) -> Any:
         collapse: bool = True,
         kind: Optional[str] = None,
         path_prefix: Optional[str] = None,
+        include_background: bool = False,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Search visible node summaries.
 
         Hits are compact by default over MCP (0.16): path, title, kind,
-        last_updated (frontmatter date), and a one-line snippet — about
-        3-4 KB for 10 hits. compact=False adds score, matched_fields,
+        last_updated (frontmatter date), and a one-line snippet — under
+        4 KB for the default 8 hits. compact=False adds score, matched_fields,
         summary_path, a 440-character snippet, and the collapsed-path
         lists (~9-10 KB). parents='gist' adds one shared `parents` map from
         every ancestor path of the hits to {title, gist} (~2-3 KB; a hit's
@@ -476,6 +477,8 @@ def create_server(kb_root: Path | str) -> Any:
         files that are not searched. include_content and full parents share
         one total_max_chars budget. `kind` is a comma-separated subset of
         root,category,entity; `path_prefix` restricts to a subtree.
+        Nodes under deep_context/ (parked duplicates, supporting material)
+        come back only with include_background=true; a note counts them.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -502,6 +505,7 @@ def create_server(kb_root: Path | str) -> Any:
             compact=compact,
             snippet_chars=snippet_chars,
             parents=parents,
+            include_background=include_background,
         )
         return success_response(result)
 

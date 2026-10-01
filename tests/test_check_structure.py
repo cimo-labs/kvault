@@ -15,9 +15,13 @@ from kvault.cli.main import cli
 from kvault.core import operations as ops
 from kvault.core.check import run_checks
 from kvault.core.structure import IGNORE_FILE
+from datetime import date
 
 BODY = "# Node\n\nA node with enough words to describe itself briefly.\n"
 META = {"source": "manual", "aliases": ["Node"]}
+
+
+MONTH = date.today().strftime("%Y-%m")
 
 
 def _node(kb: Path, rel: str, body: str = BODY) -> None:
@@ -63,8 +67,9 @@ def _sprawl_kb(tmp_path: Path) -> Path:
     (kb / "todo.md").write_text("x")
     (kb / "projects" / "notes.txt").write_text("x")
     # journal drift
-    (kb / "journal" / "2026-09").mkdir(parents=True)
-    (kb / "journal" / "2026-09" / "log.md").write_text("# log\n")
+    # this month's log: LOG wants one when entities changed today
+    (kb / "journal" / MONTH).mkdir(parents=True)
+    (kb / "journal" / MONTH / "log.md").write_text("# log\n")
     (kb / "journal" / "y2026" / "q3").mkdir(parents=True)
     (kb / "journal" / "y2026" / "q3" / "log_1.md").write_text("# log\n")
     (kb / "archive" / "journal").mkdir(parents=True)
@@ -126,7 +131,7 @@ def test_loose_and_journal_findings(tmp_path):
     journal = {f["path"] for f in doc["findings"] if f["code"] == "JOURNAL"}
     assert "journal/y2026" in journal
     assert "archive/journal" in journal
-    assert "journal/2026-09/log.md" not in journal
+    assert f"journal/{MONTH}/log.md" not in journal
 
 
 def test_ignore_file_silences_tooling(tmp_path):

@@ -694,11 +694,16 @@ class TestSearchNodes:
         (sven / "deep_context" / "_summary.md").write_text(
             "# Deep context\n\nLong notes about Sven Schmit and his talks.\n"
         )
-        result = ops.search_nodes(ops_kb, "Sven Schmit", limit=10)
+        result = ops.search_nodes(ops_kb, "Sven Schmit", limit=10, include_background=True)
         paths = [r["path"] for r in result["results"]]
         assert paths[0] == "people/friends/sven_schmit"
         assert "people/friends/sven_schmit/deep_context" in paths
         assert result["collapsed"] == 0
+        # by default background material is counted, not returned (0.17)
+        default = ops.search_nodes(ops_kb, "Sven Schmit", limit=10)
+        assert [r["path"] for r in default["results"]] == ["people/friends/sven_schmit"]
+        note = next(n for n in default["notes"] if (n.get("detail") or {}).get("kind") == "background")
+        assert note["detail"]["hidden"] == 1
 
     def test_background_child_never_collapses_its_parent(self, ops_kb):
         # Body-only match on an entity that keeps notes in deep_context/: the

@@ -78,6 +78,11 @@ from kvault.core.search import KINDS
         "immediate/all = full documents per hit while they fit in --max-total-chars."
     ),
 )
+@click.option(
+    "--include-background",
+    is_flag=True,
+    help="Also return nodes under deep_context/ (parked duplicates, supporting material).",
+)
 @verbosity_options
 @common_options
 @click.pass_context
@@ -94,6 +99,7 @@ def search_nodes(
     compact: bool,
     snippet_chars: Optional[int],
     parents: str,
+    include_background: bool,
     kb_root: Optional[Path],
     as_json: bool,
     quiet: bool,
@@ -118,6 +124,7 @@ def search_nodes(
         compact=compact,
         snippet_chars=snippet_chars,
         parents=parents,
+        include_background=include_background,
     )
     if ctx.obj.get("as_json"):
         output_json(result)

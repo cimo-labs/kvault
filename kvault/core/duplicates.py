@@ -34,7 +34,7 @@ nodes about different companies reach 0.8.
 
 The homonym rule ignores filler words that tools and agents append to
 titles (``Category Summary``, ``Overview``, ``Project``,
-``Architecture``): on a 1,000-node KB they made one customer's three nodes
+``Architecture``): on a 1,000-node KB they made one subject's three nodes
 look like three different things. A filler word still tells two same-name
 nodes apart when their texts share under 40% of their words, since it is
 sometimes the subject ("Search Project", a staffing plan, beside "Search

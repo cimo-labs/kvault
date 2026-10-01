@@ -78,6 +78,7 @@ kvault tree people --depth 2 --gist        # Zoom into a branch with one-line gi
 kvault status --json                       # Health, entity count, compact hierarchy
 rg -n "search phrase" .                    # Raw filesystem search
 kvault search "search phrase" --compact --json  # Structured node search, one line per hit
+                                           # (deep_context/ matches folded into their node: --include-background)
 kvault read <path> --json                  # The node; --parents gist adds where it sits
 kvault read <a> <b> <c> --json             # Several nodes in one call, one shared budget (--max-total-chars)
 kvault list [path] --json                  # List child nodes
@@ -121,6 +122,12 @@ kvault update-summaries --json <<'EOF'
 ]
 EOF
 ```
+`update-summaries` rewrites summaries that already exist. Send the body only; an item's `meta`
+merges onto the existing frontmatter (`null` deletes a key). To change a few lines of a long
+rollup, send `patches` instead of `content`:
+`{"path": "people", "patches": [{"old_str": "exact current text", "new_str": "replacement"}]}`.
+Each `old_str` must match the body exactly once, patches apply in order, and any miss writes
+nothing. `kvault write <path> --patches` does the same for one node.
 
 ### Reading the output — notes
 
@@ -134,31 +141,43 @@ Every result carries `did` (one line of what happened) and `notes` — the decis
 | `removed` | Something was destroyed, with a count | Verify the count matches intent |
 
 The rest are informational: `autofilled`, `unchanged`, `created`, `truncated`, `guessed`, `waited`,
-`propagate` (stale ancestors — the PROPAGATE step above already handles it — or, after a move
-or delete, other nodes that still point at the old path, listed in `referrer_paths`).
+`structure` (a near-duplicate name or an over-full parent; act on it), `propagate` (stale
+ancestors — the PROPAGATE step above already handles it — or, after a move or delete, other
+nodes that still point at the old path, listed in `referrer_paths`).
 Tiers: `-q` trims output (`partial` still shows), `--explain` adds why + the exact next command;
 `--strict` exits 3 on `partial`/`skipped`/broken-lock notes. Set `KVAULT_SESSION=<task-id>` so the
 ops log groups one task's commands — review with `kvault log tail`.
 
-MCP clients keep reads small: `kvault_search` returns compact hits by default, `parents="gist"`
-adds where each hit sits (path, title, one line per ancestor), `kvault_read_nodes` reads the
-hits you pick in one call, and `kvault_check` with `codes=[...]` and `max_findings=0` returns
-one code's full list. Avoid `parents="all"` on search: it attaches every ancestor's full document
-to each hit until `total_max_chars` runs out, usually after one or two hits.
+MCP results are sized for clients that inline about 4 KB of tool output, and every cut says so
+in a `truncated` note: `kvault_tree` shows the deepest outline that fits `max_chars`;
+`kvault_search` returns 8 compact hits, `parents="gist"` adds where each hit sits (path, title,
+one line per ancestor), and a match under `deep_context/` is folded into its node when that
+node matches about as well (`include_background=true` lists them); `kvault_read_nodes` reads
+the hits you pick in one call under a 3,500-character budget (`total_max_chars`); writes,
+moves and deletes return ancestor paths, not documents; `kvault_check` with `codes=[...]` and
+`max_findings=0` returns one code's full list. Avoid `parents="all"` on search: it attaches
+every ancestor's full document to each hit until `total_max_chars` runs out, usually after one
+or two hits. Unknown arguments are refused, so a misspelled one fails loudly instead of
+running with defaults.
 
 MCP clients should use strict parent-summary tools when available:
 
 0. Orient first with `kvault_tree` (annotated outline with counts, recency, and explicit
    truncation markers — far cheaper than recursive `kvault_list_nodes`).
-1. Call `kvault_write_node` with Markdown body content and metadata in `meta`.
-2. For each returned ancestor, closest-first, call `kvault_prepare_summary_update`.
-3. Compose the parent summary from the returned parent and immediate child summaries.
-4. Call `kvault_write_parent_summary` with the new content and returned `children_digest`.
-5. If `workflow_error` reports a stale digest, prepare that parent again and rewrite from the
+1. Capture the source evidence with `kvault_capture` before writing from it. Promote the event
+   with `event_ids` on the write, or close it with `kvault_events(action="resolve")`.
+2. Call `kvault_write_node` with Markdown body content and metadata in `meta`, or with
+   `patches` (`[{old_str, new_str}]`, each matching once) to change part of an existing node.
+3. For each returned ancestor, closest-first, call `kvault_prepare_summary_update`.
+4. Compose the parent summary from the returned parent and immediate child summaries.
+5. Call `kvault_write_parent_summary` with the new content and returned `children_digest`.
+   For a small change to a long rollup, `kvault_update_summaries` with `patches` sends only
+   what changes.
+6. If `workflow_error` reports a stale digest, prepare that parent again and rewrite from the
    current direct children.
-6. If a `hierarchy_hint` is returned, split the hierarchy when there is an obvious grouping;
+7. If a `hierarchy_hint` is returned, split the hierarchy when there is an obvious grouping;
    otherwise still keep the parent summary comprehensive.
-7. Call `kvault_validate_kb` after larger edits.
+8. Call `kvault_validate_kb` after larger edits.
 
 ---
 
@@ -208,7 +227,8 @@ Context and notes here.
 
 ## CLI Commands Reference
 
-**Node:** `kvault search`, `kvault read`, `kvault write` (stdin), `kvault list`
+**Node:** `kvault search`, `kvault read`, `kvault write` (stdin; `--patches` for exact edits), `kvault list`
+**Capture:** `kvault capture` (stdin), `kvault events list|show|resolve|retract`
 **Compatibility:** `kvault read-summary`, `kvault write-summary` (stdin), `kvault update-summaries` (stdin JSON), `kvault ancestors`, `kvault delete --confirm`, `kvault move --confirm` (destructive — both require `--confirm`), `kvault move --batch --confirm` (stdin JSON list of `{from, to}`)
 **Maintenance:** `kvault plan [PATH] [--limit N]` (ordered worklist with commands; never applies anything), `kvault mark <path> [--distinct-from X] [--max-children N] [--series-ok] [--verify-by DATE] [--clear]` (record a decision the rules honor)
 **Journal:** `kvault journal --source TEXT` (stdin JSON)

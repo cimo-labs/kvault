@@ -54,6 +54,13 @@ tool behavior to `kvault.core.operations`. MCP clients should prefer
 `kvault_prepare_summary_update` and `kvault_write_parent_summary` for parent rollups so direct
 children are read before a parent summary is rewritten.
 
+Every tool's argument model is rebuilt with `extra="forbid"` at startup, so an unknown
+argument is an error instead of a silently ignored key; common alternative names are explicit
+alias parameters. Tools are registered through `_compact_text`, so a result reaches the client
+as one compact JSON text block (FastMCP would indent it and add a structured copy). Default
+results are sized for clients that inline about 4 KB of tool output.
+The eight entity-era tools register only with `--legacy-tools` / `KVAULT_MCP_LEGACY_TOOLS=1`.
+
 ### Operations Layer (`kvault/core/operations.py`)
 
 Stateless functions — all take `kg_root: Path` as first arg. Shared by CLI, MCP, and tests.
@@ -240,6 +247,13 @@ pytest -q
 ```
 
 ## Version Notes
+
+- 0.17.0: write integrity and the MCP surface — a leading frontmatter block in content is
+  merged instead of stacked, summary `meta` merges (null deletes), `update-summaries` never
+  creates paths and refuses unknown keys, summary rules reported at write time, same-day
+  PROPAGATE, whole-word phrase matching, `deep_context/` matches folded into a keeper that matches,
+  `.kvaultignore` honored by search; patch mode; MCP capture/events, budgets that fit ~4 KB,
+  argument aliases, unknown arguments refused, legacy tools behind a flag.
 
 - 0.16.0: what agents could not see, and reads that stay small — `DUPLICATE:` (KB-wide),
   `DANGLING:` (+ `referrer_paths` on move/delete), `STALE:` (`verify_by`), `check --code` /

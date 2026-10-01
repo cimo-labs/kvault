@@ -6,6 +6,8 @@ knowledge base root supplied by ``--kb-root`` or ``KVAULT_KB_ROOT``.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import json
 import os
 import time
@@ -136,6 +138,32 @@ def _serialize_daily_result(
     return success_response(payload)
 
 
+def _compact_text(fn: Any) -> Any:
+    """Wrap a tool so its result reaches the client as compact JSON text (0.17).
+
+    FastMCP serializes a dict result with two-space indentation and sends a
+    second, structured copy beside it. Indentation alone put 9 to 12 of 30
+    default searches over the ~4 KB many clients inline, on copies of two
+    real KBs; compact text put none over. The wrapper returns a string, and
+    the tool registers without structured output where FastMCP supports it,
+    so the client gets one compact copy.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> str:
+        result = fn(*args, **kwargs)
+        if isinstance(result, str):
+            return result
+        return json.dumps(result, separators=(",", ":"), ensure_ascii=False, default=str)
+
+    # Evaluated here: FastMCP resolves this module's string annotations itself,
+    # but takes an explicit __signature__ as it stands.
+    wrapper.__signature__ = inspect.signature(  # type: ignore[attr-defined]
+        fn, eval_str=True
+    ).replace(return_annotation=str)
+    return wrapper
+
+
 #: Epoch-1 tools superseded by the node tools; registered only on request (0.17).
 LEGACY_TOOLS = (
     "kvault_init",
@@ -206,10 +234,25 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         ),
     )
 
+    unstructured = (
+        {"structured_output": False}
+        if "structured_output" in inspect.signature(server.tool).parameters
+        else {}
+    )
+
+    def _tool(name: str, register: bool = True) -> Any:
+        """Register *fn* as a compact-text tool; the closure keeps the dict-
+        returning function, so tools that call each other still get dicts."""
+
+        def decorator(fn: Any) -> Any:
+            if register:
+                server.tool(name=name, **unstructured)(_compact_text(fn))
+            return fn
+
+        return decorator
+
     def _legacy_tool(name: str) -> Any:
-        if legacy_tools:
-            return server.tool(name=name)
-        return lambda fn: fn
+        return _tool(name, register=bool(legacy_tools))
 
     # ONE session per server process. Constructing a logger per tool call
     # minted a fresh session id every time — a production DB accumulated 146
@@ -260,7 +303,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         assert root is not None
         return _status_payload(root)
 
-    @server.tool(name="kvault_status")
+    @_tool("kvault_status")
     def kvault_status(
         kg_root: Optional[str] = None, include_root_summary: bool = False
     ) -> Dict[str, Any]:
@@ -293,7 +336,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
             return error_response(ErrorCode.NOT_FOUND, f"Entity not found: {path}")
         return success_response(result)
 
-    @server.tool(name="kvault_read_node")
+    @_tool("kvault_read_node")
     def kvault_read_node(
         path: str,
         parents: ParentsMode = "none",
@@ -316,7 +359,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
             return error_response(ErrorCode.NOT_FOUND, f"Node not found: {path}")
         return success_response(result)
 
-    @server.tool(name="kvault_read_nodes")
+    @_tool("kvault_read_nodes")
     def kvault_read_nodes(
         paths: List[str],
         parents: BatchParentsMode = "none",
@@ -419,7 +462,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         _record("write", result, started)
         return _strip_ancestors(result, ancestors)
 
-    @server.tool(name="kvault_write_node")
+    @_tool("kvault_write_node")
     def kvault_write_node(
         path: str,
         content: Optional[str] = None,
@@ -499,7 +542,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         entities = ops.list_entities(root, category=category)
         return success_response({"entities": entities, "count": len(entities)})
 
-    @server.tool(name="kvault_list_nodes")
+    @_tool("kvault_list_nodes")
     def kvault_list_nodes(
         path: str = ".",
         recursive: bool = False,
@@ -513,7 +556,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         nodes = ops.list_nodes(root, path=path, recursive=recursive)
         return success_response({"nodes": nodes, "count": len(nodes)})
 
-    @server.tool(name="kvault_tree")
+    @_tool("kvault_tree")
     def kvault_tree(
         path: str = ".",
         depth: Optional[int] = None,
@@ -603,7 +646,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
             payload["notes"] = notes
         return success_response(payload)
 
-    @server.tool(name="kvault_search")
+    @_tool("kvault_search")
     def kvault_search(
         query: str,
         limit: int = 8,
@@ -640,8 +683,10 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         files that are not searched. include_content and full parents share
         one total_max_chars budget. `kind` is a comma-separated subset of
         root,category,entity; `path_prefix` restricts to a subtree.
-        Nodes under deep_context/ (parked duplicates, supporting material)
-        come back only with include_background=true; a note counts them.
+        A match under deep_context/ (a parked duplicate or long-form notes)
+        is folded into the node that keeps it when that node matches about
+        as well; a note lists the folded paths. include_background=true
+        returns them all.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -672,7 +717,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         )
         return success_response(result)
 
-    @server.tool(name="kvault_delete_entity")
+    @_tool("kvault_delete_entity")
     def kvault_delete_entity(
         path: str, ancestors: str = "paths", kg_root: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -697,7 +742,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         _record("delete", result, started)
         return _strip_ancestors(result, ancestors)
 
-    @server.tool(name="kvault_move_entity")
+    @_tool("kvault_move_entity")
     def kvault_move_entity(
         source_path: Optional[str] = None,
         target_path: Optional[str] = None,
@@ -735,7 +780,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         _record("move", result, started)
         return _strip_ancestors(result, ancestors)
 
-    @server.tool(name="kvault_move_entities")
+    @_tool("kvault_move_entities")
     def kvault_move_entities(
         moves: List[Dict[str, str]],
         new_root: bool = False,
@@ -763,7 +808,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
             _record("move-batch", result, started)
         return _strip_ancestors(result, ancestors)
 
-    @server.tool(name="kvault_read_summary")
+    @_tool("kvault_read_summary")
     def kvault_read_summary(path: str = ".", kg_root: Optional[str] = None) -> Dict[str, Any]:
         """Read a summary file."""
         root, err = _tool_root(bound_root, kg_root)
@@ -801,7 +846,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         _record("write-summary", result, started)
         return result
 
-    @server.tool(name="kvault_mark")
+    @_tool("kvault_mark")
     def kvault_mark(
         path: str,
         distinct_from: Optional[List[str]] = None,
@@ -841,7 +886,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         _record("mark", result, started)
         return result
 
-    @server.tool(name="kvault_capture")
+    @_tool("kvault_capture")
     def kvault_capture(
         content: str,
         source: str,
@@ -877,7 +922,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         _record("capture", result, started)
         return result
 
-    @server.tool(name="kvault_events")
+    @_tool("kvault_events")
     def kvault_events(
         action: EventAction = "list",
         event_id: Optional[str] = None,
@@ -929,7 +974,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         _record("events-retract", result, started)
         return result
 
-    @server.tool(name="kvault_prepare_summary_update")
+    @_tool("kvault_prepare_summary_update")
     def kvault_prepare_summary_update(
         path: str,
         children: str = "auto",
@@ -947,7 +992,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         assert root is not None
         return ops.prepare_summary_update(root, path, children=children)
 
-    @server.tool(name="kvault_write_parent_summary")
+    @_tool("kvault_write_parent_summary")
     def kvault_write_parent_summary(
         path: str,
         content: str,
@@ -968,7 +1013,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
     # Each entry carries a full rollup body; keep a call to <= 10 entries over
     # a remote bridge (a 40-entry payload has stressed one). kvault stamps
     # `updated` on every rewritten summary (0.15.2).
-    @server.tool(name="kvault_update_summaries")
+    @_tool("kvault_update_summaries")
     def kvault_update_summaries(
         updates: List[SummaryUpdate], kg_root: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -991,7 +1036,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         _record("update-summaries", result, started)
         return result
 
-    @server.tool(name="kvault_get_parent_summaries")
+    @_tool("kvault_get_parent_summaries")
     def kvault_get_parent_summaries(
         path: str, ancestors: str = "content", kg_root: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -1024,7 +1069,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         """Compatibility alias returning all summary propagation targets."""
         return kvault_get_parent_summaries(path=path, ancestors=ancestors, kg_root=kg_root)
 
-    @server.tool(name="kvault_write_journal")
+    @_tool("kvault_write_journal")
     def kvault_write_journal(
         actions: List[Dict[str, Any]],
         source: str,
@@ -1045,7 +1090,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         _record("journal", result, started)
         return result
 
-    @server.tool(name="kvault_generate_daily_artifact")
+    @_tool("kvault_generate_daily_artifact")
     def kvault_generate_daily_artifact(
         artifact_date: Optional[str] = None,
         force: bool = False,
@@ -1068,7 +1113,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
             return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
         return _serialize_daily_result(root, result, include_content=include_content)
 
-    @server.tool(name="kvault_check")
+    @_tool("kvault_check")
     def kvault_check(
         threshold_minutes: int = 5,
         summary_quality: bool = True,
@@ -1113,7 +1158,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
             codes=selected,
         )
 
-    @server.tool(name="kvault_plan")
+    @_tool("kvault_plan")
     def kvault_plan(
         path: Optional[str] = None,
         limit: int = DEFAULT_LIMIT,
@@ -1133,7 +1178,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         assert root is not None
         return build_plan(root, path=path, limit=limit, max_children=max_children)
 
-    @server.tool(name="kvault_validate_kb")
+    @_tool("kvault_validate_kb")
     def kvault_validate_kb(kg_root: Optional[str] = None) -> Dict[str, Any]:
         """Validate KB integrity (frontmatter, placeholders, ghost directories)."""
         root, err = _tool_root(bound_root, kg_root)
@@ -1174,7 +1219,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
             )
         return success_response({"session_id": logger.session_id, "phase": phase})
 
-    @server.tool(name="kvault_log_tail")
+    @_tool("kvault_log_tail")
     def kvault_log_tail(
         limit: int = 20,
         session: Optional[str] = None,

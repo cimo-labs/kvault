@@ -2190,6 +2190,7 @@ def _write_parent_summary_locked(
         "success": True,
         "path": prepared["path"],
         "did": result.get("did"),
+        "changed": result.get("changed", True),
     }
     if result.get("notes"):
         out["notes"] = result["notes"]
@@ -2229,6 +2230,7 @@ def _update_summaries_locked(
 ) -> Dict[str, Any]:
     item_notes: List[Dict[str, Any]] = []
     summary_warnings: List[Dict[str, Any]] = []
+    changed_paths: List[str] = []
     for item in updates:
         if not isinstance(item, dict):
             errors.append({"path": "<missing>", "error": "Each update must be a JSON object"})
@@ -2287,6 +2289,8 @@ def _update_summaries_locked(
             r = write_summary(kg_root, path=p, content=body, meta=m)
             if r.get("success"):
                 updated.append(p)
+                if r.get("changed", True):
+                    changed_paths.append(p)
                 item_notes.extend(r.get("notes") or [])
                 summary_warnings.extend(r.get("summary_warnings") or [])
             else:
@@ -2317,6 +2321,8 @@ def _update_summaries_locked(
         "success": len(updated) > 0 or len(updates) == 0,
         "did": f"updated {len(updated)} of {len(updates)} summaries",
         "updated": updated,
+        "changed": bool(changed_paths),
+        "changed_paths": changed_paths,
         "count": len(updated),
         "attempted": len(updates),
         "failed": len(errors),
@@ -2386,8 +2392,9 @@ def search_nodes(
 ) -> Dict[str, Any]:
     """Search visible kvault node summaries.
 
-    Nodes under ``deep_context/`` are returned only with *include_background*
-    (0.17); a note counts the matches it held back.
+    A match under ``deep_context/`` is folded into the node that keeps it
+    when that node scores at least half as much (0.17); a note lists the
+    folded paths, and *include_background* returns them all.
 
     ``parents`` (0.16, CLI and MCP alike): ``gist`` adds one shared
     ``parents`` map from every ancestor path of the hits to ``{title,
@@ -2935,6 +2942,7 @@ def move_entities(
         result["not_attempted"] = not_attempted
     result["moved"] = moved
     result["count"] = len(moved)
+    result["changed"] = bool(moved)
     result["propagation_required"] = len(combined) > 0
     result["ancestor_paths"] = [t["path"] for t in combined]
     result["referrer_paths"] = referrers

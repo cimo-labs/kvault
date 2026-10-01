@@ -178,3 +178,31 @@ def test_daily_artifact_content_only_on_request(tmp_path):
         {"artifact_date": "2026-01-05", "force": True, "include_content": True},
     )
     assert len(full["content"]) == full["content_chars"]
+
+
+def test_results_are_one_compact_json_text_block(tmp_path):
+    """FastMCP indented every result and sent a structured copy beside it."""
+    server = create_server(_kb(tmp_path))
+    result = asyncio.run(server.call_tool("kvault_search", {"query": "people"}))
+    assert not isinstance(result, tuple)  # no structured copy
+    (block,) = result
+    assert "\n" not in block.text and json.loads(block.text)["success"] is True
+    tools = {t.name: t for t in asyncio.run(server.list_tools())}
+    assert tools["kvault_search"].outputSchema is None
+
+
+def test_compact_search_notes_carry_code_text_and_next(tmp_path):
+    kb = _kb(tmp_path)
+    for i in range(12):
+        ops.write_node(
+            kb,
+            f"people/p{i:02d}",
+            f"# Person {i}\n\nA zebra keeper.\n",
+            meta=dict(META),
+            create=True,
+        )
+    server = create_server(kb)
+    result = _run(server, "kvault_search", {"query": "zebra"})
+    assert result["notes"] and all(set(n) <= {"code", "text", "next"} for n in result["notes"])
+    full = _run(server, "kvault_search", {"query": "zebra", "compact": False})
+    assert any("detail" in n for n in full["notes"])

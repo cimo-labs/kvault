@@ -48,7 +48,8 @@ class SearchDocument:
     summary_path: str
     last_updated: str
     #: Under a background child such as ``deep_context/`` (parked or supporting
-    #: material): found by search only with ``include_background``.
+    #: material): folded into the node that keeps it when that node matches
+    #: about as well.
     background: bool = False
 
 
@@ -103,6 +104,16 @@ class SearchResult:
         return data
 
 
+def _keeper(path: str) -> str:
+    """The node that keeps a background path: everything before its first
+    background segment (``a/deep_context/b`` -> ``a``)."""
+    parts = path.split("/")
+    for index, part in enumerate(parts):
+        if is_background_child(part):
+            return "/".join(parts[:index]) or "."
+    return path
+
+
 def search_nodes(
     kg_root: Path,
     query: str,
@@ -120,11 +131,15 @@ def search_nodes(
     """Search visible kvault nodes and return ranked results.
 
     Nodes under ``deep_context/`` (a duplicate parked under its keeper, or
-    supporting material) are background: they are scored, so IDF and the
-    blind-spot note stay honest, but returned only with
-    ``include_background`` (0.17). Before, a parked copy competed with its
-    keeper and could collapse the keeper's parents out of the results.
-    Paths listed in ``.kvaultignore`` are never searched.
+    the keeper's long-form notes) are background (0.17). A background match
+    is folded into its keeper when the keeper scores at least half as much
+    (the collapse rule's ratio), and the note lists it; a stronger one is
+    returned, since a fact may live only in the notes. Folding whenever the
+    keeper matched at all dropped a notes node from the top five for 18 of
+    25 queries taken from notes text on a real KB; this rule drops it for
+    5. ``include_background`` returns every match. Before, a parked copy
+    competed with its keeper and could collapse the keeper's parents out of
+    the results. Paths in ``.kvaultignore`` are never searched.
 
     ``compact`` returns ``path``, ``title``, ``kind``, ``last_updated`` and a
     one-line snippet per hit (``COMPACT_SNIPPET_CHARS`` unless
@@ -172,9 +187,18 @@ def search_nodes(
         scored = [item for item in scored if item[1].kind in wanted_kinds]
     if prefix is not None:
         scored = [item for item in scored if _under_prefix(item[1].path, prefix)]
+    folded: List[Tuple[float, str]] = []
     if not include_background:
-        hidden_background = sum(1 for item in scored if item[1].background)
-        scored = [item for item in scored if not item[1].background]
+        best = {item[1].path: item[0] for item in scored}
+        kept_items = []
+        for item in scored:
+            keeper_score = best.get(_keeper(item[1].path)) if item[1].background else None
+            if keeper_score is not None and keeper_score >= _COLLAPSE_SCORE_RATIO * item[0]:
+                folded.append((item[0], item[1].path))
+            else:
+                kept_items.append(item)
+        hidden_background = len(folded)
+        scored = kept_items
 
     collapsed_by: Dict[str, str] = {}
     if collapse:
@@ -254,12 +278,20 @@ def search_nodes(
             )
         )
     if hidden_background:
+        folded_paths = [path for _, path in sorted(folded, reverse=True)[:3]]
+        more = (
+            f" (+{hidden_background - len(folded_paths)} more)"
+            if hidden_background > len(folded_paths)
+            else ""
+        )
         notes.append(
             nt.note(
                 "truncated",
-                f"{hidden_background} match(es) under deep_context/ (parked or supporting material) not shown",
-                detail={"kind": "background", "hidden": hidden_background},
-                next_step="re-run with include_background (CLI --include-background)",
+                f"{hidden_background} match(es) under deep_context/ folded into the node "
+                f"that keeps them, which matched about as well: {', '.join(folded_paths)}{more}",
+                detail={"kind": "background", "hidden": hidden_background, "paths": folded_paths},
+                next_step="read one of these paths, or re-run with include_background "
+                "(CLI --include-background) to list them all",
             )
         )
     if total_matched > len(results):
@@ -302,9 +334,12 @@ def search_nodes(
 
     if compact:
         # A compact result is read inline by agents whose clients spill output
-        # above ~4 KB: notes keep what to do (next_step), not why (0.17).
-        for item in notes:
-            item.pop("why", None)
+        # above ~4 KB: a note keeps its code, its text and what to do next;
+        # why, level and the structured detail (the text carries it) come
+        # only with compact=false (0.17).
+        notes = [
+            {k: v for k, v in entry.items() if k in ("code", "text", "next")} for entry in notes
+        ]
     out: Dict[str, Any] = {
         "query": query,
         "did": f"matched {total_matched} node(s), returning {len(results)}",

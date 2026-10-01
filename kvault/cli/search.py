@@ -81,7 +81,7 @@ from kvault.core.search import KINDS
 @click.option(
     "--include-background",
     is_flag=True,
-    help="Also return nodes under deep_context/ (parked duplicates, supporting material).",
+    help="Also return deep_context/ matches folded into the node that keeps them.",
 )
 @verbosity_options
 @common_options

@@ -4,7 +4,8 @@
   "email" and "detail", and the false title/path match blocked collapse.
 - Nodes parked under ``deep_context/`` were searched as live entities and
   competed with their keepers; the collapse rule checked only the leaf name,
-  so a parked copy could collapse its keeper's parents.
+  so a parked copy could collapse its keeper's parents. A match there is now
+  folded into its keeper when the keeper matches too.
 - ``.kvaultignore`` was not honored.
 """
 
@@ -51,8 +52,35 @@ def test_parked_copies_are_background(tmp_path):
     assert _paths(result) == ["projects/keeper"]
     note = next(n for n in result["notes"] if (n.get("detail") or {}).get("kind") == "background")
     assert note["detail"]["hidden"] == 1
+    assert note["detail"]["paths"] == ["projects/keeper/deep_context/old_twin"]
+    assert "projects/keeper/deep_context/old_twin" in note["text"]
     every = ops.search_nodes(kb, "zebra protocol", limit=10, include_background=True)
     assert "projects/keeper/deep_context/old_twin" in _paths(every)
+
+
+def test_a_fact_only_in_long_form_notes_is_still_found(tmp_path):
+    """deep_context/ also holds an entity's long-form notes: a match there whose
+    keeper does not match is returned, not hidden."""
+    kb = _kb(tmp_path)
+    _node(kb, "projects/keeper", "# Keeper\n\nThe current state.\n")
+    _node(kb, "projects/keeper/deep_context/notes", "# Notes\n\nThe quokka migration plan.\n")
+    result = ops.search_nodes(kb, "quokka migration", limit=10)
+    assert _paths(result) == ["projects/keeper/deep_context/notes"]
+    assert not [n for n in result.get("notes", []) if (n.get("detail") or {}).get("kind")]
+
+
+def test_a_strong_notes_match_beats_a_weak_keeper_match(tmp_path):
+    """Folding needs the keeper to score at least half as much: a keeper that
+    shares one word with the query does not hide the notes that hold the fact."""
+    kb = _kb(tmp_path)
+    _node(kb, "projects/keeper", "# Keeper\n\nThe migration is done.\n")
+    _node(
+        kb,
+        "projects/keeper/deep_context/notes",
+        "# Notes\n\nThe quokka migration plan: quokka cutover, quokka rollback.\n",
+    )
+    result = ops.search_nodes(kb, "quokka migration", limit=10)
+    assert "projects/keeper/deep_context/notes" in _paths(result)
 
 
 def test_a_parked_copy_never_collapses_its_keepers_parents(tmp_path):

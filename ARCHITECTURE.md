@@ -249,6 +249,8 @@ pytest -q
 
 ## Version Notes
 
+- 0.17.1: PROPAGATE and LOG walk managed directories only; over MCP, status and search fit
+  `max_chars`, check returns `findings` once, validate one message per issue type.
 - 0.17.0: write integrity and the MCP surface — a leading frontmatter block in content is
   merged instead of stacked, summary `meta` merges (null deletes), `update-summaries` never
   creates paths and refuses unknown keys, summary rules reported at write time, same-day

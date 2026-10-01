@@ -5,7 +5,7 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
-from kvault.core.check import _get_updated_date, check_propagation
+from kvault.core.check import _get_updated_date, check_journal, check_propagation
 from kvault.core.frontmatter import build_frontmatter
 
 
@@ -222,3 +222,25 @@ def test_a_timestamp_in_updated_is_read_as_its_day(tmp_path):
         "---\nupdated: 2026-02-02 09:30:00\n---\n# Category\n"
     )
     assert check_propagation(kb, threshold_minutes=5)  # a finding, not a TypeError
+
+
+def test_propagate_and_log_walk_managed_directories_only(tmp_path):
+    """0.17.1: a custom journal layout listed in .kvaultignore, and a node's own
+    deep_context/ notes, were compared like children; every other check
+    already walked managed directories only."""
+    kb = tmp_path / "kb"
+    old = date(2026, 5, 16)
+    for rel in (".", "logs", "logs/y2026", "people", "people/ada", "people/ada/deep_context"):
+        f = (kb if rel == "." else kb / rel) / "_summary.md"
+        _write_summary(f, f"# {rel}\n", meta={"updated": old.isoformat()})
+        os.utime(f, (_at(old, 9), _at(old, 9)))
+    for rel in ("logs/y2026/week_40", "people/ada/deep_context/notes"):  # newer than their parents
+        _write_summary(
+            kb / rel / "_summary.md", "# x\n", meta={"updated": date.today().isoformat()}
+        )
+    (kb / ".kvaultignore").write_text("logs/\n")
+    assert not check_propagation(kb, threshold_minutes=5)
+    assert not check_journal(kb)
+    (kb / ".kvaultignore").unlink()
+    assert [w for w in check_propagation(kb, threshold_minutes=5) if "week_40" in w]
+    assert check_journal(kb)  # the ignored tree's leaf was edited today

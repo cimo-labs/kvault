@@ -117,13 +117,41 @@ def _tool_root(
     return bound_root, None
 
 
-def _status_payload(root: Path, include_root_summary: bool = False) -> Dict[str, Any]:
-    info = ops.get_kb_info(root, include_root_summary=include_root_summary)
-    info["health"] = {
-        "root_summary_exists": (root / "_summary.md").exists(),
-        "kvault_dir_exists": (root / ".kvault").exists(),
+def _status_payload(
+    root: Path,
+    include_root_summary: bool = False,
+    hierarchy_depth: int = 2,
+    max_chars: int = 3500,
+) -> Dict[str, Any]:
+    """Status with its hierarchy rendered under *max_chars* (0.17.1).
+
+    The depth-2 hierarchy alone was 10 KB on a 700-node KB, so the one call
+    every session starts with spilled past the client cap.
+    """
+    info = ops.get_kb_info(root, include_root_summary=include_root_summary, hierarchy=False)
+    payload: Dict[str, Any] = {
+        "version": info["version"],
+        "kg_root": info["kg_root"],
+        "root_summary_chars": info["root_summary_chars"],
+        "entity_count": info["entity_count"],
+        "health": {
+            "root_summary_exists": (root / "_summary.md").exists(),
+            "kvault_dir_exists": (root / ".kvault").exists(),
+        },
     }
-    return success_response(info)
+    room = max_chars
+    if max_chars:
+        # The rest of the payload and a possible truncated note (~260 bytes)
+        # come out of the same budget.
+        room = max(MIN_MAX_CHARS, max_chars - _json_size(success_response(payload)) - 300)
+    fitted = _fit_outline(root, ".", hierarchy_depth, 20, False, "text", room, what="hierarchy")
+    outline, rendered, notes = fitted if fitted is not None else (None, "", [])
+    if notes:
+        payload["notes"] = notes
+    payload["hierarchy"] = rendered
+    if include_root_summary:
+        payload["root_summary"] = info.get("root_summary", "")
+    return success_response(payload)
 
 
 def _serialize_daily_result(
@@ -170,14 +198,254 @@ def _compact_text(fn: Any) -> Any:
     return wrapper
 
 
-#: Smallest outline budget kvault_tree accepts (0 means no limit).
-TREE_MIN_CHARS = 100
+#: Smallest result budget a max_chars argument accepts (0 means no limit).
+MIN_MAX_CHARS = 100
+#: Issues kvault_validate_kb lists before cutting (issue_types keeps every count).
+DEFAULT_MAX_ISSUES = 50
+#: Per-category lists of the check document that repeat `findings` (0.17.1).
+LEGACY_CHECK_LISTS = (
+    "warnings",
+    "summary_warnings",
+    "pending_events",
+    "retracted_refs",
+    "structure_warnings",
+)
+
+
+def _json_size(value: Any) -> int:
+    """Bytes of *value* as the client receives it (compact JSON, UTF-8); a
+    string is counted without its quotes. Client caps are byte caps."""
+    size = len(pydantic_core.to_json(value, fallback=str))
+    return size - 2 if isinstance(value, str) else size
+
+
+def _max_chars_error(max_chars: int) -> Optional[Dict[str, Any]]:
+    if max_chars == 0 or max_chars >= MIN_MAX_CHARS:
+        return None
+    return error_response(
+        ErrorCode.VALIDATION_ERROR,
+        f"max_chars must be 0 (no limit) or at least {MIN_MAX_CHARS}",
+    )
 
 
 def _outline_depth(outline: Dict[str, Any]) -> int:
     """Levels below the outline's root that the rendered outline shows."""
     children = outline.get("children") or []
     return 1 + max(_outline_depth(child) for child in children) if children else 0
+
+
+def _fit_outline(
+    root: Path,
+    path: str,
+    depth: Optional[int],
+    max_children: int,
+    gist: bool,
+    fmt: str,
+    max_chars: int,
+    what: str = "outline",
+) -> Optional[Tuple[Dict[str, Any], Any, List[Dict[str, Any]]]]:
+    """The outline at *path*, rendered to fit *max_chars* (0 = no limit).
+
+    Shown at the deepest depth that fits (the requested one, then 3, 2, 1);
+    a text outline is then cut at a line, marker included; a json one is
+    not cut and the note says it is still over. A root outline at depth 2
+    was ~10 KB on a 700-node KB and an unbounded one ~40 KB on 500 nodes:
+    past ~4 KB many clients write the result to a file, and agents oriented
+    on nothing (0.17). Returns ``(outline, rendered, notes)``, or None when
+    *path* is not a node.
+    """
+
+    def render(level: Optional[int]) -> Tuple[Any, Any, int]:
+        tree = ops.build_outline(
+            root, path=path, depth=level, max_children=max_children, include_gist=gist
+        )
+        if tree is None:
+            return None, None, 0
+        text: Any = ops.render_outline_text(tree) if fmt == "text" else tree
+        return tree, text, _json_size(text)
+
+    outline, rendered, size = render(depth)
+    if outline is None:
+        return None
+    notes: List[Dict[str, Any]] = []
+    if max_chars and size > max_chars:
+        full = size
+        reached = _outline_depth(outline)
+        shown = reached if depth is None else min(depth, reached)
+        for level in (3, 2, 1):
+            if level >= reached or (depth is not None and level >= depth):
+                continue  # the same outline again
+            outline, rendered, size = render(level)
+            shown = level
+            if size <= max_chars:
+                break
+        cut = 0
+        if size > max_chars and isinstance(rendered, str):
+            lines = rendered.splitlines()
+            kept: List[str] = []
+            used = _json_size(f"\n… (+{len(lines)} more lines)")  # room for the marker
+            for line in lines:
+                step = _json_size(line) + (2 if kept else 0)  # "\\n" between lines
+                if used + step > max_chars:
+                    break
+                kept.append(line)
+                used += step
+            cut = len(lines) - len(kept)
+            rendered = "\n".join(kept) + f"\n… (+{cut} more lines)"
+            size = _json_size(rendered)
+        over = size > max_chars
+        notes.append(
+            nt.note(
+                "truncated",
+                f"{what} shown at depth {shown}"
+                + (f" and cut by {cut} lines" if cut else "")
+                + (
+                    f" is still {size} chars, over max_chars {max_chars}"
+                    if over
+                    else f" to stay under {max_chars} chars"
+                )
+                + f" (full: {full})",
+                detail={
+                    "depth_shown": shown,
+                    "max_chars": max_chars,
+                    "full_chars": full,
+                    "shown_chars": size,
+                },
+                next_step="drill into a branch with kvault_tree(path=<node>), or raise max_chars",
+            )
+        )
+    return outline, rendered, notes
+
+
+def _needed_parents(parents: Any, hits: List[Dict[str, Any]]) -> Any:
+    """The entries of a search's ``parents`` map that a remaining hit sits under."""
+    if not isinstance(parents, dict):
+        return parents
+    needed = set()
+    for hit in hits:
+        needed.update(ops.ancestor_paths(str(hit.get("path", "."))))
+    return {path: entry for path, entry in parents.items() if path in needed}
+
+
+def _fit_search(payload: Dict[str, Any], max_chars: int) -> Dict[str, Any]:
+    """Drop trailing hits until a search result fits *max_chars* (0.17.1).
+
+    Eight compact hits fit a 4 KB client cap, but parents="gist" added nine
+    ancestor gists and put the result 600 bytes over, where the client wrote
+    it to a file and the agent read nothing. Hits go from the end; ancestor
+    gists no remaining hit needs go with them. A first hit that is over the
+    budget on its own is kept, and the note says so.
+    """
+    if not max_chars or _json_size(payload) <= max_chars:
+        return payload
+    results = list(payload.pop("results", []) or [])
+    parents = payload.pop("parents", None)
+    base_notes = list(payload.get("notes") or [])
+    compact = bool(payload.get("compact"))
+    total = len(results)
+    shown = max(1, total - 1)
+    while True:
+        kept = results[:shown]
+        trial = dict(payload)
+        trial["count"] = shown
+        trial["did"] = f"matched {payload.get('total_matched', total)} node(s), returning {shown}"
+        trial["results"] = kept
+        kept_parents = _needed_parents(parents, kept)
+        if kept_parents is not None:
+            trial["parents"] = kept_parents
+        size = _json_size(trial) + 200  # room for the note below
+        fits = size <= max_chars
+        if fits or shown <= 1:
+            note = nt.note(
+                "truncated",
+                (
+                    f"showing {shown} of {total} hits to stay under {max_chars} chars"
+                    if fits
+                    else f"the first hit alone is about {size} chars, over max_chars {max_chars}"
+                ),
+                detail={"kind": "max_chars", "max_chars": max_chars, "dropped": total - shown},
+                next_step="narrow with kind or path_prefix, or raise max_chars",
+            )
+            if compact:
+                note = {k: v for k, v in note.items() if k in ("code", "text", "next")}
+            trial["notes"] = base_notes + [note]
+            # notes before the bulk payload: rebuild in reading order
+            out = {k: v for k, v in trial.items() if k not in ("results", "parents")}
+            out["results"] = kept
+            if kept_parents is not None:
+                out["parents"] = kept_parents
+            return out
+        shown -= 1
+
+
+def _shape_check(doc: Dict[str, Any], legacy_lists: bool) -> Dict[str, Any]:
+    """The check document with its per-category duplicates removed (0.17.1).
+
+    Every finding appeared twice: in ``findings`` and in a legacy list for
+    its category (``warnings`` as text lines, ``summary_warnings``,
+    ``pending_events``, ``retracted_refs``, ``structure_warnings``). A
+    27-finding PROPAGATE list was 8.7 KB, 2.4 KB of it the text lines. The
+    counts stay; ``legacy_lists`` restores the lists.
+    """
+    if legacy_lists or "findings" not in doc:
+        return doc
+    return {k: v for k, v in doc.items() if k not in LEGACY_CHECK_LISTS}
+
+
+def _shape_validate(doc: Dict[str, Any], max_issues: int) -> Dict[str, Any]:
+    """One message and fix per issue type (0.17.1).
+
+    Every issue repeated its type's message and fix (about 180 characters):
+    32 stacked-frontmatter issues were 9.5 KB. ``issue_types`` carries each
+    type's severity, message, fix and count once, with the issue's own path
+    written as ``<path>`` (a ghost's fix names its directory); ``issues``
+    keeps type and path, plus a message, fix or severity only where it
+    differs from the type's; ``max_issues`` caps the list (0 = all) with a
+    ``truncated`` note.
+    """
+
+    def template(issue: Dict[str, Any], key: str) -> Any:
+        value, path = issue.get(key), issue.get("path")
+        if isinstance(value, str) and isinstance(path, str) and path and path != ".":
+            return value.replace(path, "<path>")
+        return value
+
+    issues = list(doc.get("issues") or [])
+    types: Dict[str, Dict[str, Any]] = {}
+    slim: List[Dict[str, Any]] = []
+    for issue in issues:
+        kind = str(issue.get("type", "unknown"))
+        entry = types.setdefault(
+            kind,
+            {
+                "severity": issue.get("severity"),
+                "message": template(issue, "message"),
+                "fix": template(issue, "fix"),
+                "count": 0,
+            },
+        )
+        entry["count"] += 1
+        item: Dict[str, Any] = {"type": kind, "path": issue.get("path")}
+        if issue.get("severity") != entry["severity"]:
+            item["severity"] = issue.get("severity")
+        for key in ("message", "fix"):
+            if template(issue, key) != entry[key]:
+                item[key] = issue.get(key)
+        slim.append(item)
+    shown = slim[:max_issues] if max_issues > 0 else slim
+    out = {k: v for k, v in doc.items() if k != "issues"}
+    out["issue_types"] = types
+    if len(shown) < len(slim):
+        out["notes"] = [
+            nt.note(
+                "truncated",
+                f"showing {len(shown)} of {len(slim)} issues",
+                detail={"max_issues": max_issues, "hidden": len(slim) - len(shown)},
+                next_step="work by type from issue_types, or raise max_issues (0 = all)",
+            )
+        ]
+    out["issues"] = shown
+    return out
 
 
 #: Epoch-1 tools superseded by the node tools; registered only on request (0.17).
@@ -345,14 +613,32 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
 
     @_tool("kvault_status")
     def kvault_status(
-        kg_root: Optional[str] = None, include_root_summary: bool = False
+        kg_root: Optional[str] = None,
+        include_root_summary: bool = False,
+        hierarchy_depth: int = 2,
+        max_chars: int = 3500,
     ) -> Dict[str, Any]:
-        """Show KB status (version, hierarchy, counts). `root_summary` is opt-in."""
+        """Show KB status (version, counts, hierarchy). `root_summary` is opt-in.
+
+        The hierarchy is shown at `hierarchy_depth` or the deepest depth that
+        keeps the result under `max_chars` (3,500 by default; 0 = no limit),
+        with a `truncated` note when it stepped down; kvault_tree drills in.
+        """
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        return _status_payload(root, include_root_summary=include_root_summary)
+        bad = _max_chars_error(max_chars)
+        if bad:
+            return bad
+        if hierarchy_depth < 0:
+            return error_response(ErrorCode.VALIDATION_ERROR, "hierarchy_depth must be >= 0")
+        return _status_payload(
+            root,
+            include_root_summary=include_root_summary,
+            hierarchy_depth=hierarchy_depth,
+            max_chars=max_chars,
+        )
 
     _PARENTS_ERROR = "parents must be one of: " + ", ".join(ops.PARENTS_MODES)
 
@@ -616,10 +902,11 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         max_children. Text format is the cheapest full-tree view.
 
         The outline stays under max_chars (default 3,500; 0 = no limit;
-        otherwise at least 100), counted as the client receives it: it is
-        shown at the deepest depth that fits (the requested one, then 3, 2,
-        1), and a text outline is cut at a line past that. A `truncated` note
-        gives the depth shown; drill into a branch with path=<node>.
+        otherwise at least 100), counted in bytes as the client receives it:
+        it is shown at the deepest depth that fits (the requested one, then
+        3, 2, 1), and a text outline is cut at a line past that. A
+        `truncated` note gives the depth shown; drill into a branch with
+        path=<node>.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -630,80 +917,13 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
                 ErrorCode.VALIDATION_ERROR,
                 "format must be one of: text, json",
             )
-        if max_chars != 0 and max_chars < TREE_MIN_CHARS:
-            return error_response(
-                ErrorCode.VALIDATION_ERROR,
-                f"max_chars must be 0 (no limit) or at least {TREE_MIN_CHARS}",
-            )
-
-        def size_of(rendered: Any) -> int:
-            # As serialized for the client: escaped newlines and quotes count.
-            return len(pydantic_core.to_json(rendered).decode()) - (
-                2 if isinstance(rendered, str) else 0
-            )
-
-        def render(level: Optional[int]) -> Tuple[Any, Any, int]:
-            tree = ops.build_outline(
-                root, path=path, depth=level, max_children=max_children, include_gist=gist
-            )
-            if tree is None:
-                return None, None, 0
-            text: Any = ops.render_outline_text(tree) if format == "text" else tree
-            return tree, text, size_of(text)
-
-        outline, rendered, size = render(depth)
-        if outline is None:
+        bad = _max_chars_error(max_chars)
+        if bad:
+            return bad
+        fitted = _fit_outline(root, path, depth, max_children, gist, format, max_chars)
+        if fitted is None:
             return error_response(ErrorCode.NOT_FOUND, f"Node not found: {path}")
-        notes: List[Dict[str, Any]] = []
-        if max_chars and size > max_chars:
-            # A root outline at depth 2 was ~10 KB on a 700-node KB and an
-            # unbounded one ~40 KB on 500 nodes: past ~4 KB many clients write
-            # the result to a file, and agents oriented on nothing (0.17).
-            full = size
-            reached = _outline_depth(outline)
-            shown = reached if depth is None else min(depth, reached)
-            for level in (3, 2, 1):
-                if level >= reached or (depth is not None and level >= depth):
-                    continue  # the same outline again
-                outline, rendered, size = render(level)
-                shown = level
-                if size <= max_chars:
-                    break
-            cut = 0
-            if size > max_chars and isinstance(rendered, str):
-                lines = rendered.splitlines()
-                kept: List[str] = []
-                used = size_of(f"\n… (+{len(lines)} more lines)")  # room for the marker
-                for line in lines:
-                    step = size_of(line) + (2 if kept else 0)  # "\\n" between lines
-                    if used + step > max_chars:
-                        break
-                    kept.append(line)
-                    used += step
-                cut = len(lines) - len(kept)
-                rendered = "\n".join(kept) + f"\n… (+{cut} more lines)"
-                size = size_of(rendered)
-            over = size > max_chars  # the json format is not cut
-            notes.append(
-                nt.note(
-                    "truncated",
-                    f"outline shown at depth {shown}"
-                    + (f" and cut by {cut} lines" if cut else "")
-                    + (
-                        f" is still {size} chars, over max_chars {max_chars}"
-                        if over
-                        else f" to stay under {max_chars} chars"
-                    )
-                    + f" (full: {full})",
-                    detail={
-                        "depth_shown": shown,
-                        "max_chars": max_chars,
-                        "full_chars": full,
-                        "shown_chars": size,
-                    },
-                    next_step="drill down with path=<node>, or raise max_chars",
-                )
-            )
+        outline, rendered, notes = fitted
         counts = ops.outline_counts(outline)
         payload: Dict[str, Any] = {
             "path": outline["path"],
@@ -729,6 +949,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         kind: Optional[str] = None,
         path_prefix: Optional[str] = None,
         include_background: bool = False,
+        max_chars: int = 3500,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Search visible node summaries.
@@ -755,7 +976,10 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         A match under deep_context/ (a parked duplicate or long-form notes)
         is folded into the node that keeps it when that node matches about
         as well and is in the results; a note lists the folded paths.
-        include_background=true returns them all.
+        include_background=true returns them all. The result stays under
+        `max_chars` (3,500 by default; 0 = no limit): hits are dropped from
+        the end, with their ancestor gists, and a `truncated` note says how
+        many; narrow with kind or path_prefix, or raise it.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -763,6 +987,9 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         assert root is not None
         if parents not in ops.PARENTS_MODES:
             return error_response(ErrorCode.VALIDATION_ERROR, _PARENTS_ERROR)
+        bad = _max_chars_error(max_chars)
+        if bad:
+            return bad
         kinds = [k.strip() for k in (kind or "").split(",") if k.strip()] or None
         if kinds and any(k not in KINDS for k in kinds):
             return error_response(
@@ -784,7 +1011,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
             parents=parents,
             include_background=include_background,
         )
-        return success_response(result)
+        return _fit_search(success_response(result), max_chars)
 
     @_tool("kvault_delete_entity")
     def kvault_delete_entity(
@@ -1191,6 +1418,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         summary_max_words: Optional[int] = None,
         summary_max_dated_sections: int = DEFAULT_MAX_DATED_SECTIONS,
         codes: Optional[List[str]] = None,
+        legacy_lists: bool = False,
         kg_root: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the maintenance checks (the CLI's `kvault check`, one document).
@@ -1204,7 +1432,11 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         max_findings=0 that is one code's full list without the rest of
         the document.
         `kvault_validate_kb` checks integrity only; this is the one that
-        says whether the tree is rotting.
+        says whether the tree is rotting. `findings` is the whole list; the
+        CLI document's per-category copies of it (`warnings` text lines,
+        `summary_warnings`, `pending_events`, `retracted_refs`,
+        `structure_warnings`) come only with legacy_lists=true, their counts
+        always.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -1214,7 +1446,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
             selected = normalize_codes(codes)
         except ValueError as exc:
             return error_response(ErrorCode.VALIDATION_ERROR, str(exc))
-        return run_checks(
+        doc = run_checks(
             root,
             threshold_minutes=threshold_minutes,
             summary_quality=summary_quality,
@@ -1225,6 +1457,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
             max_dated_sections=summary_max_dated_sections,
             codes=selected,
         )
+        return _shape_check(doc, legacy_lists)
 
     @_tool("kvault_plan")
     def kvault_plan(
@@ -1247,13 +1480,22 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         return build_plan(root, path=path, limit=limit, max_children=max_children)
 
     @_tool("kvault_validate_kb")
-    def kvault_validate_kb(kg_root: Optional[str] = None) -> Dict[str, Any]:
-        """Validate KB integrity (frontmatter, placeholders, ghost directories)."""
+    def kvault_validate_kb(
+        max_issues: int = DEFAULT_MAX_ISSUES, kg_root: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Validate KB integrity (frontmatter, placeholders, ghost directories).
+
+        `issue_types` carries each type's severity, message, fix and count
+        once; `issues` lists type and path (up to `max_issues`; 0 = all),
+        with a message only where it differs from the type's.
+        """
         root, err = _tool_root(bound_root, kg_root)
         if err:
             return err
         assert root is not None
-        return success_response(ops.validate_kb(root))
+        if max_issues < 0:
+            return error_response(ErrorCode.VALIDATION_ERROR, "max_issues must be >= 0 (0 = all)")
+        return success_response(_shape_validate(ops.validate_kb(root), max_issues))
 
     @_legacy_tool("kvault_log_phase")
     def kvault_log_phase(

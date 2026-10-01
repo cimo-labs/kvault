@@ -2,6 +2,60 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.17.1 - 2026-10-01
+
+The agent that reported 0.16.1 ran 0.17.0 for a day and sent back what it
+found: the same-day PROPAGATE check reported 26 real findings and one
+piece of noise, 32 stacked frontmatter blocks were found and repaired, a
+24 KB propagation chain went through as 600 bytes of patches, and four
+tool results still overflowed its client. This release is those five
+items.
+
+### Fixed
+
+- **PROPAGATE and LOG walk managed directories only.** They walked every
+  summary file, so a custom journal layout the owner had listed in
+  `.kvaultignore` was still reported, and a node's own `deep_context/`
+  notes counted as a child. Both now use the walk every other check uses:
+  paths in `.kvaultignore` and the reserved names (`journal/`,
+  `deep_context/`) are neither parents nor children. On copies of two real
+  KBs the findings are unchanged.
+
+### Changed (MCP)
+
+Measured on copies of two real KBs (about 190 and 500 nodes), 0.17.0 →
+0.17.1, in bytes as the client receives them:
+
+- **`kvault_status` fits.** Its depth-2 hierarchy alone was 10 KB on the
+  reporting KB. The hierarchy is now rendered under `max_chars` (3,500 by
+  default; 0 = no limit) at `hierarchy_depth` (2) or the deepest depth
+  that fits, with a `truncated` note: 5,119 → 1,704 on the larger copy.
+- **`kvault_search` fits `max_chars`** (3,500 by default; 0 = no limit):
+  hits are dropped from the end, with the ancestor gists no remaining hit
+  needs, and a `truncated` note says how many. With `parents="gist"`,
+  results over 4 KB went from 18 and 15 of 30 queries to 0 and 0 (largest
+  3,435); the one plain search over 4 KB in 0.17.0 fits too.
+- **`kvault_check` returns `findings` once.** The CLI document's
+  per-category copies of it (`warnings` text lines, `summary_warnings`,
+  `pending_events`, `retracted_refs`, `structure_warnings`) come only with
+  `legacy_lists=true`; their counts stay. A 7-finding PROPAGATE list:
+  2,787 → 1,958; the default document: 48 KB and 109 KB → 24 KB and 56 KB.
+- **`kvault_validate_kb` carries each issue type's message and fix once**
+  (`issue_types`, with the issue's own path written as `<path>`, and a
+  count); `issues` keeps type and path, plus a message or fix only where
+  it differs from the type's, up to `max_issues` (50; 0 = all). With 32
+  stacked blocks: 10,503 → 3,330 and 8,224 → 2,600.
+- `max_chars` on `kvault_tree`, `kvault_status` and `kvault_search` counts
+  UTF-8 bytes of the text as sent, which is what clients cap.
+
+### Upgrade notes
+
+- Over MCP, `kvault_check` no longer returns the per-category lists unless
+  `legacy_lists=true`, and `kvault_validate_kb` moves each type's message
+  and fix to `issue_types`. The CLI's `--json` documents are unchanged.
+- Over MCP, a search result is cut to 3,500 bytes by default; pass
+  `max_chars=0` for the old behaviour.
+
 ## 0.17.0 - 2026-10-01
 
 An MCP-only agent on a long-running ~700-node KB reported 13 problems with

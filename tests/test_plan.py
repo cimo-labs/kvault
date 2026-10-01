@@ -343,28 +343,28 @@ def test_hub_is_not_clustered_by_its_own_name(empty_kb):
     """A real KB's first weekly run after consolidation (names changed): projects/atlas
     held 12 atlas_* nodes and the plan proposed projects/atlas/atlas."""
     names = [
-        "atlas",
-        "atlas_architecture",
-        "atlas_reporting",
-        "atlas_scaling",
-        "atlas_search",
-        "atlas_experiments",
-        "atlas_experiment_evaluation",
-        "atlas_daily_standups",
-        "atlas_catalog_search",
-        "atlas_modeling",
-        "atlas_routing_model",
-        "atlas_funnel_insights",
+        "greenhouse",
+        "greenhouse_layout",
+        "greenhouse_heating",
+        "greenhouse_lighting",
+        "greenhouse_search",
+        "greenhouse_trials",
+        "greenhouse_trial_results",
+        "greenhouse_weekly_walks",
+        "greenhouse_seed_search",
+        "greenhouse_staffing",
+        "greenhouse_watering_model",
+        "greenhouse_pest_notes",
     ]
     for n in names:
         assert ops.write_node(
-            empty_kb, f"projects/atlas/{n}", BODY, META, create=True, allow_similar=True
+            empty_kb, f"projects/greenhouse/{n}", BODY, META, create=True, allow_similar=True
         )["success"]
     clusters = [i for i in build_plan(empty_kb, limit=0)["items"] if i["kind"] == "cluster"]
-    assert not any(i["new_parent"].endswith("/atlas/atlas") for i in clusters)
+    assert not any(i["new_parent"].endswith("/greenhouse/greenhouse") for i in clusters)
     # grouping falls through to the next word where there is one
     hubs = {i["new_parent"] for i in clusters}
-    assert hubs <= {"projects/atlas/experiment", "projects/atlas/search"} or hubs == set()
+    assert hubs <= {"projects/greenhouse/trial", "projects/greenhouse/search"} or hubs == set()
 
 
 def test_ignore_lines_are_quoted_and_escaped(tmp_path):
@@ -405,10 +405,10 @@ def test_items_under_a_batch_are_deferred_and_parking_names_are_free(tmp_path):
 
     node("projects", "# Projects\n\nAll.")
     for i in range(11):
-        node(f"projects/routing_part{i:02d}", f"# Routing part {i}\n\nPart {i}.")
+        node(f"projects/orchard_part{i:02d}", f"# Orchard part {i}\n\nPart {i}.")
     node("tech", "# Tech\n\nAll.")
     node("tech/notes_copy", f"# Copy\n\n{body}")
-    node("projects/routing_part00", f"# Routing part 0\n\n{body}")
+    node("projects/orchard_part00", f"# Orchard part 0\n\n{body}")
     result = build_plan(kb, limit=0)
     kinds = [i["kind"] for i in result["items"]]
     assert "cluster" in kinds and "duplicate" not in kinds

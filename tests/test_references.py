@@ -34,11 +34,11 @@ def _kb(tmp_path: Path) -> Path:
         "projects",
         "projects/hub",
         "projects/hub/weekly_reporting",
-        "projects/causal",
-        "projects/causal/uplift_routing",
+        "projects/orchard",
+        "projects/orchard/cherry_irrigation",
         "tech",
         "tech/models",
-        "tech/models/bayes_routing",
+        "tech/models/drip_irrigation",
         "people",
         "people/family",
     ):
@@ -57,16 +57,16 @@ def test_extract_refs_kinds_and_prose_exclusions():
         "- `weekly_reporting/` — weekly pipeline\n"
         "- **power_analysis** — a plan\n"
         "- [onboarding_flow](onboarding_flow/) — a project\n\n"
-        "See `tech/models/bayes_routing` and projects/causal/uplift_router.\n"
+        "See `tech/models/drip_irrigation` and projects/orchard/cherry_sprinkler.\n"
         "Pros and cons: and/or, family/startup reconnects, A/B tests.\n"
         "Repo `cimo-labs/kvault`, file `notes/plan.md`.\n\n"
         "```\nprojects/inside/a_fence\n```\n"
     )
     refs = rf.extract_refs(body)
     assert refs["link"] == ["onboarding_flow/"]
-    assert "tech/models/bayes_routing" in refs["code"]
+    assert "tech/models/drip_irrigation" in refs["code"]
     assert "cimo-labs/kvault" in refs["code"]  # extracted; resolution drops it later
-    assert refs["path"] == ["projects/causal/uplift_router"]
+    assert refs["path"] == ["projects/orchard/cherry_sprinkler"]
     assert {"weekly_reporting", "power_analysis"} <= set(refs["list"])
     assert "onboarding_flow" not in refs["list"]  # an entry written as a link is its link
     assert "projects/inside/a_fence" not in refs["path"]
@@ -93,11 +93,11 @@ def test_list_entries_count_only_where_the_summary_lists_children(tmp_path):
     # No entry names an existing child, so these are prose bullets, not a child list.
     _node(
         kb,
-        "projects/causal",
-        "# Causal\n\n- memory_search: flaky this week\n- session_status — fine\n"
-        "Covers uplift_routing.\n",
+        "projects/orchard",
+        "# Orchard\n\n- memory_search: flaky this week\n- session_status — fine\n"
+        "Covers cherry_irrigation.\n",
     )
-    assert not [r for r in rf.dangling_references(kb) if r.node == "projects/causal"]
+    assert not [r for r in rf.dangling_references(kb) if r.node == "projects/orchard"]
 
 
 def test_rollups_may_name_grandchildren_and_their_own_name(tmp_path):
@@ -105,7 +105,7 @@ def test_rollups_may_name_grandchildren_and_their_own_name(tmp_path):
     _node(
         kb,
         "tech",
-        "# Tech\n\n## tech\n\n- `models/` — model notes\n- **bayes_routing** — lives in models\n",
+        "# Tech\n\n## tech\n\n- `models/` — model notes\n- **drip_irrigation** — lives in models\n",
     )
     assert not [r for r in rf.dangling_references(kb) if r.node == "tech"]
 
@@ -116,8 +116,8 @@ def test_paths_resolve_from_the_node_then_the_root(tmp_path):
         kb,
         "people/family",
         "# Family\n\n"
-        "Routing lives at `tech/models/bayes_routing`; the old home was "
-        "`tech/bayes_routing`, and projects/causal/uplift_router never existed. "
+        "Irrigation lives at `tech/models/drip_irrigation`; the old home was "
+        "`tech/drip_irrigation`, and projects/orchard/cherry_sprinkler never existed. "
         "Same-folder link: [up](../../projects/hub/). Escapes: [x](../../../../etc/).\n",
     )
     found = {
@@ -125,8 +125,8 @@ def test_paths_resolve_from_the_node_then_the_root(tmp_path):
         for r in rf.dangling_references(kb)
         if r.node == "people/family"
     }
-    assert ("code", "tech/bayes_routing", ("tech/models/bayes_routing",)) in found
-    assert ("path", "projects/causal/uplift_router", ()) in found
+    assert ("code", "tech/drip_irrigation", ("tech/models/drip_irrigation",)) in found
+    assert ("path", "projects/orchard/cherry_sprinkler", ()) in found
     assert len(found) == 2  # the existing path, the good link and the escape are not reported
 
 
@@ -141,7 +141,7 @@ def test_reserved_and_file_targets_and_history_are_not_checked(tmp_path):
     )
     # journal and deep_context summaries are history: old paths there are true.
     _node(kb, "journal/2026-03", "# March\n\nCreated `projects/hub/old_name`.\n")
-    _node(kb, "tech/deep_context", "# Background\n\nWas at `projects/causal/old_card`.\n")
+    _node(kb, "tech/deep_context", "# Background\n\nWas at `projects/orchard/old_card`.\n")
     found = [r for r in rf.dangling_references(kb)]
     assert [(r.node, r.target, r.moved_to) for r in found] == [
         ("people", "people/deep_context", ())  # a copied child link; no bogus "moved" hint
@@ -150,13 +150,13 @@ def test_reserved_and_file_targets_and_history_are_not_checked(tmp_path):
 
 def test_check_reports_dangling_with_hints(tmp_path):
     kb = _kb(tmp_path)
-    _node(kb, "projects", "# Projects\n\nSee [routing](causal/bayes_routing/).\n")
+    _node(kb, "projects", "# Projects\n\nSee [irrigation](orchard/drip_irrigation/).\n")
     doc = run_checks(kb, codes=["DANGLING"])
     (finding,) = doc["findings"]
     assert finding["code"] == "DANGLING" and finding["path"] == "projects"
-    assert finding["detail"]["target"] == "projects/causal/bayes_routing"
-    assert finding["detail"]["moved_to"] == ["tech/models/bayes_routing"]
-    assert "same name at tech/models/bayes_routing" in finding["message"]
+    assert finding["detail"]["target"] == "projects/orchard/drip_irrigation"
+    assert finding["detail"]["moved_to"] == ["tech/models/drip_irrigation"]
+    assert "same name at tech/models/drip_irrigation" in finding["message"]
     assert "kvault write projects" in finding["fix"]
 
 
@@ -177,17 +177,21 @@ def test_plan_groups_dangling_references_per_node(tmp_path):
 
 def test_move_reports_referrers_with_the_new_path(tmp_path):
     kb = _kb(tmp_path)
-    _node(kb, "people", "# People\n\nRouting notes: `projects/causal/uplift_routing`.\n")
+    _node(kb, "people", "# People\n\nIrrigation notes: `projects/orchard/cherry_irrigation`.\n")
     # The moved node's own relative link breaks when its depth changes.
-    _node(kb, "projects/causal/uplift_routing", "# Routing\n\nSibling: [hub](../../hub/).\n")
-    result = ops.move_entity(kb, "projects/causal/uplift_routing", "tech/models/uplift_routing")
+    _node(kb, "projects/orchard/cherry_irrigation", "# Irrigation\n\nSibling: [hub](../../hub/).\n")
+    result = ops.move_entity(
+        kb, "projects/orchard/cherry_irrigation", "tech/models/cherry_irrigation"
+    )
     assert result["success"] is True
-    assert result["referrer_paths"] == ["people", "tech/models/uplift_routing"]
+    assert result["referrer_paths"] == ["people", "tech/models/cherry_irrigation"]
     note = [n for n in result["notes"] if (n.get("detail") or {}).get("kind") == "references"][0]
     assert note["code"] == "propagate"
     refs = {r["node"]: r for r in note["detail"]["references"]}
-    assert refs["people"]["now_at"] == "tech/models/uplift_routing"
-    assert "now_at" not in refs["tech/models/uplift_routing"]  # its own link, not a pointer to it
+    assert refs["people"]["now_at"] == "tech/models/cherry_irrigation"
+    assert (
+        "now_at" not in refs["tech/models/cherry_irrigation"]
+    )  # its own link, not a pointer to it
 
 
 def test_delete_and_batch_move_report_referrers(tmp_path):
@@ -198,16 +202,16 @@ def test_delete_and_batch_move_report_referrers(tmp_path):
     ref = [n for n in deleted["notes"] if (n.get("detail") or {}).get("kind") == "references"][0]
     assert ref["detail"]["references"][0]["now_at"] is None
 
-    _node(kb, "people", "# People\n\n- see `tech/models/bayes_routing`\n")
+    _node(kb, "people", "# People\n\n- see `tech/models/drip_irrigation`\n")
     batch = ops.move_entities(
-        kb, [{"from": "tech/models/bayes_routing", "to": "projects/causal/bayes_routing"}]
+        kb, [{"from": "tech/models/drip_irrigation", "to": "projects/orchard/drip_irrigation"}]
     )
     assert batch["referrer_paths"] == ["people"]
 
 
 def test_moves_without_references_stay_quiet(tmp_path):
     kb = _kb(tmp_path)
-    result = ops.move_entity(kb, "tech/models/bayes_routing", "projects/causal/bayes_routing")
+    result = ops.move_entity(kb, "tech/models/drip_irrigation", "projects/orchard/drip_irrigation")
     assert result["referrer_paths"] == []
     assert not [n for n in result["notes"] if (n.get("detail") or {}).get("kind") == "references"]
 
@@ -239,10 +243,10 @@ def test_bold_underscore_entries_and_fences(tmp_path):
         "# Hub\n\n- __weekly_reporting__ — the pipeline\n\n"
         "````\n```\nprojects/inside/four_tick_fence\n```\n````\n\n"
         "- step:\n\n      ```bash\n      kvault move projects/old_thing tech/old_thing\n      ```\n\n"
-        "Inline ``` x ``` is code, and projects/causal/after_inline is a real path.\n",
+        "Inline ``` x ``` is code, and projects/orchard/after_inline is a real path.\n",
     )
     found = {(r.kind, r.target) for r in rf.dangling_references(kb) if r.node == "projects/hub"}
-    assert found == {("path", "projects/causal/after_inline")}
+    assert found == {("path", "projects/orchard/after_inline")}
 
 
 def test_existing_files_and_symlinked_dirs_are_not_nothing(tmp_path):
@@ -295,21 +299,25 @@ def test_an_impossible_date_never_fails_a_move_that_already_happened(tmp_path):
     kb = _kb(tmp_path)
     (kb / "people" / "_summary.md").write_text(
         "---\nsource: manual\naliases: []\nupdated: 2026-02-30\n---\n# People\n\n"
-        "See `projects/causal/uplift_routing`.\n"
+        "See `projects/orchard/cherry_irrigation`.\n"
     )
-    moved = ops.move_entity(kb, "projects/causal/uplift_routing", "tech/uplift_routing")
+    moved = ops.move_entity(kb, "projects/orchard/cherry_irrigation", "tech/cherry_irrigation")
     assert moved["success"] is True and moved["referrer_paths"] == ["people"]
     assert run_checks(kb, codes=["DANGLING", "DUPLICATE"])["success"] is True
 
 
 def test_a_parent_whose_last_child_moved_away_is_a_referrer(tmp_path):
     kb = _kb(tmp_path)
-    _node(kb, "projects/causal", "# Causal\n\n## Children\n\n- `uplift_routing/` — routing work\n")
-    moved = ops.move_entity(kb, "projects/causal/uplift_routing", "tech/uplift_routing")
-    assert "projects/causal" in moved["referrer_paths"]
+    _node(
+        kb,
+        "projects/orchard",
+        "# Orchard\n\n## Children\n\n- `cherry_irrigation/` — irrigation work\n",
+    )
+    moved = ops.move_entity(kb, "projects/orchard/cherry_irrigation", "tech/cherry_irrigation")
+    assert "projects/orchard" in moved["referrer_paths"]
     ref = [n for n in moved["notes"] if (n.get("detail") or {}).get("kind") == "references"][0]
     homes = {(r["node"], r["now_at"]) for r in ref["detail"]["references"]}
-    assert ("projects/causal", "tech/uplift_routing") in homes
+    assert ("projects/orchard", "tech/cherry_irrigation") in homes
 
 
 def test_absurdly_long_targets_do_not_crash_check(tmp_path):
@@ -441,14 +449,14 @@ def test_links_into_a_moved_or_removed_plain_word_child(tmp_path):
     _node(
         kb,
         "tech",
-        "# Tech\n\nSee [Bayes routing](models/bayes_routing/), [Q3](reports/q3_review/) "
+        "# Tech\n\nSee [Drip irrigation](models/drip_irrigation/), [Spring](reports/spring_review/) "
         "and [the bug](issue/4821).\n",
     )
     _node(kb, "tech/ml")
     shutil.move(str(kb / "tech" / "models"), str(kb / "tech" / "ml" / "models"))
     refs = {r.raw: r for r in rf.dangling_references(kb) if r.node == "tech"}
-    assert set(refs) == {"models/bayes_routing/", "reports/q3_review/"}
-    assert refs["models/bayes_routing/"].moved_to == ("tech/ml/models/bayes_routing",)
+    assert set(refs) == {"models/drip_irrigation/", "reports/spring_review/"}
+    assert refs["models/drip_irrigation/"].moved_to == ("tech/ml/models/drip_irrigation",)
 
 
 def test_a_node_citing_its_own_old_path_is_hinted_at_itself(tmp_path):
@@ -457,11 +465,11 @@ def test_a_node_citing_its_own_old_path_is_hinted_at_itself(tmp_path):
     kb = _kb(tmp_path)
     _node(
         kb,
-        "projects/causal/uplift_routing",
-        "# Routing\n\nCanonical path: `projects/uplift_routing`.\n",
+        "projects/orchard/cherry_irrigation",
+        "# Irrigation\n\nCanonical path: `projects/cherry_irrigation`.\n",
     )
     (finding,) = run_checks(kb, codes=["DANGLING"])["findings"]
-    assert "(same name at projects/causal/uplift_routing)" in finding["message"]
+    assert "(same name at projects/orchard/cherry_irrigation)" in finding["message"]
 
 
 def test_hints_never_say_which_namesake_to_write(tmp_path):

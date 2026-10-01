@@ -686,22 +686,22 @@ class TestSearchNodes:
         assert result["collapsed"] == 0 and "notes" not in result
 
     def test_collapse_keeps_anchored_parent_and_its_child(self, ops_kb):
-        sven = ops_kb / "people" / "friends" / "sven_schmit"
-        (sven / "deep_context").mkdir(parents=True)
-        (sven / "_summary.md").write_text(
-            "---\nname: Sven Schmit\naliases: [Sven Schmit]\n---\n# Sven Schmit\n\nData scientist.\n"
+        mara = ops_kb / "people" / "friends" / "mara_lindqvist"
+        (mara / "deep_context").mkdir(parents=True)
+        (mara / "_summary.md").write_text(
+            "---\nname: Mara Lindqvist\naliases: [Mara Lindqvist]\n---\n# Mara Lindqvist\n\nData scientist.\n"
         )
-        (sven / "deep_context" / "_summary.md").write_text(
-            "# Deep context\n\nLong notes about Sven Schmit and his talks.\n"
+        (mara / "deep_context" / "_summary.md").write_text(
+            "# Deep context\n\nLong notes about Mara Lindqvist and her talks.\n"
         )
-        result = ops.search_nodes(ops_kb, "Sven Schmit", limit=10, include_background=True)
+        result = ops.search_nodes(ops_kb, "Mara Lindqvist", limit=10, include_background=True)
         paths = [r["path"] for r in result["results"]]
-        assert paths[0] == "people/friends/sven_schmit"
-        assert "people/friends/sven_schmit/deep_context" in paths
+        assert paths[0] == "people/friends/mara_lindqvist"
+        assert "people/friends/mara_lindqvist/deep_context" in paths
         assert result["collapsed"] == 0
         # by default background material is counted, not returned (0.17)
-        default = ops.search_nodes(ops_kb, "Sven Schmit", limit=10)
-        assert [r["path"] for r in default["results"]] == ["people/friends/sven_schmit"]
+        default = ops.search_nodes(ops_kb, "Mara Lindqvist", limit=10)
+        assert [r["path"] for r in default["results"]] == ["people/friends/mara_lindqvist"]
         note = next(
             n for n in default["notes"] if (n.get("detail") or {}).get("kind") == "background"
         )

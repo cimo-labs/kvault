@@ -39,7 +39,7 @@ merely looks like a path (``cimo-labs/kvault``) is never checked. A relative
 link of more than one component needs that too only when both its first and
 last components are plain words and the last names no node: a tracker
 shortlink such as ``issue/123`` is not a child path, while
-``models/bayes_routing/`` after ``models/`` moved, ``gone_child/spec/`` and
+``models/drip_irrigation/`` after ``models/`` moved, ``gone_child/spec/`` and
 ``deep_context/notes/`` are still checked.
 
 A dangling reference lists the nodes elsewhere that share its target's name
@@ -297,7 +297,7 @@ def _resolve_link(tree: _Tree, node: str, raw: str) -> Optional[Tuple[str, bool]
     ):
         # Plain words at both ends, the last naming no node: a tracker or
         # service link (issue/4821), unless the first word is a KB directory
-        # after all. models/bayes_routing/ after models/ moved, gone_child/spec/
+        # after all. models/drip_irrigation/ after models/ moved, gone_child/spec/
         # and deep_context/notes/ are checked either way.
         firsts = [_node_dir(tree, node) / parts[0], tree.root / parts[0]]
         if not any(os.path.isdir(f) or _inside(tree, _norm(f)) in tree.anchors for f in firsts):

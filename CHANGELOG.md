@@ -2,10 +2,161 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.17.0 - 2026-10-01
+
+An MCP-only agent on a long-running ~700-node KB reported 13 problems with
+0.16.1. Each was checked against the code, and reproduced on copies of two
+real KBs where it could be, before anything was written. Five were
+correctness bugs: writes that damaged frontmatter or created paths, a
+PROPAGATE blind spot, and search hits that were wrong or should not have
+been returned. The other eight: tools an MCP-only agent lacked, results
+that overflowed clients that inline about 4 KB of tool output, arguments
+dropped without a word, whole-body rewrites where an edit would do, batch
+operations missing from the ops log, and docs behind the code.
+
+### Fixed
+
+- **Same-day edits were invisible to PROPAGATE.** `check` compared
+  `updated` dates first, and a child edited after its parent on the same
+  day carries the same date, so it was never reported. Equal dates now
+  fall back to the file-time check while both files were last written on
+  the day they are stamped with. A git checkout gives a file the checkout
+  time: without that limit, 13 nodes on a pulled KB copy, moved months
+  after their last edit, were reported stale.
+- **Stacked frontmatter.** Content that opens with its own frontmatter
+  block (a document read back and re-sent whole) was written below the real
+  block by the Python and MCP surfaces; only the CLI parsed it out. Its keys
+  are now merged into `meta` (explicit `meta` wins) with a `guessed` note,
+  and `validate` reports `stacked_frontmatter` for files already on disk.
+  Only a block that parses to a non-empty mapping with string keys counts:
+  a `---`-framed heading, a horizontal rule or a block with date keys is
+  body text.
+- **A summary rewrite with `meta` dropped the rest of the frontmatter.**
+  `meta` replaced the block wholesale, so a rollup that passed only a title
+  lost `source`, `aliases` and the decisions recorded with `kvault mark`,
+  and their findings came back. `meta` now merges onto the existing
+  frontmatter; a `null` value deletes a key, and a `removed` note names it.
+- **`update-summaries` created paths.** A typo'd path made directories and
+  a new summary without a word. It now rewrites only summaries that exist;
+  any other path is an item error.
+- **Search precision.**
+  - The phrase bonus matched raw substrings: the query "ai" earned it
+    inside "email" and "detail". It now matches whole tokens.
+  - Nodes parked under `deep_context/` were returned as live nodes and
+    competed with the node that keeps them. A match there is now folded
+    into its keeper when the keeper scores at least half as much (the
+    collapse rule's ratio) and is in the results; a `truncated` note lists
+    the folded paths, and `include_background` (`--include-background`)
+    returns them all. A stronger match is still returned, because
+    `deep_context/` also holds an entity's long-form notes. Of 25 queries
+    taken from notes text on a real KB whose notes node was in the top
+    five, folding whenever the keeper matched at all kept 7 there; this
+    rule keeps 21, and for the other 4 the keeper is shown and the note
+    names the notes node. The collapse rule checks every path segment, so
+    a parked copy no longer collapses its keeper's parents.
+  - `.kvaultignore` is honored.
+- **`check` crashed on a timestamp in `updated`** (`2026-10-01 09:30:00`
+  is read as a datetime and was compared with a date). Its day is used.
+- **`kvault_read_nodes` crashed on date-typed frontmatter keys**
+  (`2026-09-30: joined` under a mapping). They are written as strings.
+- **CLI `update-summaries` said only "Update failed"** when every item
+  failed; it now prints each item's error.
+
+### Added
+
+- **Patch mode.** `kvault_write_node(patches=...)`, `kvault write
+  --patches` and `update-summaries` items take `[{old_str, new_str}]`:
+  each `old_str` must match the body exactly once (overlapping matches
+  count), patches apply in order under one hold of the write lock, and a
+  miss leaves that node unwritten (an update-summaries batch reports it
+  and goes on). Content read back from the file for a patch is never
+  split, so a stacked block is left for `validate` to report. Rewriting
+  a 15-19 KB hub to change a line cost 40-90 KB of output per propagation
+  chain, and agents abandoned chains midway.
+- **Capture and events over MCP.** `kvault_capture` and `kvault_events`
+  (`list`, `show`, `resolve`, `retract`) bring the capture-first workflow to
+  MCP-only agents; `kvault_write_node` takes `event_ids` to promote events in
+  the same write.
+- **Summary rules at write time.** `write-summary`, `update-summaries` and
+  `kvault_write_parent_summary` return `summary_warnings` for what they
+  wrote (missing child coverage, too long, ...), so a rollup that misses a
+  child is reported by the write, not only by the next `check`.
+- **Batch rows in the ops log.** `update-summaries` and batch moves record
+  the paths they touched and whether anything changed. Their results carry
+  `changed`, and `update-summaries` also `changed_paths`.
+
+### Changed
+
+- **MCP results fit clients that inline about 4 KB.** Tool results are now
+  one compact JSON text block. FastMCP indented every result and sent a
+  second, structured copy beside it; indentation alone put about a third of
+  default searches over 4 KB. Measured on copies of two real KBs (about 190
+  and 500 nodes), 0.16.1 → 0.17.0:
+  - `kvault_search`, 30 queries per KB: over 4 KB for 20 and 23 queries, now
+    for 0 and 1 (4.25 KB). It returns 8 hits by default (was 10), and in
+    compact results a note carries `code`, `text` and `next` (`why`,
+    `level` and `detail` come with `compact=false`).
+  - `kvault_tree`: 11 KB and 36 KB → 3.2 KB and 1.5 KB. The outline stays
+    under `max_chars` (3,500 by default, 0 = no limit, else at least 100),
+    counted as the client receives it: the deepest depth that fits, then a
+    cut at a line, with a `truncated` note. A `format="json"` outline is
+    not cut; its note says when it is still over.
+  - `kvault_read_nodes`, five hits: 8.9 KB → 4.0 KB. The default budget is
+    3,500 characters (was 8,000).
+  - `kvault_move_entity` and `kvault_delete_entity`: 40 KB and 37 KB → 4.1 KB
+    and 1.9 KB for a deeply nested node. They and `kvault_move_entities`
+    return ancestor paths unless `ancestors="content"`.
+  - `kvault_generate_daily_artifact`: 37 KB → 0.3 KB; the markdown comes
+    only with `include_content=true`.
+  - The tool list: 31.4 KB for 30 tools → 28.6 KB for 24.
+- **Unknown MCP arguments are refused.** They were dropped, so
+  `budget=2000` on `kvault_read_nodes` and `old_path` on
+  `kvault_move_entity` ran with defaults. The usual alternative names are
+  accepted explicitly: `max_total_chars`, `budget` and `max_chars` for
+  `total_max_chars`; `old_path` and `new_path` for `source_path` and
+  `target_path`.
+- **`update-summaries` items are typed over MCP** (`{path, content |
+  patches, meta}`), and every surface refuses an unknown item key: a typo
+  such as `metadata` for `meta` was dropped while the rest of the item
+  wrote. The item types are written into each tool's input schema rather
+  than referenced through `$defs`, for clients that do not resolve `$ref`.
+- **`kvault_events` takes only the outcomes and statuses it documents.**
+  `outcome="promoted"` is refused (promotion is a write with `event_ids`,
+  which stamps provenance), and `status` is pending, resolved or retracted
+  (an unknown status returned an empty list).
+- **`kvault_write_node` content is a plain string argument.** FastMCP
+  (1.12 and later) parses any other string-typed argument as JSON first, so
+  a body such as `["step 1", "step 2"]` was refused. Earlier FastMCP parses
+  every argument that way.
+- **Eight entity-era MCP tools are registered only on request**
+  (`kvault-mcp --legacy-tools` or `KVAULT_MCP_LEGACY_TOOLS=1`):
+  `kvault_init`, `kvault_read_entity`, `kvault_write_entity`,
+  `kvault_list_entities`, `kvault_write_summary`, `kvault_get_ancestors`,
+  `kvault_propagate_all`, `kvault_log_phase`. The node tools supersede them.
+- The `kvault init` AGENTS.md template, both skills, README, ARCHITECTURE
+  and MAINTAINERS describe the 0.17 surface. Older entries below describe
+  where their reports came from in general terms.
+
+### Upgrade notes
+
+- MCP tool results arrive as one compact JSON text block, without the
+  structured copy (`structuredContent`); a client that read that copy
+  should parse the text.
+- An MCP call with an argument the tool does not have now fails with a
+  validation error naming it.
+- A client that calls one of the eight legacy tools needs `--legacy-tools`
+  or the current tool.
+- `update-summaries` no longer creates a summary; create the node with
+  `kvault write --create`.
+- `meta` on `write-summary` and `update-summaries` merges instead of
+  replacing; pass `null` for a key that should go.
+- The `[mcp]` extra needs mcp 1.2 or later (the first release with
+  FastMCP); 1.x below 1.2 could not run the server anyway.
+
 ## 0.16.1 - 2026-09-26
 
-The work agent ran 0.16.0 on its ~1,000-node KB and judged every finding
-by hand:
+An agent ran 0.16.0 on a ~1,000-node KB and judged every finding by
+hand:
 - DUPLICATE: 41 pairs, 39 real, 2 unclear, no noise found.
 - DANGLING: 109 findings, 84 real, 24 noise, 1 unclear.
 
@@ -27,7 +178,7 @@ are.
     - the first part is not a KB directory.
 
     `issue/123` was read as a child. Links into a moved or removed child
-    (`models/bayes_routing/`, `gone_child/spec/`) and into a
+    (`models/drip_irrigation/`, `gone_child/spec/`) and into a
     `deep_context/` are still checked.
   - A backticked `name/` in running prose is not a child-list entry; it is
     as often a code directory.
@@ -41,7 +192,7 @@ are.
     too). Such an entry still shows that the summary lists children.
 - **DUPLICATE: filler words hid twins.** The homonym rule ignores words
   that name the kind of page (Category Summary, Overview, Project,
-  Architecture, …). They made one customer's three nodes look like three
+  Architecture, …). They made one subject's three nodes look like three
   different things. A filler word still tells two same-name nodes apart
   when their texts share under 40% of their words.
 - **DUPLICATE: measured overlap, never a false 0.00.** Every pair reports:
@@ -66,8 +217,8 @@ are.
 
 ## 0.16.0 - 2026-09-26
 
-What an agent could not see, and reads that stay small. The work agent (MCP
-only, ~1,000-node KB) reported eight friction points after running 0.15.2;
+What an agent could not see, and reads that stay small. An MCP-only agent
+on a ~1,000-node KB reported eight friction points after running 0.15.2;
 each was checked against the code and, where possible, reproduced on copies
 of two real KBs before anything was written. Two turned out to be partly
 already there (children missing from a summary: `missing_child_coverage`;
@@ -222,7 +373,7 @@ one was worse than reported (`parents="all"` on search added 510-640 KB).
 
 ## 0.15.2 - 2026-09-10
 
-First contact with the KB that motivated 0.15: the work agent ran the
+First contact with the KB that motivated 0.15: its agent ran the
 migration across ~1,000 nodes and reported back. Two defects and one
 guidance gap, all from that report.
 

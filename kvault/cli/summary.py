@@ -100,9 +100,11 @@ def update_summaries(
     trace: bool,
     strict: bool,
 ) -> None:
-    """Batch-update summaries from stdin JSON array.
+    """Batch-update existing summaries from a stdin JSON array.
 
-    Expects: [{"path": "...", "content": "..."}]
+    Expects: [{"path": "...", "content": "..."}]. An item may carry
+    "patches" ([{"old_str": "...", "new_str": "..."}], each matching exactly
+    once) instead of "content", and "meta" to merge onto the frontmatter.
     """
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     apply_verbosity_options(ctx, quiet=quiet, explain=explain, trace=trace, strict=strict)
@@ -122,7 +124,10 @@ def update_summaries(
             )
             render_notes(result, get_tier(ctx))
         else:
-            raise click.ClickException("Update failed")
+            failures = "; ".join(f"{e['path']}: {e['error']}" for e in result.get("errors", []))
+            raise click.ClickException(
+                f"Update failed: {failures}" if failures else "Update failed"
+            )
         if result.get("errors"):
             for err in result["errors"]:
                 click.echo(f"  Error: {err['path']}: {err['error']}", err=True)

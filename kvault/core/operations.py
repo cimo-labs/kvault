@@ -76,9 +76,10 @@ MAX_DIRECT_CHILDREN = 10
 PARENTS_MODES = ("none", "gist", "immediate", "all")
 READ_NODES_MAX_PATHS = 25
 #: read_nodes' shared budget in characters of compact JSON (whole nodes, not
-#: just content). MCP defaults lower: its first user inlines ~10 KB.
+#: just content). MCP defaults lower, so a read fits clients that inline about
+#: 4 KB of tool output (0.17; 8,000 before, which spilled to a file).
 READ_NODES_MAX_CHARS = 20000
-READ_NODES_MCP_MAX_CHARS = 8000
+READ_NODES_MCP_MAX_CHARS = 3500
 #: Child paths listed per node in read_nodes; past this, children_count says how many.
 READ_NODES_MAX_CHILDREN = 50
 
@@ -1162,7 +1163,9 @@ def read_nodes(
             node["children_count"] = len(kids)
         content = node.get("content", "")
         node["content"] = ""
-        overhead = len(json.dumps(node, default=str)) + len(', "content_truncated": true')
+        overhead = len(json.dumps(_str_keys(node), default=str)) + len(
+            ', "content_truncated": true'
+        )
         room = remaining - overhead
         if room < 0:
             omitted.append(path)
@@ -1345,10 +1348,166 @@ def _is_noop_node_write(
     ) == _stable(resolved_meta)
 
 
+def _occurrences(text: str, sub: str) -> int:
+    """Occurrences of *sub*, overlapping ones included: ``str.count`` sees
+    "00" once in "1000", where it starts at two places."""
+    count, start = 0, text.find(sub)
+    while start != -1:
+        count += 1
+        start = text.find(sub, start + 1)
+    return count
+
+
+def _apply_patches(text: str, patches: Any) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Apply ``{old_str, new_str}`` edits to a body, in order (0.17).
+
+    Each ``old_str`` must match exactly once in the text as patched so far,
+    or nothing is written. Rewriting a 15-19 KB hub to change a line cost
+    agents 40-90 KB of output per propagation chain and some abandoned it
+    midway; a patch sends only what changes. Returns ``(new_text, None)`` or
+    ``(None, error)``.
+    """
+    if not isinstance(patches, list) or not patches:
+        return None, error_response(
+            ErrorCode.VALIDATION_ERROR, "patches must be a non-empty list of {old_str, new_str}"
+        )
+    for index, patch in enumerate(patches, 1):
+        if (
+            not isinstance(patch, dict)
+            or set(patch) != {"old_str", "new_str"}
+            or not all(isinstance(patch[k], str) for k in ("old_str", "new_str"))
+        ):
+            return None, error_response(
+                ErrorCode.VALIDATION_ERROR,
+                f"patch {index}: needs exactly old_str and new_str, both strings",
+            )
+        old = patch["old_str"]
+        count = _occurrences(text, old) if old else 0
+        if count != 1:
+            return None, error_response(
+                ErrorCode.VALIDATION_ERROR,
+                f"patch {index}: old_str "
+                + (
+                    "is empty"
+                    if not old
+                    else (
+                        "not found"
+                        if count == 0
+                        else f"matches {count} places; add surrounding text"
+                    )
+                ),
+                details={"patch": index, "matches": count},
+                hint="patches apply to the body without frontmatter, in order; nothing was written",
+            )
+        text = text.replace(old, patch["new_str"], 1)
+    return text, None
+
+
+#: Entries a write-time summary warning lists per detail before a count.
+SUMMARY_WARNING_LIST_MAX = 10
+
+
+def _str_keys(value: Any) -> Any:
+    """*value* with every mapping key as a string: YAML reads ``2026-09-30:``
+    as a date, and ``json.dumps`` refuses non-string keys."""
+    if isinstance(value, dict):
+        return {str(key): _str_keys(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_str_keys(item) for item in value]
+    return value
+
+
+def _summary_warnings(kg_root: Path, path: str) -> List[Dict[str, Any]]:
+    """The SUMMARY rules for the node just written (0.17), in check's shape.
+
+    Until 0.17 a rollup that missed a child, outgrew its ceiling or kept
+    dated sections was reported only by the next ``kvault check``, after the
+    writer had moved on.
+    """
+    from kvault.core.summary_quality import audit_summary_node
+
+    try:
+        issues = audit_summary_node(kg_root, path)
+    except (OSError, ValueError, RuntimeError):
+        return []
+    out = []
+    for issue in issues:
+        details = dict(issue.details or {})
+        for key, value in list(details.items()):
+            if isinstance(value, list) and len(value) > SUMMARY_WARNING_LIST_MAX:
+                # A 120-child parent listed every missing child (~3 KB per item).
+                details[key] = value[:SUMMARY_WARNING_LIST_MAX]
+                details[f"{key}_count"] = len(value)
+        out.append(
+            {"path": issue.path, "code": issue.code, "message": issue.message, "details": details}
+        )
+    return out
+
+
+def _leading_block(text: str) -> Optional[Tuple[Dict[str, Any], str]]:
+    """A frontmatter block opening *text* that is real metadata (0.17).
+
+    Only a non-empty mapping with string keys counts. Anything else is body
+    text: a horizontal rule, a ``---``-framed heading (YAML reads ``#`` lines
+    as comments, so the block parses to nothing and was dropped), a block
+    that is not valid YAML, or keys YAML reads as dates.
+    """
+    stripped = text.lstrip()
+    if not stripped.startswith("---"):
+        return None
+    meta, body = parse_frontmatter(stripped)
+    if not meta or not all(isinstance(key, str) for key in meta):
+        return None
+    return meta, body
+
+
+def _split_embedded_frontmatter(
+    content: Any, meta: Optional[Dict[str, Any]]
+) -> Tuple[Any, Optional[Dict[str, Any]], Optional[List[str]]]:
+    """Content that opens with its own frontmatter block (0.17).
+
+    The CLI parses a leading block out of stdin; the Python and MCP surfaces
+    passed it through, so the file got two stacked blocks (the second one
+    shown as body text, its keys never read). Its keys now fill in *meta*,
+    where explicit *meta* keys win, and the block is not written again.
+    Returns ``(body, meta, keys_taken)``; ``keys_taken`` is None when there
+    was no block. Content read back from the file itself (a patch, a mark)
+    is never split: there a stacked block holds stale keys, and merging them
+    would put them over the real frontmatter.
+    """
+    if not isinstance(content, str):
+        return content, meta, None
+    if meta is not None and not isinstance(meta, dict):
+        return content, meta, None  # the caller reports the type error
+    block = _leading_block(content)
+    if block is None:
+        return content, meta, None
+    embedded, body = block
+    merged = dict(embedded)
+    merged.update(meta or {})
+    taken = sorted(k for k in embedded if k not in (meta or {}))
+    return body, merged, taken
+
+
+def _embedded_note(taken: List[str]) -> Dict[str, Any]:
+    return nt.note(
+        "guessed",
+        "content began with its own frontmatter block; "
+        + (
+            f"used its keys as metadata ({', '.join(taken)})"
+            if taken
+            else "it was not written twice"
+        ),
+        detail={"keys": taken},
+        why="a second block would have been written below the real one and read as body text",
+        next_step="pass metadata in meta and the body alone in content",
+    )
+
+
 def write_node(
     kg_root: Path,
     path: str,
-    content: str,
+    content: Optional[str] = None,
     meta: Optional[Dict[str, Any]] = None,
     create: bool = False,
     reasoning: Optional[str] = None,
@@ -1359,8 +1518,63 @@ def write_node(
     allow_similar: bool = False,
     drop_meta_keys: Optional[Sequence[str]] = None,
     preserve_dates: bool = False,
+    patches: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Write any node summary with YAML frontmatter.
+
+    See :func:`_write_node`. A patch is read, applied and written under one
+    hold of the (reentrant) write lock, so no other writer lands between the
+    read it was matched against and the write.
+    """
+    args: Dict[str, Any] = dict(
+        content=content,
+        meta=meta,
+        create=create,
+        reasoning=reasoning,
+        journal_source=journal_source,
+        default_source=default_source,
+        event_ids=event_ids,
+        new_root=new_root,
+        allow_similar=allow_similar,
+        drop_meta_keys=drop_meta_keys,
+        preserve_dates=preserve_dates,
+        patches=patches,
+    )
+    if patches is None:
+        return _write_node(kg_root, path, **args)
+    with KBWriteLock(kg_root) as lock:
+        result = _write_node(kg_root, path, **args)
+    if result.get("success"):
+        for lock_note in _lock_notes(lock):
+            nt.attach_note(result, lock_note)
+    return result
+
+
+def _write_node(
+    kg_root: Path,
+    path: str,
+    content: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
+    create: bool = False,
+    reasoning: Optional[str] = None,
+    journal_source: Optional[str] = None,
+    default_source: str = "auto:cli",
+    event_ids: Optional[List[str]] = None,
+    new_root: bool = False,
+    allow_similar: bool = False,
+    drop_meta_keys: Optional[Sequence[str]] = None,
+    preserve_dates: bool = False,
+    patches: Optional[List[Dict[str, str]]] = None,
+    split_embedded: bool = True,
+) -> Dict[str, Any]:
+    """Write any node summary with YAML frontmatter.
+
+    *split_embedded* is False for content read back from the node itself
+    (``mark``): see :func:`_split_embedded_frontmatter`.
+
+    *patches* (0.17) edits an existing node's body instead of replacing it:
+    a list of ``{old_str, new_str}``, each matching exactly once, applied in
+    order; any miss writes nothing. Pass *content* or *patches*, not both.
 
     *preserve_dates* keeps an existing node's ``created``/``updated`` (used by
     ``mark``: a recorded decision is not a content change, and stamping
@@ -1396,6 +1610,31 @@ def write_node(
         promotable = check_events_promotable(kg_root, event_ids)
         if not promotable.get("success"):
             return promotable
+
+    if patches is not None:
+        if content not in (None, ""):
+            return error_response(ErrorCode.VALIDATION_ERROR, "pass content or patches, not both")
+        if create:
+            return error_response(
+                ErrorCode.VALIDATION_ERROR, "patches edit an existing node; a create needs content"
+            )
+        current = _read_node_raw(kg_root, path)
+        if current is None:
+            return error_response(ErrorCode.NOT_FOUND, f"Node doesn't exist: {path}")
+        content, patch_error = _apply_patches(current["content"], patches)
+        if patch_error is not None:
+            return patch_error
+        split_embedded = False  # the body came from the file (see _split_embedded_frontmatter)
+    elif content is None:
+        return error_response(
+            ErrorCode.VALIDATION_ERROR, "content is required (or patches, for an existing node)"
+        )
+
+    embedded_keys: Optional[List[str]] = None
+    if split_embedded:
+        content, meta, embedded_keys = _split_embedded_frontmatter(content, meta)
+    if not isinstance(content, str):
+        return error_response(ErrorCode.VALIDATION_ERROR, "content must be a string")
 
     full_path = kg_root if path == "." else kg_root / path
     summary_path = _summary_path_for_node(kg_root, path)
@@ -1577,6 +1816,8 @@ def write_node(
     if stubs_written:
         notes.append(_stub_note(stubs_written))
     notes.extend(structure_notes)
+    if embedded_keys is not None:
+        notes.append(_embedded_note(embedded_keys))
     if is_noop:
         preserved = ", ".join(f"{k} {v}" for k, v in sorted(noop_dates.items()))
         notes.append(
@@ -1738,8 +1979,16 @@ def write_summary(
     path: str,
     content: str,
     meta: Optional[Dict[str, Any]] = None,
+    split_embedded: bool = True,
 ) -> Dict[str, Any]:
-    """Write a single ``_summary.md``."""
+    """Write a single ``_summary.md``.
+
+    *split_embedded* is False when *content* was read back from this file (a
+    patch): see :func:`_split_embedded_frontmatter`.
+    """
+    embedded_keys: Optional[List[str]] = None
+    if split_embedded:
+        content, meta, embedded_keys = _split_embedded_frontmatter(content, meta)
     path = _normalize_node_path(path)
     if not validate_within_root(kg_root, path):
         return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
@@ -1760,18 +2009,20 @@ def write_summary(
         if existing and isinstance(existing.get("meta"), dict)
         else {}
     )
-    preserved_meta = existing_meta if meta is None else {}
-    final_meta: Dict[str, Any] = dict(meta) if meta is not None else dict(preserved_meta)
-
-    # When the caller passes meta explicitly it REPLACES the existing
-    # frontmatter rather than merging — keys the caller didn't repeat are
-    # gone. That was silent; now it is a note. created/updated are excluded
-    # from the drop list because they are re-stamped below.
+    # meta MERGES onto the existing frontmatter (0.17); a key set to None is
+    # deleted. Until 0.17 an explicit meta replaced the frontmatter wholesale,
+    # so a rollup that passed only a title dropped source, aliases and the
+    # recorded `kvault mark` decisions (distinct_from came back as findings).
+    final_meta: Dict[str, Any] = dict(existing_meta)
     dropped_keys: List[str] = []
-    if meta is not None and existing_meta:
-        dropped_keys = sorted(
-            k for k in existing_meta if k not in meta and k not in ("created", "updated")
-        )
+    for key, value in (meta or {}).items():
+        if value is None:
+            if key in final_meta and key not in ("created", "updated"):
+                dropped_keys.append(key)
+            final_meta.pop(key, None)
+        else:
+            final_meta[key] = value
+    dropped_keys.sort()
 
     # Dates (0.15.2): a rewritten summary carries today's `updated`, else the
     # 2-call workflow's second call left the parent older than its child and
@@ -1832,14 +2083,13 @@ def write_summary(
         notes.append(
             nt.note(
                 "removed",
-                "frontmatter replaced wholesale — dropped keys: " + ", ".join(dropped_keys),
+                "frontmatter keys deleted (set to null in meta): " + ", ".join(dropped_keys),
                 detail={"path": path, "dropped_keys": dropped_keys},
-                why=(
-                    "meta passed to write-summary replaces existing frontmatter "
-                    "instead of merging; omit meta to preserve it"
-                ),
+                why="meta merges onto the existing frontmatter; only a key set to null is deleted",
             )
         )
+    if embedded_keys is not None:
+        notes.append(_embedded_note(embedded_keys))
     notes.extend(_lock_notes(lock))
 
     result: Dict[str, Any] = {
@@ -1852,6 +2102,10 @@ def write_summary(
     }
     if notes:
         result["notes"] = notes
+    if not is_noop:
+        warnings = _summary_warnings(kg_root, path)
+        if warnings:
+            result["summary_warnings"] = warnings
     return result
 
 
@@ -2006,9 +2260,12 @@ def _write_parent_summary_locked(
         "success": True,
         "path": prepared["path"],
         "did": result.get("did"),
+        "changed": result.get("changed", True),
     }
     if result.get("notes"):
         out["notes"] = result["notes"]
+    if result.get("summary_warnings"):
+        out["summary_warnings"] = result["summary_warnings"]
     out.update(
         {
             "child_count": prepared["child_count"],
@@ -2019,6 +2276,9 @@ def _write_parent_summary_locked(
         }
     )
     return out
+
+
+UPDATE_SUMMARY_KEYS = frozenset({"path", "content", "patches", "meta"})
 
 
 def update_summaries(
@@ -2039,18 +2299,73 @@ def _update_summaries_locked(
     errors: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     item_notes: List[Dict[str, Any]] = []
+    summary_warnings: List[Dict[str, Any]] = []
+    changed_paths: List[str] = []
     for item in updates:
+        if not isinstance(item, dict):
+            errors.append({"path": "<missing>", "error": "Each update must be a JSON object"})
+            continue
+        # An unknown key is refused (0.17): a typo such as "metadata" for
+        # "meta" was dropped without a word while the rest of the item wrote.
+        unknown = sorted(set(item) - UPDATE_SUMMARY_KEYS)
+        if unknown:
+            errors.append(
+                {
+                    "path": item.get("path") or "<missing>",
+                    "error": f"Unknown keys: {', '.join(unknown)} "
+                    f"(allowed: {', '.join(sorted(UPDATE_SUMMARY_KEYS))})",
+                }
+            )
+            continue
         p = item.get("path")
         c = item.get("content")
         m = item.get("meta")
-        if not p or c is None:
+        patch_list = item.get("patches")
+        if not p or (c is None and patch_list is None):
             errors.append({"path": p or "<missing>", "error": "Missing path or content"})
             continue
+        if c is not None and patch_list is not None:
+            errors.append({"path": p, "error": "Pass content or patches, not both"})
+            continue
+        # update-summaries rewrites summaries that exist (0.17): a typo'd path
+        # used to create its directories and a new summary silently.
         try:
-            r = write_summary(kg_root, path=p, content=c, meta=m)
+            exists = _summary_path_for_node(kg_root, _normalize_node_path(p)).is_file()
+        except Exception:
+            exists = False
+        if not exists:
+            errors.append(
+                {
+                    "path": p,
+                    "error": "No summary at this path; update-summaries only rewrites existing "
+                    "summaries (create the node first: kvault write --create, or "
+                    "kvault_write_node with create=true)",
+                }
+            )
+            continue
+        body: Any = c
+        if patch_list is not None:
+            current = _read_node_raw(kg_root, p)
+            if current is None:
+                errors.append({"path": p, "error": "Summary could not be read for patching"})
+                continue
+            patched, patch_error = _apply_patches(current["content"], patch_list)
+            if patched is None:
+                errors.append(
+                    {"path": p, "error": (patch_error or {}).get("error", "patch failed")}
+                )
+                continue
+            body = patched
+        try:
+            r = write_summary(
+                kg_root, path=p, content=body, meta=m, split_embedded=patch_list is None
+            )
             if r.get("success"):
                 updated.append(p)
+                if r.get("changed", True):
+                    changed_paths.append(p)
                 item_notes.extend(r.get("notes") or [])
+                summary_warnings.extend(r.get("summary_warnings") or [])
             else:
                 errors.append({"path": p, "error": r.get("error", "Unknown error")})
         except Exception as e:
@@ -2079,6 +2394,8 @@ def _update_summaries_locked(
         "success": len(updated) > 0 or len(updates) == 0,
         "did": f"updated {len(updated)} of {len(updates)} summaries",
         "updated": updated,
+        "changed": bool(changed_paths),
+        "changed_paths": changed_paths,
         "count": len(updated),
         "attempted": len(updates),
         "failed": len(errors),
@@ -2089,6 +2406,8 @@ def _update_summaries_locked(
         result["notes"] = notes
     if errors:
         result["errors"] = errors
+    if summary_warnings:
+        result["summary_warnings"] = summary_warnings
     return result
 
 
@@ -2142,8 +2461,14 @@ def search_nodes(
     compact: bool = False,
     snippet_chars: Optional[int] = None,
     parents: str = "none",
+    include_background: bool = False,
 ) -> Dict[str, Any]:
     """Search visible kvault node summaries.
+
+    A match under ``deep_context/`` is folded into the node that keeps it
+    when that node scores at least half as much and is in the results
+    (0.17); a note lists the folded paths, and *include_background* returns
+    them all.
 
     ``parents`` (0.16, CLI and MCP alike): ``gist`` adds one shared
     ``parents`` map from every ancestor path of the hits to ``{title,
@@ -2168,6 +2493,7 @@ def search_nodes(
         path_prefix=path_prefix,
         compact=compact,
         snippet_chars=snippet_chars,
+        include_background=include_background,
     )
     if parents != "none":
         # One budget for the whole result: what include_content used is gone.
@@ -2690,6 +3016,7 @@ def move_entities(
         result["not_attempted"] = not_attempted
     result["moved"] = moved
     result["count"] = len(moved)
+    result["changed"] = bool(moved)
     result["propagation_required"] = len(combined) > 0
     result["ancestor_paths"] = [t["path"] for t in combined]
     result["referrer_paths"] = referrers
@@ -2771,7 +3098,7 @@ def mark_node(
         )
         if given
     ]
-    result = write_node(
+    result = _write_node(
         kg_root,
         path,
         raw["content"],
@@ -2779,6 +3106,7 @@ def mark_node(
         create=False,
         drop_meta_keys=drops or None,
         preserve_dates=True,
+        split_embedded=False,  # a decision is not a content change
         reasoning=(
             ("decision recorded with kvault mark: " + "; ".join(recorded)) if changes else None
         ),
@@ -2939,7 +3267,17 @@ def validate_kb(kg_root: Path) -> Dict[str, Any]:
             continue
         try:
             text = summary_file.read_text(encoding="utf-8")
-            parse_frontmatter_strict(text)
+            _first, body = parse_frontmatter_strict(text)
+            if _first and _leading_block(body) is not None:
+                issues.append(
+                    {
+                        "type": "stacked_frontmatter",
+                        "severity": "warning",
+                        "path": str(Path(*rel_parts)) if rel_parts else ".",
+                        "message": "A second frontmatter block follows the first; its keys are read as body text",
+                        "fix": "Rewrite the node with kvault write: content that starts with a frontmatter block is merged into its metadata",
+                    }
+                )
         except FrontmatterError as exc:
             # An impossible date (2026-09-31) is still read, with its dates as
             # text; anything else malformed is read as empty.

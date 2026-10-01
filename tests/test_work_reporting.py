@@ -177,7 +177,9 @@ class TestWriteSummaryNarration:
         assert result["created"] is False
         assert "created" not in _codes(result)
 
-    def test_meta_replacement_reports_dropped_keys(self, tmp_path):
+    def test_meta_merges_and_null_deletes(self, tmp_path):
+        """0.17: meta merges onto the frontmatter; only a key set to None is deleted
+        (until 0.17 an explicit meta replaced it wholesale and dropped the rest)."""
         kb = _make_kb(tmp_path)
         ops.write_node(kb, "people/contacts/jane_doe", BODY, create=True)
         result = ops.write_summary(
@@ -186,8 +188,14 @@ class TestWriteSummaryNarration:
             "# Jane\n\nReplaced.\n",
             meta={"source": "manual", "aliases": []},
         )
+        assert "removed" not in _codes(result)
+        assert ops.read_node(kb, "people/contacts/jane_doe")["meta"].get("name")
+        result = ops.write_summary(
+            kb, "people/contacts/jane_doe", "# Jane\n\nAgain.\n", meta={"name": None}
+        )
         removed = next(n for n in result["notes"] if n["code"] == "removed")
-        assert "name" in removed["detail"]["dropped_keys"]
+        assert removed["detail"]["dropped_keys"] == ["name"]
+        assert "name" not in ops.read_node(kb, "people/contacts/jane_doe")["meta"]
 
     def test_meta_none_preserves_frontmatter_and_stays_silent(self, tmp_path):
         kb = _make_kb(tmp_path)
@@ -201,16 +209,21 @@ class TestWriteSummaryNarration:
 class TestBatchCollapse:
     def test_update_summaries_collapses_per_item_notes_and_counts(self, tmp_path):
         kb = _make_kb(tmp_path)
-        updates = [{"path": f"projects/p{i}", "content": f"# P{i}\n\nBody.\n"} for i in range(5)]
+        for i in range(5):  # update-summaries rewrites existing summaries only (0.17)
+            ops.write_summary(kb, f"projects/p{i}", f"# P{i}\n\nOld.\n", meta={"draft": True})
+        updates = [
+            {"path": f"projects/p{i}", "content": f"# P{i}\n\nBody.\n", "meta": {"draft": None}}
+            for i in range(5)
+        ]
         updates.append({"path": "people", "content": "# People\n\nRollup.\n"})
         result = ops.update_summaries(kb, updates)
         assert result["success"] is True
         assert result["attempted"] == 6
         assert result["failed"] == 0
         assert "partial" not in result
-        created = next(n for n in result["notes"] if n["code"] == "created")
-        assert created["count"] == 5
-        assert len(created["examples"]) == 3
+        removed = next(n for n in result["notes"] if n["code"] == "removed")
+        assert removed["count"] == 5
+        assert len(removed["examples"]) == 3
 
     def test_partial_batch_reports_partial_and_failed(self, tmp_path):
         kb = _make_kb(tmp_path)
@@ -446,7 +459,7 @@ class TestReviewRegressions:
             "people",
             "# People\n\nRewritten rollup.\n",
             prepared["children_digest"],
-            meta={"source": "manual"},
+            meta={"source": "manual", "owner": None},
         )
         assert result["success"] is True
         assert result["did"] == "updated summary people"
@@ -469,7 +482,7 @@ class TestReviewRegressions:
         after = ops.read_node(kb, "people/contacts/jane_doe")["meta"]
         assert after["created"] == before["created"]
         assert after["updated"] == result["updated"]
-        removed = [n for n in result["notes"] if n["code"] == "removed"]
+        removed = [n for n in result.get("notes", []) if n["code"] == "removed"]
         assert not any(
             k in ("created", "updated") for n in removed for k in n["detail"]["dropped_keys"]
         )

@@ -49,6 +49,17 @@ kvault/
     the DB, and unexpected untracked sidecars break KB git-sync automation. Logging sits
     off the write path, so the contention WAL solves does not exist here. Pinned by
     `tests/test_oplog.py` (`test_no_wal_anywhere`).
+13. **MCP tools refuse unknown arguments.** FastMCP drops unknown keys by default, so a
+    misspelled budget or path argument silently ran with defaults;
+    `_forbid_unknown_arguments` in `kvault/mcp/server.py` rebuilds every tool's argument
+    model with `extra="forbid"`. Accept a common alternative name as an explicit alias
+    parameter rather than loosening this. Pinned by `tests/test_mcp_surface.py`.
+14. **MCP results fit clients that inline about 4 KB** by default (tree outline, search,
+    read_nodes, write/move/delete ancestors, daily artifact); anything larger is opt-in.
+    A result cut to fit carries a `truncated` note; documents left out by default
+    (ancestor documents, the artifact's markdown) are named in the tool's docstring. Register tools with `_tool(...)`
+    (never `server.tool` directly): it sends the result as compact JSON text, and the
+    closure keeps the dict-returning function for tools that call each other.
 
 ## Core APIs
 
@@ -58,21 +69,22 @@ from kvault.core import operations as ops
 # Stateless — all functions take kg_root: Path as first arg
 ops.read_node(kg_root, path, parents="immediate")   # none | gist | immediate | all
 ops.read_nodes(kg_root, paths, parents="none", total_max_chars=20000)   # budget counts whole nodes
-ops.write_node(kg_root, path, content, meta=..., create=...)
+ops.write_node(kg_root, path, content, meta=..., create=..., event_ids=...)
+ops.write_node(kg_root, path, patches=[{"old_str": ..., "new_str": ...}])   # edit an existing body
 ops.list_nodes(kg_root, path=".", recursive=False)
-ops.search_nodes(kg_root, query, limit=10, compact=False, parents="none")
+ops.search_nodes(kg_root, query, limit=10, compact=False, parents="none", include_background=False)
 ops.prepare_summary_update(kg_root, path)
 ops.write_parent_summary(kg_root, path, content, children_digest, meta=...)
-ops.read_entity(kg_root, path)
-ops.write_entity(kg_root, path, content, meta=..., create=..., reasoning=...)
-ops.update_summaries(kg_root, updates)
-ops.list_entities(kg_root, category=...)
+ops.update_summaries(kg_root, updates)   # [{path, content | patches, meta}]; existing summaries only
 ops.delete_entity(kg_root, path)
 ops.move_entity(kg_root, source, target)
+ops.move_entities(kg_root, moves, new_root=False, dry_run=False)   # [{from, to}] under one lock
+ops.mark_node(kg_root, path, distinct_from=..., max_children=..., series_ok=..., verify_by=...)
 ops.get_ancestors(kg_root, path)
 ops.write_journal(kg_root, actions, source)
 ops.validate_kb(kg_root)
 ops.get_kb_info(kg_root)
+# Entity-era names kept for compatibility: read_entity, write_entity, list_entities
 ```
 
 ```python
@@ -113,14 +125,22 @@ from kvault.core.storage import (
 ```bash
 # Node operations
 kvault search <query> [--limit N] [--kind root|category|entity]... [--path PREFIX] [--no-collapse] \
-              [--compact] [--snippet-chars N] [--parents none|gist|immediate|all] [--json]
+              [--compact] [--snippet-chars N] [--parents none|gist|immediate|all] \
+              [--include-background] [--json]
 kvault read <path>... [--parents none|gist|immediate|all] [--max-total-chars N] [--json]   # several paths: one call
-kvault write <path> [--create] [--reasoning TEXT] [--json] < content.md
+kvault write <path> [--create] [--reasoning TEXT] [--event ID]... [--new-root] [--allow-similar] \
+             [--json] < content.md
+kvault write <path> --patches [--json] < patches.json   # [{"old_str", "new_str"}], each matching once
 kvault list [path] [--recursive] [--json]
 
+# Structure
+kvault delete <path> --confirm [--json]
+kvault move <source> <target> --confirm [--new-root] [--json]
+kvault move --batch --confirm [--dry-run] [--json] < moves.json   # [{"from", "to"}]
+kvault plan [PATH] [--limit N|0] [--max-children N] [--json]       # never applies anything
+kvault mark <path> [--distinct-from X]... [--max-children N] [--series-ok] [--verify-by DATE|+Nd|none] [--clear]
+
 # Compatibility operations
-kvault delete <path> [--force] [--json]
-kvault move <source> <target> [--json]
 kvault read-summary <path> [--json]
 kvault write-summary <path> [--json] < content.md
 kvault update-summaries [--json] < updates.json
@@ -132,11 +152,13 @@ kvault journal --source TEXT [--date YYYY-MM-DD] [--json] < actions.json
 # Capture journal
 kvault capture --source S [--source-ref R] [--tag T] [--allow-suspicious] [--json] < text
 kvault events list [--status pending|resolved|retracted] [--limit N|0] [--since YYYY-MM-DD] [--json]
+kvault events show <id> [--json]
+kvault events resolve <id> --outcome journal_only|duplicate|no_op|rejected [--note TEXT] [--json]
 kvault events retract <id> --reason TEXT [--superseded-by ID] [--json]
 
 # Status & validation
 kvault status [--root-summary] [--json]
-kvault tree [--depth N]
+kvault tree [path] [--depth N] [--max-children N] [--gist] [--json]
 kvault validate [--json]
 kvault check [--kb-root PATH] [--json] [--code CODE]... [--max-findings N|0] [--max-lines N|0] \
              [--no-summary-quality] [--summary-max-words N|0] [--summary-max-dated-sections N|0] \
@@ -151,11 +173,11 @@ kvault artifact daily [--kb-root PATH] [--date YYYY-MM-DD] [--force] [--stdout] 
 kvault log tail [--limit N] [--session ID] [--kb-root PATH] [--json]
 kvault log summary [--db PATH] [--session-id ID] [--kb-root PATH] [--json]
 
-# Output tiers & strict mode (accepted on the group and after subcommands)
+# Output tiers & strict mode (on the group, or after: write, write-summary, update-summaries, delete, move, mark, journal, search)
 kvault [-q|--quiet] [--explain] [--trace] [--strict] <command> ...
 
-# MCP compatibility
-kvault-mcp --kb-root PATH
+# MCP server
+kvault-mcp --kb-root PATH [--legacy-tools]   # or KVAULT_MCP_LEGACY_TOOLS=1 for the 8 superseded tools
 # Preferred MCP summary flow:
 # kvault_prepare_summary_update -> kvault_write_parent_summary
 

@@ -233,14 +233,14 @@ def test_stale_history_ignores_h1_and_counts_undated_delta(tmp_path):
 
 def test_ceilings_skip_parents_with_only_background_children(tmp_path):
     kb = _basic_kb(tmp_path)
-    _write_summary(kb, "people", "# People\n\n" + " ".join(["Sven Schmit is covered."] * 40))
+    _write_summary(kb, "people", "# People\n\n" + " ".join(["Mara Lindqvist is covered."] * 40))
     _write_summary(
-        kb, "people/sven", _bloated_body(sections=6, words_per=300).replace("# Root", "# Sven")
+        kb, "people/mara", _bloated_body(sections=6, words_per=300).replace("# Root", "# Mara")
     )
-    _write_summary(kb, "people/sven/deep_context", "# Deep context\n\nLong notes.")
+    _write_summary(kb, "people/mara/deep_context", "# Deep context\n\nLong notes.")
     codes = {(i.path, i.code) for i in audit_summary_quality(kb)}
-    assert ("people/sven/_summary.md", "too_long") not in codes
-    assert ("people/sven/_summary.md", "stale_history") not in codes
+    assert ("people/mara/_summary.md", "too_long") not in codes
+    assert ("people/mara/_summary.md", "stale_history") not in codes
 
 
 def test_max_words_semantics_none_zero_and_hard_ceiling(tmp_path):

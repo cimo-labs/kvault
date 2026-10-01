@@ -69,22 +69,22 @@ def test_sibling_pairs_on_flat_fixture():
 
 def test_cluster_by_leading_token():
     names = [
-        "atlas",
-        "atlas_architecture",
-        "atlas_reporting",
-        "atlas_scaling",
-        "crm_prompts",
-        "crm_prompt_ranking",
-        "crm_segment_optimization",
-        "support_agent_beta",
-        "support_agents",
-        "acme_crm_prompts",
-        "uplift_modeling",
+        "greenhouse",
+        "greenhouse_layout",
+        "greenhouse_heating",
+        "greenhouse_lighting",
+        "seed_catalog",
+        "seed_catalog_audit",
+        "seed_storage_plan",
+        "pest_watch_spring",
+        "pest_watches",
+        "acme_seed_catalog",
+        "yield_modeling",
     ]
     groups, leftovers = st.cluster_by_leading_token(names, min_size=3)
-    assert [(k, len(v)) for k, v in groups] == [("atlas", 4), ("crm", 3)]
+    assert [(k, len(v)) for k, v in groups] == [("greenhouse", 4), ("seed", 3)]
     assert leftovers == sorted(
-        ["support_agent_beta", "support_agents", "acme_crm_prompts", "uplift_modeling"]
+        ["pest_watch_spring", "pest_watches", "acme_seed_catalog", "yield_modeling"]
     )
 
 

@@ -156,6 +156,13 @@ def read_entity(
     is_flag=True,
     help="Create even though a sibling has the same words (refused otherwise)",
 )
+@click.option(
+    "--patches",
+    "use_patches",
+    is_flag=True,
+    help='stdin is a JSON array of {"old_str", "new_str"} edits to the existing body '
+    "(each old_str must match exactly once) instead of the whole document",
+)
 @verbosity_options
 @common_options
 @click.pass_context
@@ -168,6 +175,7 @@ def write_entity(
     event_ids: tuple,
     new_root: bool,
     allow_similar: bool,
+    use_patches: bool,
     kb_root: Optional[Path],
     as_json: bool,
     quiet: bool,
@@ -178,23 +186,31 @@ def write_entity(
     """Write a node from stdin (frontmatter + markdown body).
 
     Content is read from stdin. Include YAML frontmatter for metadata,
-    or omit it to use defaults.
+    or omit it to use defaults. With --patches, stdin is a JSON array of
+    exact edits to the existing body; the frontmatter is kept.
     """
     apply_common_options(ctx, kb_root=kb_root, as_json=as_json)
     apply_verbosity_options(ctx, quiet=quiet, explain=explain, trace=trace, strict=strict)
     kb_root = resolve_kb_root(ctx)
-    raw = read_stdin()
+    content: Optional[str] = None
+    meta = None
+    patches = None
+    if use_patches:
+        patches = read_stdin_json()
+    else:
+        raw = read_stdin()
 
-    # Parse frontmatter from stdin content
-    from kvault.core.frontmatter import parse_frontmatter
+        # Parse frontmatter from stdin content
+        from kvault.core.frontmatter import parse_frontmatter
 
-    meta, body = parse_frontmatter(raw)
+        meta, body = parse_frontmatter(raw)
+        content = body if meta else raw
 
     started = time.monotonic()
     result = ops.write_node(
         kb_root,
         path,
-        body if meta else raw,
+        content,
         meta=meta if meta else None,
         create=create,
         reasoning=reasoning,
@@ -202,6 +218,7 @@ def write_entity(
         event_ids=list(event_ids) or None,
         new_root=new_root,
         allow_similar=allow_similar,
+        patches=patches,
     )
     record_op(kb_root, "write", result, started)
     if ctx.obj.get("as_json"):

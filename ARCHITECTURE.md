@@ -1,7 +1,7 @@
 # kvault Architecture
 
 Canonical architecture for the `knowledgevault` package.
-Last updated: 2026-08-10
+Last updated: 2026-10-01
 
 ## Overview
 
@@ -53,6 +53,13 @@ root from `--kb-root` or `KVAULT_KB_ROOT`, enforces `KVAULT_ALLOWED_ROOTS`, and 
 tool behavior to `kvault.core.operations`. MCP clients should prefer
 `kvault_prepare_summary_update` and `kvault_write_parent_summary` for parent rollups so direct
 children are read before a parent summary is rewritten.
+
+Every tool's argument model is rebuilt with `extra="forbid"` at startup, so an unknown
+argument is an error instead of a silently ignored key; common alternative names are explicit
+alias parameters. Tools are registered through `_compact_text`, so a result reaches the client
+as one compact JSON text block (FastMCP would indent it and add a structured copy). Default
+results are sized for clients that inline about 4 KB of tool output.
+The eight entity-era tools register only with `--legacy-tools` / `KVAULT_MCP_LEGACY_TOOLS=1`.
 
 ### Operations Layer (`kvault/core/operations.py`)
 
@@ -182,7 +189,8 @@ pipeline has three stages with a hard boundary between them:
    `KVAULT_VERBOSITY`) filter by note level; `why`/`next` print at `--explain`.
    `partial` survives even `--quiet`. `--strict` exits 3 on any warning-class
    note. In `--json` mode notes ride in the document itself, `why`/`next`
-   always included, and consumers filter by `level` themselves.
+   always included, and consumers filter by `level` themselves. Compact search
+   results (`--compact`, the MCP default) keep `code`, `text` and `next` only.
 
 MCP never renders: results are returned as data, stdout is the JSON-RPC
 transport, and nothing under `kvault/core/` or `kvault/mcp/` may write to a
@@ -241,12 +249,23 @@ pytest -q
 
 ## Version Notes
 
+- 0.17.0: write integrity and the MCP surface — a leading frontmatter block in content is
+  merged instead of stacked, summary `meta` merges (null deletes), `update-summaries` never
+  creates paths and refuses unknown keys, summary rules reported at write time, same-day
+  PROPAGATE, whole-word phrase matching, a `deep_context/` match folded into its keeper when the
+  keeper scores at least half as much and is in the results,
+  `.kvaultignore` honored by search; patch mode; MCP capture/events, budgets that fit ~4 KB,
+  argument aliases, unknown arguments refused, legacy tools behind a flag.
+
 - 0.16.0: what agents could not see, and reads that stay small — `DUPLICATE:` (KB-wide),
   `DANGLING:` (+ `referrer_paths` on move/delete), `STALE:` (`verify_by`), `check --code` /
   `--max-findings 0`, JOURNAL honors `.kvaultignore`, `parents="gist"`, `read_nodes` /
   `kvault_read_nodes`, compact search (the MCP default), frontmatter dates in search,
   loose-file note in search and `+N loose` in tree, memoized frontmatter parsing.
 
+- 0.15.x: structure that stays sound — create guards (`new_root`, `allow_similar`, stub
+  parents), `GHOST:`/`SERIES:`/`SIBLINGS:`/`LOOSE:`/`JOURNAL:` findings, `.kvaultignore`,
+  `plan` with `move --batch`, recorded decisions (`mark`), the maintenance skill.
 - 0.14.0: bounded outputs — `--version`/`doctor` handshake, `check` ceilings (`too_long`,
   `stale_history`), capture tripwire for shell-mangled text, `events retract` + `RETRACTED:`,
   search ancestor collapse + `--kind`/`--path`, defaults flipped (`read --parents none`,

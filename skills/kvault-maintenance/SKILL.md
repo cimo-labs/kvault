@@ -13,7 +13,7 @@ check` names each of these; `kvault plan` orders the fixes and emits the
 commands. This skill is the procedure around those two commands. The plan
 comes from kvault, not from you, so every runtime makes the same moves.
 
-Requires knowledgevault 0.16.0 or later. The first line of every unattended
+Requires knowledgevault 0.17.0 or later. The first line of every unattended
 job is `kvault doctor`, so a runtime older than the skill text is visible in
 the job log instead of silently missing the signals below.
 
@@ -52,7 +52,7 @@ rewrites it, and `check` keeps flagging it.
 ### Every session (any agent, before writing)
 
 ```bash
-kvault check -q --kb-root "$KB"
+kvault check --kb-root "$KB"
 ```
 
 - Act on `[KB]` lines first.
@@ -112,8 +112,11 @@ kvault plan --json --limit 5 --kb-root "$KB" > "$LOG/plan.json"
    summaries to rewrite. Rewrite the new hub first (it is a parent now),
    then its parent, then the root. Send `update-summaries` in chunks of at
    most 10 ancestors per call: each entry carries a full rollup body, and a
-   40-entry payload has stressed a remote MCP bridge. kvault stamps
-   `updated` on every rewritten summary, so a rewrite clears PROPAGATE.
+   40-entry payload has stressed a remote MCP bridge. An ancestor that only
+   needs a line changed (a child renamed or moved) takes `patches`
+   (`[{"old_str", "new_str"}]`, each matching once) instead of a full body.
+   kvault stamps `updated` on every rewritten summary, so a rewrite clears
+   PROPAGATE.
 2. `ghost` items: read what is inside, then either write the summary or add
    the path to `.kvaultignore`. Tooling directories (`scripts/`,
    `sources/`) are ignore entries, not nodes.
@@ -168,7 +171,7 @@ notes are on purpose", "you filed that under the wrong customer".
 For a KB that has already rotted (dozens of flat children, split-brain
 roots), do this once, one batch at a time:
 
-1. `kvault doctor`; upgrade if below 0.15.
+1. `kvault doctor`; upgrade if below 0.17.
 2. Create `.kvaultignore` for tooling directories and files first, so
    `check` reports knowledge problems, not tooling.
 3. `kvault plan --json --limit 0`. Read the `cluster` items and the
@@ -198,7 +201,8 @@ roots), do this once, one batch at a time:
 
 Over MCP the same signals are `kvault_check` (`codes=[...]` and
 `max_findings=0` for one code's full list), `kvault_plan`,
-`kvault_move_entities`, `kvault_mark` (`verify_by` included), and the
-`new_root` / `allow_similar` arguments on `kvault_write_node`;
-`kvault_validate_kb` is integrity only. Read the nodes an item names with one
-`kvault_read_nodes` call.
+`kvault_move_entities`, `kvault_mark` (`verify_by` included), the
+`new_root` / `allow_similar` arguments on `kvault_write_node`,
+`kvault_update_summaries` (items take `patches`) and `kvault_events` for
+`PENDING:` findings; `kvault_validate_kb` is integrity only. Read the nodes
+an item names with one `kvault_read_nodes` call.

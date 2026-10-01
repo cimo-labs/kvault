@@ -47,6 +47,10 @@ class SearchDocument:
     content: str
     summary_path: str
     last_updated: str
+    #: Under a background child such as ``deep_context/`` (parked or supporting
+    #: material): folded into the node that keeps it when that node matches
+    #: about as well.
+    background: bool = False
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,16 @@ class SearchResult:
         return data
 
 
+def _keeper(path: str) -> str:
+    """The node that keeps a background path: everything before its first
+    background segment (``a/deep_context/b`` -> ``a``)."""
+    parts = path.split("/")
+    for index, part in enumerate(parts):
+        if is_background_child(part):
+            return "/".join(parts[:index]) or "."
+    return path
+
+
 def search_nodes(
     kg_root: Path,
     query: str,
@@ -112,8 +126,22 @@ def search_nodes(
     path_prefix: Optional[str] = None,
     compact: bool = False,
     snippet_chars: Optional[int] = None,
+    include_background: bool = False,
 ) -> Dict[str, Any]:
     """Search visible kvault nodes and return ranked results.
+
+    Nodes under ``deep_context/`` (a duplicate parked under its keeper, or
+    the keeper's long-form notes) are background (0.17). A background match
+    is folded into its keeper when the keeper scores at least half as much
+    (the collapse rule's ratio) and is on the returned page, and the note
+    lists it; a stronger one is returned, since a fact may live only in the
+    notes. Of 25 queries taken from notes text on a real KB whose notes node
+    was in the top five, folding whenever the keeper matched at all kept 7
+    there; this rule keeps 21, and for the other 4 the keeper is shown and
+    the note names the notes node. ``include_background`` returns every
+    match. Before, a parked copy
+    competed with its keeper and could collapse the keeper's parents out of
+    the results. Paths in ``.kvaultignore`` are never searched.
 
     ``compact`` returns ``path``, ``title``, ``kind``, ``last_updated`` and a
     one-line snippet per hit (``COMPACT_SNIPPET_CHARS`` unless
@@ -143,6 +171,7 @@ def search_nodes(
     )
 
     documents, unreadable = _scan_documents(kg_root)
+    hidden_background = 0
     query_tokens = _tokens(query)
     if not query_tokens:
         return {"query": query, "count": 0, "total_matched": 0, "results": []}
@@ -160,7 +189,6 @@ def search_nodes(
         scored = [item for item in scored if item[1].kind in wanted_kinds]
     if prefix is not None:
         scored = [item for item in scored if _under_prefix(item[1].path, prefix)]
-
     collapsed_by: Dict[str, str] = {}
     if collapse:
         scored, collapsed_by = _collapse_ancestors(scored, page_size=limit)
@@ -168,6 +196,10 @@ def search_nodes(
 
     # Deeper (more specific) first on equal score; root is depth 0.
     scored.sort(key=lambda item: (-item[0], -_depth(item[1].path), item[1].path))
+    folded: List[Tuple[float, str]] = []
+    if not include_background:
+        scored, folded = _fold_background(scored, page_size=limit)
+        hidden_background = len(folded)
     total_matched = len(scored)
     results: List[SearchResult] = []
     remaining_total = max(0, total_max_chars)
@@ -238,6 +270,23 @@ def search_nodes(
                 "kvault_read_summary); kvault plan adopts legacy node files as nodes",
             )
         )
+    if hidden_background:
+        folded_paths = [path for _, path in sorted(folded, reverse=True)[:3]]
+        more = (
+            f" (+{hidden_background - len(folded_paths)} more)"
+            if hidden_background > len(folded_paths)
+            else ""
+        )
+        notes.append(
+            nt.note(
+                "truncated",
+                f"{hidden_background} match(es) under deep_context/ folded into the node "
+                f"that keeps them, which matched about as well: {', '.join(folded_paths)}{more}",
+                detail={"kind": "background", "hidden": hidden_background, "paths": folded_paths},
+                next_step="read one of these paths, or re-run with include_background "
+                "(CLI --include-background) to list them all",
+            )
+        )
     if total_matched > len(results):
         notes.append(
             nt.note(
@@ -276,6 +325,14 @@ def search_nodes(
             )
         )
 
+    if compact:
+        # A compact result is read inline by agents whose clients spill output
+        # above ~4 KB: a note keeps its code, its text and what to do next;
+        # why, level and the structured detail (the text carries it) come
+        # only with compact=false (0.17).
+        notes = [
+            {k: v for k, v in entry.items() if k in ("code", "text", "next")} for entry in notes
+        ]
     out: Dict[str, Any] = {
         "query": query,
         "did": f"matched {total_matched} node(s), returning {len(results)}",
@@ -381,12 +438,42 @@ def _justifier(item: _Scored, pool: List[_Scored]) -> Optional[str]:
         (other_score, other.path)
         for other_score, other, _ in pool
         if _is_strict_descendant(other.path, doc.path)
-        and not is_background_child(other.path.rsplit("/", 1)[-1])
+        and not any(is_background_child(part) for part in other.path.split("/"))
         and other_score >= _COLLAPSE_SCORE_RATIO * score
     ]
     if not candidates:
         return None
     return max(candidates)[1]
+
+
+def _fold_background(
+    scored: List[_Scored], page_size: int = 0
+) -> Tuple[List[_Scored], List[Tuple[float, str]]]:
+    """Fold background matches into keepers that match about as well (0.17).
+
+    *scored* is ranked. A match under ``deep_context/`` is folded when its
+    keeper scored at least ``_COLLAPSE_SCORE_RATIO`` as much and, with
+    ``page_size`` > 0, lands on the returned page: folding into a keeper the
+    caller never sees would drop the best match from the result. Such
+    matches are restored (to a fixed point; the folded set only shrinks).
+    Returns the kept list, still ranked, and the folded ``(score, path)``.
+    """
+    best = {item[1].path: item[0] for item in scored}
+    folded = {
+        item[1].path
+        for item in scored
+        if item[1].background
+        and _keeper(item[1].path) in best
+        and best[_keeper(item[1].path)] >= _COLLAPSE_SCORE_RATIO * item[0]
+    }
+    while page_size > 0 and folded:
+        page = [item[1].path for item in scored if item[1].path not in folded][:page_size]
+        restore = {path for path in folded if _keeper(path) not in page}
+        if not restore:
+            break
+        folded -= restore
+    kept = [item for item in scored if item[1].path not in folded]
+    return kept, sorted(((best[path], path) for path in folded), reverse=True)
 
 
 def _collapse_ancestors(
@@ -438,6 +525,7 @@ def _scan_documents(kg_root: Path) -> Tuple[List[SearchDocument], List[Dict[str,
     kg_root = Path(kg_root)
     documents: List[SearchDocument] = []
     unreadable: List[Dict[str, str]] = []
+    ignore = st.load_ignore(kg_root)
     for summary_path in sorted(kg_root.rglob("_summary.md")):
         try:
             rel_summary = summary_path.relative_to(kg_root)
@@ -449,6 +537,8 @@ def _scan_documents(kg_root: Path) -> Tuple[List[SearchDocument], List[Dict[str,
         node_path = (
             "." if summary_path.parent == kg_root else str(summary_path.parent.relative_to(kg_root))
         )
+        if node_path != "." and st.is_ignored(node_path, ignore):
+            continue
         if not st.inside_root(summary_path, kg_root):
             # a _summary.md symlinked out of the KB is never read
             unreadable.append({"path": str(rel_summary), "error": "outside_kb"})
@@ -471,6 +561,7 @@ def _scan_documents(kg_root: Path) -> Tuple[List[SearchDocument], List[Dict[str,
                 content=content,
                 summary_path=str(rel_summary),
                 last_updated=_meta_date(meta) or _mtime_date(summary_path),
+                background=any(is_background_child(part) for part in node_path.split("/")),
             )
         )
     return documents, unreadable
@@ -535,7 +626,9 @@ def _phrase_score(
     if query == field_text and exact:
         matched_fields.add(field_name)
         return exact
-    if query in field_text:
+    # Whole tokens only (0.17): "ai" used to match inside "email" and "detail",
+    # earning the phrase bonus and blocking ancestor collapse.
+    if f" {query} " in f" {field_text} ":
         matched_fields.add(field_name)
         return contains
     return 0.0

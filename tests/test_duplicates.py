@@ -13,11 +13,11 @@ from kvault.core.check import run_checks
 from kvault.core.duplicates import duplicate_pairs
 from kvault.core.plan import build_plan
 
-ROUTING = (
-    "The routing model pools evidence across segments with a hierarchical prior, "
-    "shrinks small segments toward the global mean, and feeds the segment dashboard "
-    "that ranks candidate policies by estimated uplift with credible intervals for "
-    "each segment and a weekly refresh from the experiment warehouse tables."
+IRRIGATION = (
+    "The irrigation planner pools sensor readings across grove blocks with a seasonal "
+    "baseline, smooths small blocks toward the valley average, and feeds the watering "
+    "board that ranks candidate schedules by expected yield with soil moisture bands for "
+    "each block and a nightly refresh from the weather station logs."
 )
 PRICING = (
     "Quarterly pricing review for the distribution channel covers list price changes, "
@@ -41,7 +41,7 @@ def _kb(tmp_path: Path) -> Path:
     kb.mkdir()
     (kb / ".kvault").mkdir()
     _node(kb, ".", "# Root\n\nRoot.\n")
-    for rel in ("projects", "projects/causal", "tech", "tech/models", "sales", "suppliers"):
+    for rel in ("projects", "projects/orchard", "tech", "tech/models", "sales", "suppliers"):
         _node(kb, rel, f"# {rel.split('/')[-1].title()}\n\nA branch.\n")
     return kb
 
@@ -52,22 +52,24 @@ def _pairs(kb: Path):
 
 def test_twins_in_different_folders_are_found_by_name_title_and_body(tmp_path):
     kb = _kb(tmp_path)
-    _node(kb, "tech/bayes_routing", f"# Bayes routing model\n\n{ROUTING}\n")
-    _node(kb, "tech/models/bayes_routing", f"# Bayes routing model\n\n{ROUTING}\n")
+    _node(kb, "tech/drip_irrigation", f"# Drip irrigation model\n\n{IRRIGATION}\n")
+    _node(kb, "tech/models/drip_irrigation", f"# Drip irrigation model\n\n{IRRIGATION}\n")
     # different names, near-identical text
     _node(
-        kb, "projects/uplift_modeling", f"# Uplift modeling\n\n{ROUTING} Owned by data science.\n"
+        kb,
+        "projects/yield_modeling",
+        f"# Yield modeling\n\n{IRRIGATION} Owned by the field team.\n",
     )
-    _node(kb, "projects/causal/causal_uplift_dashboard", f"# Dashboard\n\n{ROUTING}\n")
+    _node(kb, "projects/orchard/orchard_yield_dashboard", f"# Dashboard\n\n{IRRIGATION}\n")
     pairs = _pairs(kb)
-    assert set(pairs[("tech/bayes_routing", "tech/models/bayes_routing")]) == {
+    assert set(pairs[("tech/drip_irrigation", "tech/models/drip_irrigation")]) == {
         "similar_body",
         "same_title",
         "same_name",
     }
     assert (
         "similar_body"
-        in pairs[("projects/causal/causal_uplift_dashboard", "projects/uplift_modeling")]
+        in pairs[("projects/orchard/orchard_yield_dashboard", "projects/yield_modeling")]
     )
 
 
@@ -99,10 +101,10 @@ def test_rollups_series_stubs_and_reserved_dirs_are_never_compared(tmp_path):
     kb = _kb(tmp_path)
     # a parent repeating its child's text is a rollup doing its job
     _node(kb, "sales/pricing", f"# Pricing\n\n{PRICING}\n")
-    _node(kb, "sales/pricing/q3_review", f"# Q3 pricing review\n\n{PRICING}\n")
+    _node(kb, "sales/pricing/spring_review", f"# Spring pricing review\n\n{PRICING}\n")
     # members of one date series belong to SERIES
-    _node(kb, "sales/sweep_2026_05_09", f"# Sweep\n\n{ROUTING}\n")
-    _node(kb, "sales/sweep_2026_05_10", f"# Sweep\n\n{ROUTING}\n")
+    _node(kb, "sales/sweep_2026_05_09", f"# Sweep\n\n{IRRIGATION}\n")
+    _node(kb, "sales/sweep_2026_05_10", f"# Sweep\n\n{IRRIGATION}\n")
     # kvault's own stubs all say the same thing
     for rel in ("projects/alpha", "tech/beta"):
         (kb / rel).mkdir(parents=True)
@@ -121,12 +123,12 @@ def test_homonyms_are_not_duplicates_but_bare_twins_are(tmp_path):
     _node(kb, "sales/standard", "# Standard customers\n\nTier.\n")
     _node(kb, "suppliers/standard", "# Standard freight suppliers\n\nTier.\n")
     # one name at two depths with the same bare title: the split-brain case
-    _node(kb, "projects/causal/models", "# Models\n\nNotes.\n")
+    _node(kb, "projects/orchard/models", "# Models\n\nNotes.\n")
     # one name at one depth under sibling parents is a facet layout (0.15), not a twin
     _node(kb, "projects/models", "# Models\n\nNotes.\n")
     pairs = _pairs(kb)
     assert ("sales/standard", "suppliers/standard") not in pairs
-    assert pairs[("projects/causal/models", "tech/models")] == ["same_name"]
+    assert pairs[("projects/orchard/models", "tech/models")] == ["same_name"]
     assert ("projects/models", "tech/models") not in pairs
 
 
@@ -139,22 +141,22 @@ def test_a_title_shared_by_many_nodes_is_a_pattern(tmp_path):
 
 def test_distinct_from_and_check_and_plan(tmp_path):
     kb = _kb(tmp_path)
-    _node(kb, "tech/bayes_routing", f"# Bayes routing model\n\n{ROUTING}\n")
-    _node(kb, "projects/routing_notes", f"# Routing notes\n\n{ROUTING}\n")
+    _node(kb, "tech/drip_irrigation", f"# Drip irrigation model\n\n{IRRIGATION}\n")
+    _node(kb, "projects/irrigation_notes", f"# Irrigation notes\n\n{IRRIGATION}\n")
     doc = run_checks(kb, codes=["DUPLICATE"])
     (finding,) = doc["findings"]
-    assert finding["path"] == "projects/routing_notes"
-    assert finding["message"].startswith("and tech/bayes_routing: body ")
+    assert finding["path"] == "projects/irrigation_notes"
+    assert finding["message"].startswith("and tech/drip_irrigation: body ")
     assert "% alike" in finding["message"]
-    assert "deep_context/bayes_routing" in finding["fix"]
+    assert "deep_context/drip_irrigation" in finding["fix"]
 
     items = [i for i in build_plan(kb, limit=0)["items"] if i["kind"] == "duplicate"]
-    assert len(items) == 1 and items[0]["other"] == "tech/bayes_routing"
-    assert any("deep_context/bayes_routing" in c for c in items[0]["commands"])
+    assert len(items) == 1 and items[0]["other"] == "tech/drip_irrigation"
+    assert any("deep_context/drip_irrigation" in c for c in items[0]["commands"])
     scoped = build_plan(kb, path="tech", limit=0)["items"]
     assert [i["kind"] for i in scoped if i["kind"] == "duplicate"] == ["duplicate"]
 
-    ops.mark_node(kb, "tech/bayes_routing", distinct_from=["projects/routing_notes"])
+    ops.mark_node(kb, "tech/drip_irrigation", distinct_from=["projects/irrigation_notes"])
     assert run_checks(kb, codes=["DUPLICATE"])["findings"] == []
 
 
@@ -253,7 +255,7 @@ def test_every_pair_reports_measured_overlap(tmp_path):
     paraphrased copies share their words, not their 5-word shingles."""
     kb = _kb(tmp_path)
     _node(kb, "sales/widget_pricing", f"# Widget pricing\n\n{PARAPHRASE_A}\n")
-    _node(kb, "projects/causal/widget_pricing", f"# Widget pricing\n\n{PARAPHRASE_B}\n")
+    _node(kb, "projects/orchard/widget_pricing", f"# Widget pricing\n\n{PARAPHRASE_B}\n")
     (pair,) = duplicate_pairs(kb)
     assert pair["words"] >= 0.8 and pair["jaccard"] is not None and pair["jaccard"] < 0.5
     from kvault.core.duplicates import describe
@@ -279,7 +281,7 @@ def test_a_filler_word_tells_nodes_apart_when_the_texts_differ(tmp_path):
     kb = _kb(tmp_path)
     # one name, titles that differ only by a filler word, unrelated texts
     _node(kb, "projects/search", f"# Search Project\n\n{PRICING}\n")
-    _node(kb, "tech/models/search", f"# Search Architecture\n\n{ROUTING}\n")
+    _node(kb, "tech/models/search", f"# Search Architecture\n\n{IRRIGATION}\n")
     assert ("projects/search", "tech/models/search") not in _pairs(kb)
     # the same titles over one text are twins again
     _node(kb, "projects/search", f"# Search Project\n\n{PARAPHRASE_A}\n")
@@ -307,7 +309,7 @@ def test_twins_in_a_facet_layout_pair_by_title(tmp_path):
     # a 23-word card whose words all come from a 59-word page
     card = " ".join(PRICING.split()[:30])
     _node(kb, "sales/acme_tooling", f"# Acme Tooling\n\n{card}\n")
-    _node(kb, "suppliers/acme_tooling", f"# Acme Tooling\n\n{PRICING} {ROUTING}\n")
+    _node(kb, "suppliers/acme_tooling", f"# Acme Tooling\n\n{PRICING} {IRRIGATION}\n")
     (pair,) = duplicate_pairs(kb)
     assert pair["signals"] == ["same_title"] and pair["words"] == 1.0
 
@@ -317,7 +319,7 @@ def test_titles_with_the_same_words_in_another_order_are_both_shown(tmp_path):
 
     kb = _kb(tmp_path)
     _node(kb, "sales/acme_tooling", "# Acme Tooling\n\nShort.\n")
-    _node(kb, "projects/causal/tooling_acme", "# Tooling, Acme\n\nShort.\n")
+    _node(kb, "projects/orchard/tooling_acme", "# Tooling, Acme\n\nShort.\n")
     (pair,) = duplicate_pairs(kb)
     text = describe(pair)
     assert "«Acme Tooling»" in text and "«Tooling, Acme»" in text

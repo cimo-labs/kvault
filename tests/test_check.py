@@ -2,6 +2,7 @@
 
 import os
 import time
+from datetime import date, datetime
 from pathlib import Path
 
 from kvault.core.check import _get_updated_date, check_propagation
@@ -100,6 +101,45 @@ def test_propagation_falls_back_to_mtime(tmp_path):
     assert "newer" in prop_warnings[0]
 
 
+def _at(day: date, hour: int) -> float:
+    return datetime.combine(day, datetime.min.time()).replace(hour=hour).timestamp()
+
+
+def test_same_day_child_edit_after_its_parent_is_stale(tmp_path):
+    """0.17: `updated` has day granularity, so a child rewritten hours after its
+    parent on the same day was never reported. Equal days fall back to mtime."""
+    kb = tmp_path / "kb"
+    parent_dir = kb / "category"
+    child = parent_dir / "entity" / "_summary.md"
+    day = date.today()
+    for f, title in ((kb / "_summary.md", "Root"), (parent_dir / "_summary.md", "Category")):
+        _write_summary(f, f"# {title}\n", meta={"updated": day.isoformat()})
+    _write_summary(child, "# Entity\n", meta={"updated": day.isoformat()})
+    for f in kb.rglob("_summary.md"):
+        os.utime(f, (_at(day, 1), _at(day, 1)))  # the 01:00 rollup job
+    os.utime(child, (_at(day, 15), _at(day, 15)))  # a daytime edit
+    stale = [w for w in check_propagation(kb, threshold_minutes=5) if "entity" in w]
+    assert len(stale) == 1 and "840m newer" in stale[0]
+    # a fresh clone gives every file the same mtime: nothing to report
+    for f in kb.rglob("_summary.md"):
+        os.utime(f, (_at(day, 16), _at(day, 16)))
+    assert not [w for w in check_propagation(kb, threshold_minutes=5) if "entity" in w]
+
+
+def test_a_later_checkout_of_an_old_child_is_not_stale(tmp_path):
+    """A pulled clone gives a moved node the checkout time. Its `updated` day is
+    months old, like its parent's, so its new mtime says nothing about edits."""
+    kb = tmp_path / "kb"
+    parent_dir = kb / "category"
+    child = parent_dir / "entity" / "_summary.md"
+    old = date(2026, 5, 16)
+    for f, title in ((kb / "_summary.md", "Root"), (parent_dir / "_summary.md", "Category")):
+        _write_summary(f, f"# {title}\n", meta={"updated": old.isoformat()})
+        os.utime(f, (_at(old, 9), _at(old, 9)))
+    _write_summary(child, "# Entity\n", meta={"updated": old.isoformat()})  # mtime: now
+    assert not [w for w in check_propagation(kb, threshold_minutes=5) if "entity" in w]
+
+
 # ── write_entity ancestors tests ─────────────────────────────────────
 
 
@@ -171,3 +211,14 @@ def test_get_updated_date_returns_none_without_frontmatter(tmp_path):
 
     result = _get_updated_date(summary)
     assert result is None
+
+
+def test_a_timestamp_in_updated_is_read_as_its_day(tmp_path):
+    """`updated: 2026-10-01 09:30:00` is a datetime; comparing it with a date raised."""
+    kb = tmp_path / "kb"
+    _write_summary(kb / "_summary.md", "# Root\n", meta={"updated": "2026-02-01"})
+    (kb / "category").mkdir(parents=True, exist_ok=True)
+    (kb / "category" / "_summary.md").write_text(
+        "---\nupdated: 2026-02-02 09:30:00\n---\n# Category\n"
+    )
+    assert check_propagation(kb, threshold_minutes=5)  # a finding, not a TypeError

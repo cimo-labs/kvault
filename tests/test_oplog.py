@@ -160,3 +160,32 @@ def test_mtime_of_summary_untouched_by_oplog(tmp_path):
     before = summary.stat().st_mtime_ns
     OpLog(kb).append("write", {"success": True, "path": "people/contacts/a"})
     assert summary.stat().st_mtime_ns == before
+
+
+def test_batch_rows_name_their_paths_and_whether_anything_changed(tmp_path):
+    """0.17: update-summaries and batch-move rows recorded no path or changed."""
+    kb = _make_kb(tmp_path)
+    runner = CliRunner()
+    batch = [
+        {"path": "people", "content": "# People\n\nEveryone.\n"},
+        {"path": "people/contacts", "content": "# Contacts\n\nContacts.\n"},  # unchanged
+    ]
+    out = runner.invoke(
+        cli, ["update-summaries", "--json", "--kb-root", str(kb)], input=json.dumps(batch)
+    )
+    assert out.exit_code == 0, out.output
+    result = json.loads(out.output)
+    assert result["updated"] == ["people", "people/contacts"]
+    assert result["changed"] is True and result["changed_paths"] == ["people"]
+    row = OpLog(kb).tail(limit=1)[0]
+    assert row["op"] == "update-summaries" and row["changed"] is True
+    assert row["path"] == "people"
+
+    moved = ops.move_entities(kb, [{"from": "people/contacts", "to": "people/friends"}])
+    assert moved["changed"] is True
+    OpLog(kb).append("move-batch", moved)
+    assert OpLog(kb).tail(limit=1)[0]["path"] == "people/contacts -> people/friends"
+
+    many = {"success": True, "updated": [f"n{i}" for i in range(5)], "changed_paths": []}
+    OpLog(kb).append("update-summaries", many)
+    assert OpLog(kb).tail(limit=1)[0]["path"] == "n0, n1, n2 (+2 more)"

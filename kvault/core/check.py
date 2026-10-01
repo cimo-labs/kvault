@@ -135,6 +135,8 @@ def _get_updated_date(path: Path) -> Optional[date]:
         val = meta.get(field_name)
         if val is None:
             continue
+        if isinstance(val, datetime):  # `updated: 2026-10-01 09:30:00`
+            return val.date()
         if isinstance(val, date):
             return val
         try:
@@ -176,7 +178,13 @@ def propagation_findings(kb_root: Path, threshold_minutes: int) -> List[Finding]
     """Parents should be at least as recent as their children.
 
     Frontmatter ``updated`` dates first (they survive git); mtime with the
-    threshold as the fallback when either side has no date.
+    threshold as the fallback when either side has no date. Equal days use
+    mtime too, because ``updated`` has day granularity: a child edited after
+    its parent on the same day was never reported (a parent stamped by a
+    01:00 job hid every daytime child edit). Only while both files were last
+    written on the day they are stamped with, though: a git checkout gives a
+    file the time of the checkout, and on a pulled clone a node moved months
+    after its last edit looked newer than its untouched parent.
     """
     findings: List[Finding] = []
     threshold = timedelta(minutes=threshold_minutes)
@@ -196,11 +204,18 @@ def propagation_findings(kb_root: Path, threshold_minutes: int) -> List[Finding]
             child_date = _get_updated_date(child)
             stale = False
             detail = ""
-            if child_date is not None and parent_date is not None:
+            if child_date is not None and parent_date is not None and child_date != parent_date:
                 if child_date > parent_date:
                     stale = True
                     detail = f"child updated {child_date}, parent updated {parent_date}"
-            else:
+            elif (
+                child_date is None
+                or parent_date is None
+                or (
+                    _get_mtime(child).date() == child_date
+                    and _get_mtime(summary).date() == parent_date
+                )
+            ):
                 delta = _get_mtime(child) - _get_mtime(summary)
                 if delta > threshold:
                     stale = True

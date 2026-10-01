@@ -37,6 +37,8 @@ SESSION_ENV = "KVAULT_SESSION"
 DISABLE_ENV = "KVAULT_OPS_LOG"
 
 MAX_NOTES_CHARS = 4096
+#: Paths a batch row lists before "(+N more)".
+BATCH_PATHS_SHOWN = 3
 MAX_ROWS = 5000
 #: Prune when the table exceeds MAX_ROWS by this slack, so the DELETE runs
 #: occasionally rather than on every append at the boundary.
@@ -82,6 +84,29 @@ def resolve_session_id(explicit: Optional[str] = None) -> str:
 def oplog_disabled() -> bool:
     """True when the durable append is turned off via KVAULT_OPS_LOG=0."""
     return os.environ.get(DISABLE_ENV, "").strip() == "0"
+
+
+def _row_path(result: Dict[str, Any]) -> Optional[str]:
+    """The path column: one node, or a bounded list for a batch (0.17).
+
+    Batch results (update-summaries, batch moves) carry no single ``path``,
+    so their rows recorded none and a log tail could not say what changed.
+    """
+    single = result.get("path") or result.get("event_id") or result.get("source")
+    if single:
+        return str(single)
+    items: List[str] = []
+    if isinstance(result.get("updated"), list):
+        items = [str(p) for p in (result.get("changed_paths") or result["updated"])]
+    elif isinstance(result.get("moved"), list):
+        items = [
+            f"{m.get('from')} -> {m.get('to')}" for m in result["moved"] if isinstance(m, dict)
+        ]
+    if not items:
+        return None
+    shown = ", ".join(items[:BATCH_PATHS_SHOWN])
+    extra = len(items) - BATCH_PATHS_SHOWN
+    return shown + (f" (+{extra} more)" if extra > 0 else "")
 
 
 class OpLog:
@@ -156,7 +181,7 @@ class OpLog:
                     self.session_id,
                     surface,
                     op,
-                    result.get("path") or result.get("event_id") or result.get("source"),
+                    _row_path(result),
                     result.get("did"),
                     None if "changed" not in result else int(bool(result.get("changed"))),
                     int(bool(result.get("partial"))),

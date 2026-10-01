@@ -55,8 +55,9 @@ kvault/
     model with `extra="forbid"`. Accept a common alternative name as an explicit alias
     parameter rather than loosening this. Pinned by `tests/test_mcp_surface.py`.
 14. **MCP results fit clients that inline about 4 KB** by default (tree outline, search,
-    read_nodes, write/move/delete ancestors, daily artifact); anything larger is opt-in
-    and every cut is reported with a `truncated` note. Register tools with `_tool(...)`
+    read_nodes, write/move/delete ancestors, daily artifact); anything larger is opt-in.
+    A result cut to fit carries a `truncated` note; documents left out by default
+    (ancestor documents, the artifact's markdown) are named in the tool's docstring. Register tools with `_tool(...)`
     (never `server.tool` directly): it sends the result as compact JSON text, and the
     closure keeps the dict-returning function for tools that call each other.
 
@@ -152,7 +153,7 @@ kvault journal --source TEXT [--date YYYY-MM-DD] [--json] < actions.json
 kvault capture --source S [--source-ref R] [--tag T] [--allow-suspicious] [--json] < text
 kvault events list [--status pending|resolved|retracted] [--limit N|0] [--since YYYY-MM-DD] [--json]
 kvault events show <id> [--json]
-kvault events resolve <id> --outcome journal_only|duplicate|no_op|rejected --note TEXT [--json]
+kvault events resolve <id> --outcome journal_only|duplicate|no_op|rejected [--note TEXT] [--json]
 kvault events retract <id> --reason TEXT [--superseded-by ID] [--json]
 
 # Status & validation
@@ -172,7 +173,7 @@ kvault artifact daily [--kb-root PATH] [--date YYYY-MM-DD] [--force] [--stdout] 
 kvault log tail [--limit N] [--session ID] [--kb-root PATH] [--json]
 kvault log summary [--db PATH] [--session-id ID] [--kb-root PATH] [--json]
 
-# Output tiers & strict mode (accepted on the group and after subcommands)
+# Output tiers & strict mode (on the group, or after: write, write-summary, update-summaries, delete, move, mark, journal, search)
 kvault [-q|--quiet] [--explain] [--trace] [--strict] <command> ...
 
 # MCP server

@@ -1,7 +1,7 @@
 # kvault Architecture
 
 Canonical architecture for the `knowledgevault` package.
-Last updated: 2026-08-10
+Last updated: 2026-10-01
 
 ## Overview
 
@@ -189,7 +189,8 @@ pipeline has three stages with a hard boundary between them:
    `KVAULT_VERBOSITY`) filter by note level; `why`/`next` print at `--explain`.
    `partial` survives even `--quiet`. `--strict` exits 3 on any warning-class
    note. In `--json` mode notes ride in the document itself, `why`/`next`
-   always included, and consumers filter by `level` themselves.
+   always included, and consumers filter by `level` themselves. Compact search
+   results (`--compact`, the MCP default) keep `code`, `text` and `next` only.
 
 MCP never renders: results are returned as data, stdout is the JSON-RPC
 transport, and nothing under `kvault/core/` or `kvault/mcp/` may write to a
@@ -251,7 +252,8 @@ pytest -q
 - 0.17.0: write integrity and the MCP surface — a leading frontmatter block in content is
   merged instead of stacked, summary `meta` merges (null deletes), `update-summaries` never
   creates paths and refuses unknown keys, summary rules reported at write time, same-day
-  PROPAGATE, whole-word phrase matching, `deep_context/` matches folded into a keeper that matches,
+  PROPAGATE, whole-word phrase matching, a `deep_context/` match folded into its keeper when the
+  keeper scores at least half as much and is in the results,
   `.kvaultignore` honored by search; patch mode; MCP capture/events, budgets that fit ~4 KB,
   argument aliases, unknown arguments refused, legacy tools behind a flag.
 
@@ -261,6 +263,9 @@ pytest -q
   `kvault_read_nodes`, compact search (the MCP default), frontmatter dates in search,
   loose-file note in search and `+N loose` in tree, memoized frontmatter parsing.
 
+- 0.15.x: structure that stays sound — create guards (`new_root`, `allow_similar`, stub
+  parents), `GHOST:`/`SERIES:`/`SIBLINGS:`/`LOOSE:`/`JOURNAL:` findings, `.kvaultignore`,
+  `plan` with `move --batch`, recorded decisions (`mark`), the maintenance skill.
 - 0.14.0: bounded outputs — `--version`/`doctor` handshake, `check` ceilings (`too_long`,
   `stale_history`), capture tripwire for shell-mangled text, `events retract` + `RETRACTED:`,
   search ancestor collapse + `--kind`/`--path`, defaults flipped (`read --parents none`,

@@ -52,7 +52,7 @@ rewrites it, and `check` keeps flagging it.
 ### Every session (any agent, before writing)
 
 ```bash
-kvault check -q --kb-root "$KB"
+kvault check --kb-root "$KB"
 ```
 
 - Act on `[KB]` lines first.
@@ -171,7 +171,7 @@ notes are on purpose", "you filed that under the wrong customer".
 For a KB that has already rotted (dozens of flat children, split-brain
 roots), do this once, one batch at a time:
 
-1. `kvault doctor`; upgrade if below 0.15.
+1. `kvault doctor`; upgrade if below 0.17.
 2. Create `.kvaultignore` for tooling directories and files first, so
    `check` reports knowledge problems, not tooling.
 3. `kvault plan --json --limit 0`. Read the `cluster` items and the

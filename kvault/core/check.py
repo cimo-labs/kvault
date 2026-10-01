@@ -135,6 +135,8 @@ def _get_updated_date(path: Path) -> Optional[date]:
         val = meta.get(field_name)
         if val is None:
             continue
+        if isinstance(val, datetime):  # `updated: 2026-10-01 09:30:00`
+            return val.date()
         if isinstance(val, date):
             return val
         try:

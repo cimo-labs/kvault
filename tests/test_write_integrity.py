@@ -145,3 +145,93 @@ def test_summary_rules_are_reported_by_the_write(tmp_path):
         ],
     )
     assert "missing_child_coverage" not in {w["code"] for w in full.get("summary_warnings", [])}
+
+
+# ── 0.17 review: what the split must never touch ───────────────────────
+
+STACKED = (
+    "---\nsource: imessage:thread-42\naliases:\n- Bob\n- Robert Smith\ncreated: '2026-01-01'\n"
+    "updated: '2026-01-01'\n---\n---\nsource: manual\naliases:\n- Bob\n---\n# Bob\n\nLikes tea.\n"
+)
+
+
+def test_a_patch_on_a_stacked_node_keeps_the_real_frontmatter(tmp_path):
+    """The lower block of a stacked file holds stale keys; content read back
+    from the file is never split, so they cannot land over the real ones."""
+    kb = _kb(tmp_path)
+    for via in ("write_node", "update_summaries"):
+        node = kb / "accounts" / "bob"
+        node.mkdir(parents=True, exist_ok=True)
+        (node / "_summary.md").write_text(STACKED)
+        patch = [{"old_str": "Likes tea.", "new_str": "Likes coffee."}]
+        if via == "write_node":
+            assert ops.write_node(kb, "accounts/bob", patches=patch)["success"]
+        else:
+            assert ops.update_summaries(kb, [{"path": "accounts/bob", "patches": patch}])["updated"]
+        meta, body = parse_frontmatter((node / "_summary.md").read_text())
+        assert meta["source"] == "imessage:thread-42", via
+        assert meta["aliases"] == ["Bob", "Robert Smith"] and meta["created"] == "2026-01-01"
+        assert "Likes coffee." in body and body.lstrip().startswith("---")  # left for validate
+
+
+def test_a_body_framed_by_rules_is_body_text(tmp_path):
+    """A ---framed heading parses as YAML comments, an empty block: it was dropped."""
+    kb = _kb(tmp_path)
+    framed = "---\n# Weekly Review\n## Week 39\n---\n\nShipped the parser.\n"
+    assert ops.write_node(kb, "accounts/review", framed, meta=dict(META), create=True)["success"]
+    summary = kb / "accounts" / "review" / "_summary.md"
+    assert "# Weekly Review" in summary.read_text()
+    ops.write_node(
+        kb, "accounts/review", patches=[{"old_str": "parser.", "new_str": "parser and CLI."}]
+    )
+    ops.mark_node(kb, "accounts/review", verify_by="2027-01-01")
+    assert "# Weekly Review" in summary.read_text() and "parser and CLI." in summary.read_text()
+    assert not [i for i in ops.validate_kb(kb)["issues"] if i["type"] == "stacked_frontmatter"]
+
+
+def test_a_block_with_date_keys_is_body_text(tmp_path):
+    kb = _kb(tmp_path)
+    result = ops.write_node(
+        kb,
+        "accounts/sam",
+        "---\n2026-09-30: Met Sam\n---\n# Sam\n",
+        meta=dict(META),
+        create=True,
+        reasoning="met Sam",
+    )
+    assert result["success"] and result["journal_logged"], result
+    assert "2026-09-30: Met Sam" in (kb / "accounts" / "sam" / "_summary.md").read_text()
+
+
+def test_validate_does_not_mistake_a_rule_for_a_block(tmp_path):
+    kb = _kb(tmp_path)
+    (kb / "accounts" / "_summary.md").write_text(
+        "---\nsource: manual\naliases: []\n---\n \n---\n\nJust a horizontal rule.\n"
+    )
+    assert not [i for i in ops.validate_kb(kb)["issues"] if i["type"] == "stacked_frontmatter"]
+
+
+def test_summary_warnings_are_capped(tmp_path):
+    kb = _kb(tmp_path)
+    for i in range(15):
+        ops.write_node(
+            kb, f"accounts/a{i:02d}", "# A\n\nAn account.\n", meta=dict(META), create=True
+        )
+    result = ops.update_summaries(kb, [{"path": "accounts", "content": "# Accounts\n\nAll.\n"}])
+    for warning in result.get("summary_warnings", []):
+        for key, value in warning["details"].items():
+            assert not isinstance(value, list) or len(value) <= ops.SUMMARY_WARNING_LIST_MAX, key
+
+
+def test_cli_update_summaries_says_why_every_item_failed(tmp_path):
+    from click.testing import CliRunner
+
+    from kvault.cli.main import cli
+
+    kb = _kb(tmp_path)
+    out = CliRunner().invoke(
+        cli,
+        ["update-summaries", "--kb-root", str(kb)],
+        input=json.dumps([{"path": "acounts", "content": "# A\n"}]),
+    )
+    assert out.exit_code != 0 and "acounts: No summary at this path" in out.output

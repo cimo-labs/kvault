@@ -28,6 +28,9 @@ operations missing from the ops log, and docs behind the code.
   block by the Python and MCP surfaces; only the CLI parsed it out. Its keys
   are now merged into `meta` (explicit `meta` wins) with a `guessed` note,
   and `validate` reports `stacked_frontmatter` for files already on disk.
+  Only a block that parses to a non-empty mapping with string keys counts:
+  a `---`-framed heading, a horizontal rule or a block with date keys is
+  body text.
 - **A summary rewrite with `meta` dropped the rest of the frontmatter.**
   `meta` replaced the block wholesale, so a rollup that passed only a title
   lost `source`, `aliases` and the decisions recorded with `kvault mark`,
@@ -42,21 +45,32 @@ operations missing from the ops log, and docs behind the code.
   - Nodes parked under `deep_context/` were returned as live nodes and
     competed with the node that keeps them. A match there is now folded
     into its keeper when the keeper scores at least half as much (the
-    collapse rule's ratio); a `truncated` note lists the folded paths, and
-    `include_background` (`--include-background`) returns them all. A
-    stronger match is still returned, because `deep_context/` also holds
-    an entity's long-form notes: folding whenever the keeper matched at all
-    dropped a notes node from the top five for 18 of 25 queries taken from
-    notes text on a real KB. The collapse rule checks every path segment,
-    so a parked copy no longer collapses its keeper's parents.
+    collapse rule's ratio) and is in the results; a `truncated` note lists
+    the folded paths, and `include_background` (`--include-background`)
+    returns them all. A stronger match is still returned, because
+    `deep_context/` also holds an entity's long-form notes. Of 25 queries
+    taken from notes text on a real KB whose notes node was in the top
+    five, folding whenever the keeper matched at all kept 7 there; this
+    rule keeps 21, and for the other 4 the keeper is shown and the note
+    names the notes node. The collapse rule checks every path segment, so
+    a parked copy no longer collapses its keeper's parents.
   - `.kvaultignore` is honored.
+- **`check` crashed on a timestamp in `updated`** (`2026-10-01 09:30:00`
+  is read as a datetime and was compared with a date). Its day is used.
+- **`kvault_read_nodes` crashed on date-typed frontmatter keys**
+  (`2026-09-30: joined` under a mapping). They are written as strings.
+- **CLI `update-summaries` said only "Update failed"** when every item
+  failed; it now prints each item's error.
 
 ### Added
 
 - **Patch mode.** `kvault_write_node(patches=...)`, `kvault write
   --patches` and `update-summaries` items take `[{old_str, new_str}]`:
-  each `old_str` must match the body exactly once, patches apply in order
-  under one hold of the write lock, and any miss writes nothing. Rewriting
+  each `old_str` must match the body exactly once (overlapping matches
+  count), patches apply in order under one hold of the write lock, and a
+  miss leaves that node unwritten (an update-summaries batch reports it
+  and goes on). Content read back from the file for a patch is never
+  split, so a stacked block is left for `validate` to report. Rewriting
   a 15-19 KB hub to change a line cost 40-90 KB of output per propagation
   chain, and agents abandoned chains midway.
 - **Capture and events over MCP.** `kvault_capture` and `kvault_events`
@@ -83,8 +97,10 @@ operations missing from the ops log, and docs behind the code.
     compact results a note carries `code`, `text` and `next` (`why`,
     `level` and `detail` come with `compact=false`).
   - `kvault_tree`: 11 KB and 36 KB → 3.2 KB and 1.5 KB. The outline stays
-    under `max_chars` (3,500 by default, 0 = no limit): the deepest depth
-    that fits, then a cut at a line, with a `truncated` note.
+    under `max_chars` (3,500 by default, 0 = no limit, else at least 100),
+    counted as the client receives it: the deepest depth that fits, then a
+    cut at a line, with a `truncated` note. A `format="json"` outline is
+    not cut; its note says when it is still over.
   - `kvault_read_nodes`, five hits: 8.9 KB → 4.0 KB. The default budget is
     3,500 characters (was 8,000).
   - `kvault_move_entity` and `kvault_delete_entity`: 40 KB and 37 KB → 4.1 KB
@@ -102,7 +118,16 @@ operations missing from the ops log, and docs behind the code.
 - **`update-summaries` items are typed over MCP** (`{path, content |
   patches, meta}`), and every surface refuses an unknown item key: a typo
   such as `metadata` for `meta` was dropped while the rest of the item
-  wrote.
+  wrote. The item types are written into each tool's input schema rather
+  than referenced through `$defs`, for clients that do not resolve `$ref`.
+- **`kvault_events` takes only the outcomes and statuses it documents.**
+  `outcome="promoted"` is refused (promotion is a write with `event_ids`,
+  which stamps provenance), and `status` is pending, resolved or retracted
+  (an unknown status returned an empty list).
+- **`kvault_write_node` content is a plain string argument.** FastMCP
+  (1.12 and later) parses any other string-typed argument as JSON first, so
+  a body such as `["step 1", "step 2"]` was refused. Earlier FastMCP parses
+  every argument that way.
 - **Eight entity-era MCP tools are registered only on request**
   (`kvault-mcp --legacy-tools` or `KVAULT_MCP_LEGACY_TOOLS=1`):
   `kvault_init`, `kvault_read_entity`, `kvault_write_entity`,
@@ -125,6 +150,8 @@ operations missing from the ops log, and docs behind the code.
   `kvault write --create`.
 - `meta` on `write-summary` and `update-summaries` merges instead of
   replacing; pass `null` for a key that should go.
+- The `[mcp]` extra needs mcp 1.2 or later (the first release with
+  FastMCP); 1.x below 1.2 could not run the server anyway.
 
 ## 0.16.1 - 2026-09-26
 
@@ -151,7 +178,7 @@ are.
     - the first part is not a KB directory.
 
     `issue/123` was read as a child. Links into a moved or removed child
-    (`models/bayes_routing/`, `gone_child/spec/`) and into a
+    (`models/drip_irrigation/`, `gone_child/spec/`) and into a
     `deep_context/` are still checked.
   - A backticked `name/` in running prose is not a child-list entry; it is
     as often a code directory.

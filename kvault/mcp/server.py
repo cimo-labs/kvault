@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import functools
 import inspect
-import json
 import os
 import time
 from importlib import import_module
@@ -16,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import click
+import pydantic_core
 from pydantic import BaseModel, ConfigDict
 
 from kvault.core import events as ev
@@ -44,7 +44,10 @@ KVAULT_KB_ROOT_ENV = "KVAULT_KB_ROOT"
 #: Enums in the tool schemas, so an MCP-only agent sees the allowed values.
 ParentsMode = Literal["none", "gist", "immediate", "all"]
 EventAction = Literal["list", "show", "resolve", "retract"]
-EventOutcome = Literal["promoted", "journal_only", "duplicate", "no_op", "rejected"]
+#: "promoted" is not offered: promotion is a node write (kvault_write_node
+#: event_ids), which stamps provenance; resolving as promoted by hand did not.
+EventOutcome = Literal["journal_only", "duplicate", "no_op", "rejected"]
+EventStatus = Literal["pending", "resolved", "retracted"]
 BatchParentsMode = Literal["none", "gist"]
 
 
@@ -154,7 +157,10 @@ def _compact_text(fn: Any) -> Any:
         result = fn(*args, **kwargs)
         if isinstance(result, str):
             return result
-        return json.dumps(result, separators=(",", ":"), ensure_ascii=False, default=str)
+        # pydantic_core, as FastMCP itself uses: compact by default, and it
+        # writes date-typed YAML keys (`2026-09-30: joined`), which json.dumps
+        # refuses, plus ISO datetimes and sets.
+        return pydantic_core.to_json(result, fallback=str).decode()
 
     # Evaluated here: FastMCP resolves this module's string annotations itself,
     # but takes an explicit __signature__ as it stands.
@@ -162,6 +168,16 @@ def _compact_text(fn: Any) -> Any:
         fn, eval_str=True
     ).replace(return_annotation=str)
     return wrapper
+
+
+#: Smallest outline budget kvault_tree accepts (0 means no limit).
+TREE_MIN_CHARS = 100
+
+
+def _outline_depth(outline: Dict[str, Any]) -> int:
+    """Levels below the outline's root that the rendered outline shows."""
+    children = outline.get("children") or []
+    return 1 + max(_outline_depth(child) for child in children) if children else 0
 
 
 #: Epoch-1 tools superseded by the node tools; registered only on request (0.17).
@@ -195,9 +211,33 @@ def _forbid_unknown_arguments(server: Any) -> None:
         try:
             model.model_config["extra"] = "forbid"
             model.model_rebuild(force=True)
-            tool.parameters = model.model_json_schema(by_alias=True)
+            tool.parameters = _inline_refs(model.model_json_schema(by_alias=True))
         except Exception:  # pragma: no cover - depends on the installed mcp
             continue
+
+
+def _inline_refs(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Replace ``$ref``s to ``$defs`` with the definitions themselves (0.17).
+
+    The typed patch and update items are the first nested models in kvault's
+    tool schemas, and some function-calling clients do not resolve ``$ref``.
+    The models are not recursive, so inlining terminates.
+    """
+    defs = schema.pop("$defs", {})
+
+    def resolve(node: Any) -> Any:
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/") and ref[8:] in defs:
+                rest = {k: resolve(v) for k, v in node.items() if k != "$ref"}
+                return {**resolve(defs[ref[8:]]), **rest}
+            return {k: resolve(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [resolve(item) for item in node]
+        return node
+
+    resolved: Dict[str, Any] = resolve(schema)
+    return resolved
 
 
 def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> Any:
@@ -465,7 +505,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
     @_tool("kvault_write_node")
     def kvault_write_node(
         path: str,
-        content: Optional[str] = None,
+        content: str = "",
         meta: Optional[Dict[str, Any]] = None,
         create: bool = False,
         reasoning: Optional[str] = None,
@@ -513,10 +553,13 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
                 ErrorCode.VALIDATION_ERROR, "ancestors must be one of: content, paths"
             )
         started = time.monotonic()
+        # `content` is typed str, not Optional[str]: FastMCP parses a string
+        # argument of any other type as JSON first, so a body such as
+        # '["step 1"]' was refused and "null" read as no content.
         result = ops.write_node(
             root,
             path,
-            content,
+            None if patches is not None and content == "" else content,
             meta=meta,
             create=create,
             reasoning=reasoning,
@@ -572,10 +615,11 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         node, with explicit markers for anything pruned by depth or
         max_children. Text format is the cheapest full-tree view.
 
-        The outline stays under max_chars (default 3,500; 0 = no limit): it
-        is shown at the deepest depth that fits (the requested one, then 3,
-        2, 1), and cut at a line past that. A `truncated` note gives the
-        depth shown; drill into a branch with path=<node>.
+        The outline stays under max_chars (default 3,500; 0 = no limit;
+        otherwise at least 100), counted as the client receives it: it is
+        shown at the deepest depth that fits (the requested one, then 3, 2,
+        1), and a text outline is cut at a line past that. A `truncated` note
+        gives the depth shown; drill into a branch with path=<node>.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -586,6 +630,17 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
                 ErrorCode.VALIDATION_ERROR,
                 "format must be one of: text, json",
             )
+        if max_chars != 0 and max_chars < TREE_MIN_CHARS:
+            return error_response(
+                ErrorCode.VALIDATION_ERROR,
+                f"max_chars must be 0 (no limit) or at least {TREE_MIN_CHARS}",
+            )
+
+        def size_of(rendered: Any) -> int:
+            # As serialized for the client: escaped newlines and quotes count.
+            return len(pydantic_core.to_json(rendered).decode()) - (
+                2 if isinstance(rendered, str) else 0
+            )
 
         def render(level: Optional[int]) -> Tuple[Any, Any, int]:
             tree = ops.build_outline(
@@ -594,7 +649,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
             if tree is None:
                 return None, None, 0
             text: Any = ops.render_outline_text(tree) if format == "text" else tree
-            return tree, text, len(text) if isinstance(text, str) else len(json.dumps(text))
+            return tree, text, size_of(text)
 
         outline, rendered, size = render(depth)
         if outline is None:
@@ -605,10 +660,11 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
             # unbounded one ~40 KB on 500 nodes: past ~4 KB many clients write
             # the result to a file, and agents oriented on nothing (0.17).
             full = size
-            shown = depth
+            reached = _outline_depth(outline)
+            shown = reached if depth is None else min(depth, reached)
             for level in (3, 2, 1):
-                if depth is not None and level >= depth:
-                    continue
+                if level >= reached or (depth is not None and level >= depth):
+                    continue  # the same outline again
                 outline, rendered, size = render(level)
                 shown = level
                 if size <= max_chars:
@@ -617,21 +673,34 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
             if size > max_chars and isinstance(rendered, str):
                 lines = rendered.splitlines()
                 kept: List[str] = []
-                used = len(f"\n… (+{len(lines)} more lines)")  # room for the marker
+                used = size_of(f"\n… (+{len(lines)} more lines)")  # room for the marker
                 for line in lines:
-                    if used + len(line) + 1 > max_chars:
+                    step = size_of(line) + (2 if kept else 0)  # "\\n" between lines
+                    if used + step > max_chars:
                         break
                     kept.append(line)
-                    used += len(line) + 1
+                    used += step
                 cut = len(lines) - len(kept)
                 rendered = "\n".join(kept) + f"\n… (+{cut} more lines)"
+                size = size_of(rendered)
+            over = size > max_chars  # the json format is not cut
             notes.append(
                 nt.note(
                     "truncated",
                     f"outline shown at depth {shown}"
                     + (f" and cut by {cut} lines" if cut else "")
-                    + f" to stay under {max_chars} chars (full: {full})",
-                    detail={"depth_shown": shown, "max_chars": max_chars, "full_chars": full},
+                    + (
+                        f" is still {size} chars, over max_chars {max_chars}"
+                        if over
+                        else f" to stay under {max_chars} chars"
+                    )
+                    + f" (full: {full})",
+                    detail={
+                        "depth_shown": shown,
+                        "max_chars": max_chars,
+                        "full_chars": full,
+                        "shown_chars": size,
+                    },
                     next_step="drill down with path=<node>, or raise max_chars",
                 )
             )
@@ -685,8 +754,8 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         root,category,entity; `path_prefix` restricts to a subtree.
         A match under deep_context/ (a parked duplicate or long-form notes)
         is folded into the node that keeps it when that node matches about
-        as well; a note lists the folded paths. include_background=true
-        returns them all.
+        as well and is in the results; a note lists the folded paths.
+        include_background=true returns them all.
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -832,10 +901,9 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
         This tool has NO stale-children protection: it will happily overwrite
         a parent rollup composed from children you never read. For parent
         summaries use kvault_prepare_summary_update → kvault_write_parent_summary
-        instead. Two more traps the result's `notes` will flag: a typo'd path
-        CREATES a new subtree (`created` note), and passing `meta` REPLACES
-        the existing frontmatter wholesale (`removed` note lists dropped keys)
-        — omit `meta` to preserve it.
+        instead. A typo'd path CREATES a new subtree (`created` note). `meta`
+        merges onto the existing frontmatter; a null value deletes that key
+        (`removed` note).
         """
         root, err = _tool_root(bound_root, kg_root)
         if err:
@@ -926,7 +994,7 @@ def create_server(kb_root: Path | str, legacy_tools: Optional[bool] = None) -> A
     def kvault_events(
         action: EventAction = "list",
         event_id: Optional[str] = None,
-        status: Optional[str] = "pending",
+        status: Optional[EventStatus] = "pending",
         limit: int = 10,
         since: Optional[str] = None,
         outcome: Optional[EventOutcome] = None,

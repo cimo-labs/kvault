@@ -118,8 +118,9 @@ kvault update-summaries --json --kb-root ./my_kb <<'EOF'
 EOF
 ```
 
-Each `old_str` must match the body exactly once, patches apply in order, and any miss writes
-nothing; `kvault write <path> --patches` edits one node the same way. `update-summaries`
+Each `old_str` must match the body exactly once and patches apply in order; a miss leaves that
+summary unwritten (the batch reports it in `errors` and continues). `kvault write <path>
+--patches` edits one node the same way. `update-summaries`
 rewrites only summaries that exist, and an item's `meta` merges onto the frontmatter.
 
 In human mode the same write narrates its decisions under the receipt:
@@ -148,8 +149,9 @@ kvault reports what it *decided*, not what you asked for. A note is emitted only
 invented a value, deliberately changed nothing, half-failed, hid something, or fell back —
 silence means the operation went exactly as asked. Notes render as indented lines under the
 receipt (human mode) and as a `notes` array in `--json` and over MCP, each
-`{code, text, level}` — a note's `why`/`next` ride in the JSON at every tier, and print in
-human mode at `--explain`. Batch commands collapse
+`{code, text, level}` plus `detail`, `why` and `next` when it has them — they ride in the JSON
+at every tier, and `why`/`next` print in human mode at `--explain` (compact search results keep
+`code`, `text` and `next` only). Batch commands collapse
 repeated notes by code (`{code, count, examples}`), so a 40-ancestor maintenance run emits
 one line, not forty. The vocabulary is closed — 11 codes:
 
@@ -291,9 +293,10 @@ written so a cron or systemd job can load it alone.
 | **Lifecycle** | `kvault init`, `kvault status` |
 
 Agent-facing commands accept `--json` for machine-readable output and `--kb-root`
-(auto-detected from cwd by default), before or after the subcommand — as do the output
-flags `-q/--quiet`, `--explain`, `--trace`, and `--strict` (see
-[What kvault tells you](#what-kvault-tells-you)).
+(auto-detected from cwd by default), before or after the subcommand. The output flags
+`-q/--quiet`, `--explain`, `--trace`, and `--strict` go on the group (`kvault --strict write
+…`) or after a note-reporting subcommand (write, write-summary, update-summaries, delete, move, mark, journal, search); see
+[What kvault tells you](#what-kvault-tells-you).
 
 ## MCP server (optional)
 
@@ -338,11 +341,11 @@ past the ceiling (`children="content"` for full bodies). `kvault_validate_kb` is
 only.
 
 Results stay small over MCP: the defaults fit clients that inline about 4 KB of tool output,
-and every cut comes with a `truncated` note. `kvault_tree` shows the deepest outline that
+and a result cut to fit says so in a `truncated` note. `kvault_tree` shows the deepest outline that
 fits `max_chars` (3,500 by default). `kvault_search` returns 8 compact hits by default (path,
 title, kind, date, one-line snippet; `compact=false` for scores and long snippets). A match
-under `deep_context/` is folded into its node when that node matches about as well
-(`include_background=true` lists them). `parents="gist"` on search and reads gives each
+under `deep_context/` is folded into its node when that node matches about as well and is in
+the results (`include_background=true` lists them). `parents="gist"` on search and reads gives each
 ancestor's path, title, and first line, where `parents="all"` attaches every ancestor's full
 document to every hit (capped by `total_max_chars`).
 `kvault_read_nodes` reads up to 25 picked hits in one call under one budget that counts whole

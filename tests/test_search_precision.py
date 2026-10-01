@@ -102,3 +102,21 @@ def test_ignored_paths_are_not_searched(tmp_path):
     _node(kb, "vendor/lib", "# Lib\n\nThe zebra protocol shim.\n")
     _node(kb, "projects/zebra", "# Zebra\n\nThe zebra protocol.\n")
     assert _paths(ops.search_nodes(kb, "zebra protocol", limit=10)) == ["projects/zebra"]
+
+
+def test_a_fold_never_drops_the_best_match_off_the_page(tmp_path):
+    """Folding into a keeper that falls outside the returned page would lose
+    the best match; such a match is restored."""
+    kb = _kb(tmp_path)
+    _node(kb, "people", "# People\n\nPeople.\n")
+    _node(kb, "people/alice", "# Alice\n\nAlice keeps quokka notes.\n")
+    _node(
+        kb,
+        "people/alice/deep_context",
+        "# Notes\n\nquokka migration quokka migration quokka migration plan.\n",
+    )
+    for i in range(5):
+        _node(kb, f"projects/p{i}", f"# P{i}\n\nquokka migration plan, quokka migration.\n")
+    page = _paths(ops.search_nodes(kb, "quokka migration", limit=5))
+    assert "people/alice" not in page  # the keeper ranks below the page
+    assert "people/alice/deep_context" in page

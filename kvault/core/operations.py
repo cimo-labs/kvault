@@ -1163,7 +1163,9 @@ def read_nodes(
             node["children_count"] = len(kids)
         content = node.get("content", "")
         node["content"] = ""
-        overhead = len(json.dumps(node, default=str)) + len(', "content_truncated": true')
+        overhead = len(json.dumps(_str_keys(node), default=str)) + len(
+            ', "content_truncated": true'
+        )
         room = remaining - overhead
         if room < 0:
             omitted.append(path)
@@ -1346,6 +1348,16 @@ def _is_noop_node_write(
     ) == _stable(resolved_meta)
 
 
+def _occurrences(text: str, sub: str) -> int:
+    """Occurrences of *sub*, overlapping ones included: ``str.count`` sees
+    "00" once in "1000", where it starts at two places."""
+    count, start = 0, text.find(sub)
+    while start != -1:
+        count += 1
+        start = text.find(sub, start + 1)
+    return count
+
+
 def _apply_patches(text: str, patches: Any) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
     """Apply ``{old_str, new_str}`` edits to a body, in order (0.17).
 
@@ -1370,7 +1382,7 @@ def _apply_patches(text: str, patches: Any) -> Tuple[Optional[str], Optional[Dic
                 f"patch {index}: needs exactly old_str and new_str, both strings",
             )
         old = patch["old_str"]
-        count = text.count(old) if old else 0
+        count = _occurrences(text, old) if old else 0
         if count != 1:
             return None, error_response(
                 ErrorCode.VALIDATION_ERROR,
@@ -1391,6 +1403,20 @@ def _apply_patches(text: str, patches: Any) -> Tuple[Optional[str], Optional[Dic
     return text, None
 
 
+#: Entries a write-time summary warning lists per detail before a count.
+SUMMARY_WARNING_LIST_MAX = 10
+
+
+def _str_keys(value: Any) -> Any:
+    """*value* with every mapping key as a string: YAML reads ``2026-09-30:``
+    as a date, and ``json.dumps`` refuses non-string keys."""
+    if isinstance(value, dict):
+        return {str(key): _str_keys(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_str_keys(item) for item in value]
+    return value
+
+
 def _summary_warnings(kg_root: Path, path: str) -> List[Dict[str, Any]]:
     """The SUMMARY rules for the node just written (0.17), in check's shape.
 
@@ -1404,9 +1430,35 @@ def _summary_warnings(kg_root: Path, path: str) -> List[Dict[str, Any]]:
         issues = audit_summary_node(kg_root, path)
     except (OSError, ValueError, RuntimeError):
         return []
-    return [
-        {"path": i.path, "code": i.code, "message": i.message, "details": i.details} for i in issues
-    ]
+    out = []
+    for issue in issues:
+        details = dict(issue.details or {})
+        for key, value in list(details.items()):
+            if isinstance(value, list) and len(value) > SUMMARY_WARNING_LIST_MAX:
+                # A 120-child parent listed every missing child (~3 KB per item).
+                details[key] = value[:SUMMARY_WARNING_LIST_MAX]
+                details[f"{key}_count"] = len(value)
+        out.append(
+            {"path": issue.path, "code": issue.code, "message": issue.message, "details": details}
+        )
+    return out
+
+
+def _leading_block(text: str) -> Optional[Tuple[Dict[str, Any], str]]:
+    """A frontmatter block opening *text* that is real metadata (0.17).
+
+    Only a non-empty mapping with string keys counts. Anything else is body
+    text: a horizontal rule, a ``---``-framed heading (YAML reads ``#`` lines
+    as comments, so the block parses to nothing and was dropped), a block
+    that is not valid YAML, or keys YAML reads as dates.
+    """
+    stripped = text.lstrip()
+    if not stripped.startswith("---"):
+        return None
+    meta, body = parse_frontmatter(stripped)
+    if not meta or not all(isinstance(key, str) for key in meta):
+        return None
+    return meta, body
 
 
 def _split_embedded_frontmatter(
@@ -1419,16 +1471,18 @@ def _split_embedded_frontmatter(
     shown as body text, its keys never read). Its keys now fill in *meta*,
     where explicit *meta* keys win, and the block is not written again.
     Returns ``(body, meta, keys_taken)``; ``keys_taken`` is None when there
-    was no block.
+    was no block. Content read back from the file itself (a patch, a mark)
+    is never split: there a stacked block holds stale keys, and merging them
+    would put them over the real frontmatter.
     """
-    if not isinstance(content, str) or not content.lstrip().startswith("---"):
+    if not isinstance(content, str):
         return content, meta, None
     if meta is not None and not isinstance(meta, dict):
         return content, meta, None  # the caller reports the type error
-    stripped = content.lstrip()
-    embedded, body = parse_frontmatter(stripped)
-    if body is stripped:
-        return content, meta, None  # malformed block: written as given, validate reports it
+    block = _leading_block(content)
+    if block is None:
+        return content, meta, None
+    embedded, body = block
     merged = dict(embedded)
     merged.update(meta or {})
     taken = sorted(k for k in embedded if k not in (meta or {}))
@@ -1490,9 +1544,9 @@ def write_node(
         return _write_node(kg_root, path, **args)
     with KBWriteLock(kg_root) as lock:
         result = _write_node(kg_root, path, **args)
-    lock_notes = _lock_notes(lock)
-    if lock_notes and result.get("success"):
-        result["notes"] = list(result.get("notes") or []) + lock_notes
+    if result.get("success"):
+        for lock_note in _lock_notes(lock):
+            nt.attach_note(result, lock_note)
     return result
 
 
@@ -1511,8 +1565,12 @@ def _write_node(
     drop_meta_keys: Optional[Sequence[str]] = None,
     preserve_dates: bool = False,
     patches: Optional[List[Dict[str, str]]] = None,
+    split_embedded: bool = True,
 ) -> Dict[str, Any]:
     """Write any node summary with YAML frontmatter.
+
+    *split_embedded* is False for content read back from the node itself
+    (``mark``): see :func:`_split_embedded_frontmatter`.
 
     *patches* (0.17) edits an existing node's body instead of replacing it:
     a list of ``{old_str, new_str}``, each matching exactly once, applied in
@@ -1566,12 +1624,17 @@ def _write_node(
         content, patch_error = _apply_patches(current["content"], patches)
         if patch_error is not None:
             return patch_error
+        split_embedded = False  # the body came from the file (see _split_embedded_frontmatter)
     elif content is None:
         return error_response(
             ErrorCode.VALIDATION_ERROR, "content is required (or patches, for an existing node)"
         )
 
-    content, meta, embedded_keys = _split_embedded_frontmatter(content, meta)
+    embedded_keys: Optional[List[str]] = None
+    if split_embedded:
+        content, meta, embedded_keys = _split_embedded_frontmatter(content, meta)
+    if not isinstance(content, str):
+        return error_response(ErrorCode.VALIDATION_ERROR, "content must be a string")
 
     full_path = kg_root if path == "." else kg_root / path
     summary_path = _summary_path_for_node(kg_root, path)
@@ -1916,9 +1979,16 @@ def write_summary(
     path: str,
     content: str,
     meta: Optional[Dict[str, Any]] = None,
+    split_embedded: bool = True,
 ) -> Dict[str, Any]:
-    """Write a single ``_summary.md``."""
-    content, meta, embedded_keys = _split_embedded_frontmatter(content, meta)
+    """Write a single ``_summary.md``.
+
+    *split_embedded* is False when *content* was read back from this file (a
+    patch): see :func:`_split_embedded_frontmatter`.
+    """
+    embedded_keys: Optional[List[str]] = None
+    if split_embedded:
+        content, meta, embedded_keys = _split_embedded_frontmatter(content, meta)
     path = _normalize_node_path(path)
     if not validate_within_root(kg_root, path):
         return error_response(ErrorCode.VALIDATION_ERROR, "Path escapes KB root")
@@ -2268,7 +2338,8 @@ def _update_summaries_locked(
                 {
                     "path": p,
                     "error": "No summary at this path; update-summaries only rewrites existing "
-                    "summaries (create a node with kvault write --create)",
+                    "summaries (create the node first: kvault write --create, or "
+                    "kvault_write_node with create=true)",
                 }
             )
             continue
@@ -2286,7 +2357,9 @@ def _update_summaries_locked(
                 continue
             body = patched
         try:
-            r = write_summary(kg_root, path=p, content=body, meta=m)
+            r = write_summary(
+                kg_root, path=p, content=body, meta=m, split_embedded=patch_list is None
+            )
             if r.get("success"):
                 updated.append(p)
                 if r.get("changed", True):
@@ -2393,8 +2466,9 @@ def search_nodes(
     """Search visible kvault node summaries.
 
     A match under ``deep_context/`` is folded into the node that keeps it
-    when that node scores at least half as much (0.17); a note lists the
-    folded paths, and *include_background* returns them all.
+    when that node scores at least half as much and is in the results
+    (0.17); a note lists the folded paths, and *include_background* returns
+    them all.
 
     ``parents`` (0.16, CLI and MCP alike): ``gist`` adds one shared
     ``parents`` map from every ancestor path of the hits to ``{title,
@@ -3024,7 +3098,7 @@ def mark_node(
         )
         if given
     ]
-    result = write_node(
+    result = _write_node(
         kg_root,
         path,
         raw["content"],
@@ -3032,6 +3106,7 @@ def mark_node(
         create=False,
         drop_meta_keys=drops or None,
         preserve_dates=True,
+        split_embedded=False,  # a decision is not a content change
         reasoning=(
             ("decision recorded with kvault mark: " + "; ".join(recorded)) if changes else None
         ),
@@ -3193,11 +3268,7 @@ def validate_kb(kg_root: Path) -> Dict[str, Any]:
         try:
             text = summary_file.read_text(encoding="utf-8")
             _first, body = parse_frontmatter_strict(text)
-            if (
-                _first
-                and body.lstrip().startswith("---")
-                and parse_frontmatter(body.lstrip())[1] is not body.lstrip()
-            ):
+            if _first and _leading_block(body) is not None:
                 issues.append(
                     {
                         "type": "stacked_frontmatter",

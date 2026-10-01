@@ -69,7 +69,7 @@ bytes), `--parents immediate` the parent's full summary when you need it.
 `search --compact` returns one line per hit (about a third of the full result).
 `status` omits root text unless `--root-summary` is requested.
 
-`events list` returns the newest 50 by default. Compare `count` with
+`events list` returns the newest 50 by default (`kvault_events` over MCP: 10). Compare `count` with
 `total_matched`; use `--limit 0` when draining the complete pending queue.
 Do not report the full queue processed while its result is truncated.
 Save large JSON receipts to a file and report outcomes, warnings, paths, and
@@ -111,9 +111,11 @@ kvault read <a> <b> --json             # several hits at once
 
 Search drops ancestor hits that only repeat a descendant's fact (`collapsed` counts them);
 `--no-collapse` keeps them, `--kind entity` / `--path <prefix>` narrow the search. A
-`truncated` note with `not_indexed` means Markdown files outside the node layout were not
-searched; it names the ones that contain your query — read them directly, and let
-`kvault plan` adopt them as nodes.
+`truncated` note saying Markdown files outside the node layout are not searched names the
+ones that contain your query — read them directly, and let `kvault plan` adopt them as
+nodes. A match under `deep_context/` is folded into its node when that node matches about as
+well and is in the results; the note names the folded paths (`--include-background` lists
+them all).
 
 Decide: node exists → **UPDATE** it; new and significant → **CREATE**; trivial → **journal only**.
 
@@ -154,8 +156,9 @@ Send the body only: an item's `meta` merges onto the existing frontmatter (`null
 key), and `update-summaries` refuses paths that have no summary yet and keys it does not
 know. To change a few lines of a long rollup, send `"patches": [{"old_str": "exact current
 text", "new_str": "replacement"}]` instead of `"content"`: each `old_str` must match the body
-exactly once, patches apply in order, and any miss writes nothing. `kvault write <path>
---patches` (stdin: the same JSON list) edits one node the same way.
+exactly once and patches apply in order; a miss leaves that summary unwritten (in `errors`;
+the rest of the batch still writes). `kvault write <path> --patches` (stdin: the same JSON
+list) edits one node the same way.
 
 ## Reading kvault's notes
 
@@ -179,8 +182,9 @@ went exactly as asked. The 11 codes:
 - `structure` — this write changed the tree's shape in a way worth a look: a near-duplicate
   name, a parent past the child ceiling, or a new root category
 
-Each note is `{code, text, level}`; `why`/`next` ride along in `--json`, and render in
-human mode only at `--explain`. Batch commands collapse notes by code into
+Each note is `{code, text, level}` plus `detail`, `why` and `next` when it has them; all
+ride along in `--json`, and `why`/`next` render in human mode only at `--explain`. Compact
+search results (`--compact`, the MCP default) keep `code`, `text` and `next` only. Batch commands collapse notes by code into
 `{code, count, examples}`. In maintenance scripts add `--strict`: exit 3 on any
 warning-class note (`partial`, `skipped`, broken lock). For a multi-command task set
 `KVAULT_SESSION=<id>` — `kvault log tail --session <id>` then replays what that task did.
@@ -233,15 +237,15 @@ maintenance pass to see what has already been touched.
 ## Over MCP
 
 Every step above has an MCP tool (`kvault-mcp`, one KB root per server). Default results
-are sized for clients that inline about 4 KB of tool output, and every cut comes with a
-`truncated` note. Unknown arguments are refused, so a misspelled one fails instead of
+are sized for clients that inline about 4 KB of tool output, and a result cut to fit says so
+in a `truncated` note. Unknown arguments are refused, so a misspelled one fails instead of
 running with defaults.
 
 | Step | Tool | Keep it small |
 |------|------|---------------|
 | Capture | `kvault_capture`, `kvault_events` | one source record per event; promote with `event_ids` on `kvault_write_node`, or close with `kvault_events(action="resolve", outcome=..., note=...)`; `kvault_events(limit=0)` lists every pending event |
 | Orient | `kvault_tree` | the outline stays under `max_chars` (3,500 by default) at the deepest depth that fits; `path=` + `depth=` to zoom; `gist=true` for one line per node |
-| Research | `kvault_search` | 8 compact hits by default; `parents="gist"` adds where each hit sits; a match under `deep_context/` is folded into its node when that node matches about as well (the note lists the folded paths; `include_background=true` returns them); avoid `parents="all"` (full documents per hit, cut off by `total_max_chars`) |
+| Research | `kvault_search` | 8 compact hits by default; `parents="gist"` adds where each hit sits; a match under `deep_context/` is folded into its node when that node matches about as well and is in the results (the note lists the folded paths; `include_background=true` returns them); avoid `parents="all"` (full documents per hit, cut off by `total_max_chars`) |
 | Read | `kvault_read_nodes` | the hits you picked, up to 25 per call, one budget over whole nodes (3,500 characters by default, `total_max_chars` to raise it; `omitted` and `content_truncated` say what did not fit); `kvault_read_node` for one node, `parents="gist"` for its ancestry |
 | Write | `kvault_write_node` | `patches=[{old_str, new_str}]` to change part of an existing node; `ancestors="paths"` (the default) |
 | Propagate | `kvault_prepare_summary_update` → `kvault_write_parent_summary`, or `kvault_update_summaries` | items are `{path, content \| patches, meta}`; at most 10 ancestors per `kvault_update_summaries` call |
@@ -264,4 +268,4 @@ registered only when the server runs with `--legacy-tools` or `KVAULT_MCP_LEGACY
 | Quality | `kvault validate`, `kvault check [--code X] [--max-findings N\|0] [--max-lines N\|0] [--summary-max-words N\|0] [--summary-max-dated-sections N\|0] [--max-children N]`, `kvault plan [PATH] [--limit N\|0]`, `kvault mark <path> [--distinct-from X] [--max-children N] [--series-ok] [--verify-by DATE] [--clear]` |
 | Journal & artifacts | `kvault journal`, `kvault artifact daily`, `kvault log tail`, `kvault log summary` |
 | Lifecycle | `kvault init`, `kvault status [--root-summary]`, `kvault doctor`, `kvault --version` |
-| Output tiers | `-q/--quiet`, `--explain`, `--trace`, `--strict` — on the group (`kvault --strict write …`), or after the note-reporting subcommands (write, delete, move, write-summary, update-summaries, journal, search); rejected on `check`. `KVAULT_VERBOSITY=quiet\|normal\|explain\|trace` for hooks and cron |
+| Output tiers | `-q/--quiet`, `--explain`, `--trace`, `--strict` — on the group (`kvault --strict write …`), or after the note-reporting subcommands (write, write-summary, update-summaries, delete, move, mark, journal, search); rejected after `check` and the others. `KVAULT_VERBOSITY=quiet\|normal\|explain\|trace` for hooks and cron |

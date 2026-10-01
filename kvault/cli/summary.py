@@ -124,7 +124,10 @@ def update_summaries(
             )
             render_notes(result, get_tier(ctx))
         else:
-            raise click.ClickException("Update failed")
+            failures = "; ".join(f"{e['path']}: {e['error']}" for e in result.get("errors", []))
+            raise click.ClickException(
+                f"Update failed: {failures}" if failures else "Update failed"
+            )
         if result.get("errors"):
             for err in result["errors"]:
                 click.echo(f"  Error: {err['path']}: {err['error']}", err=True)

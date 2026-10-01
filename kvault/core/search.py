@@ -133,11 +133,13 @@ def search_nodes(
     Nodes under ``deep_context/`` (a duplicate parked under its keeper, or
     the keeper's long-form notes) are background (0.17). A background match
     is folded into its keeper when the keeper scores at least half as much
-    (the collapse rule's ratio), and the note lists it; a stronger one is
-    returned, since a fact may live only in the notes. Folding whenever the
-    keeper matched at all dropped a notes node from the top five for 18 of
-    25 queries taken from notes text on a real KB; this rule drops it for
-    5. ``include_background`` returns every match. Before, a parked copy
+    (the collapse rule's ratio) and is on the returned page, and the note
+    lists it; a stronger one is returned, since a fact may live only in the
+    notes. Of 25 queries taken from notes text on a real KB whose notes node
+    was in the top five, folding whenever the keeper matched at all kept 7
+    there; this rule keeps 21, and for the other 4 the keeper is shown and
+    the note names the notes node. ``include_background`` returns every
+    match. Before, a parked copy
     competed with its keeper and could collapse the keeper's parents out of
     the results. Paths in ``.kvaultignore`` are never searched.
 
@@ -187,19 +189,6 @@ def search_nodes(
         scored = [item for item in scored if item[1].kind in wanted_kinds]
     if prefix is not None:
         scored = [item for item in scored if _under_prefix(item[1].path, prefix)]
-    folded: List[Tuple[float, str]] = []
-    if not include_background:
-        best = {item[1].path: item[0] for item in scored}
-        kept_items = []
-        for item in scored:
-            keeper_score = best.get(_keeper(item[1].path)) if item[1].background else None
-            if keeper_score is not None and keeper_score >= _COLLAPSE_SCORE_RATIO * item[0]:
-                folded.append((item[0], item[1].path))
-            else:
-                kept_items.append(item)
-        hidden_background = len(folded)
-        scored = kept_items
-
     collapsed_by: Dict[str, str] = {}
     if collapse:
         scored, collapsed_by = _collapse_ancestors(scored, page_size=limit)
@@ -207,6 +196,10 @@ def search_nodes(
 
     # Deeper (more specific) first on equal score; root is depth 0.
     scored.sort(key=lambda item: (-item[0], -_depth(item[1].path), item[1].path))
+    folded: List[Tuple[float, str]] = []
+    if not include_background:
+        scored, folded = _fold_background(scored, page_size=limit)
+        hidden_background = len(folded)
     total_matched = len(scored)
     results: List[SearchResult] = []
     remaining_total = max(0, total_max_chars)
@@ -451,6 +444,36 @@ def _justifier(item: _Scored, pool: List[_Scored]) -> Optional[str]:
     if not candidates:
         return None
     return max(candidates)[1]
+
+
+def _fold_background(
+    scored: List[_Scored], page_size: int = 0
+) -> Tuple[List[_Scored], List[Tuple[float, str]]]:
+    """Fold background matches into keepers that match about as well (0.17).
+
+    *scored* is ranked. A match under ``deep_context/`` is folded when its
+    keeper scored at least ``_COLLAPSE_SCORE_RATIO`` as much and, with
+    ``page_size`` > 0, lands on the returned page: folding into a keeper the
+    caller never sees would drop the best match from the result. Such
+    matches are restored (to a fixed point; the folded set only shrinks).
+    Returns the kept list, still ranked, and the folded ``(score, path)``.
+    """
+    best = {item[1].path: item[0] for item in scored}
+    folded = {
+        item[1].path
+        for item in scored
+        if item[1].background
+        and _keeper(item[1].path) in best
+        and best[_keeper(item[1].path)] >= _COLLAPSE_SCORE_RATIO * item[0]
+    }
+    while page_size > 0 and folded:
+        page = [item[1].path for item in scored if item[1].path not in folded][:page_size]
+        restore = {path for path in folded if _keeper(path) not in page}
+        if not restore:
+            break
+        folded -= restore
+    kept = [item for item in scored if item[1].path not in folded]
+    return kept, sorted(((best[path], path) for path in folded), reverse=True)
 
 
 def _collapse_ancestors(

@@ -126,13 +126,15 @@ EOF
 merges onto the existing frontmatter (`null` deletes a key). To change a few lines of a long
 rollup, send `patches` instead of `content`:
 `{"path": "people", "patches": [{"old_str": "exact current text", "new_str": "replacement"}]}`.
-Each `old_str` must match the body exactly once, patches apply in order, and any miss writes
-nothing. `kvault write <path> --patches` does the same for one node.
+Each `old_str` must match the body exactly once and patches apply in order; a miss leaves that
+summary unwritten (reported in `errors`; the rest of the batch still writes). `kvault write
+<path> --patches` does the same for one node.
 
 ### Reading the output — notes
 
 Every result carries `did` (one line of what happened) and `notes` — the decisions kvault made
-(`{code, text, why?, next?}`). Three codes require action:
+(`{code, text, level, detail?, why?, next?}`; compact search results keep `code`, `text` and
+`next`). Three codes require action:
 
 | Code | Meaning | Your move |
 |------|---------|-----------|
@@ -148,17 +150,17 @@ Tiers: `-q` trims output (`partial` still shows), `--explain` adds why + the exa
 `--strict` exits 3 on `partial`/`skipped`/broken-lock notes. Set `KVAULT_SESSION=<task-id>` so the
 ops log groups one task's commands — review with `kvault log tail`.
 
-MCP results are sized for clients that inline about 4 KB of tool output, and every cut says so
-in a `truncated` note: `kvault_tree` shows the deepest outline that fits `max_chars`;
+MCP results are sized for clients that inline about 4 KB of tool output, and a result cut to fit
+says so in a `truncated` note: `kvault_tree` shows the deepest outline that fits `max_chars`;
 `kvault_search` returns 8 compact hits, `parents="gist"` adds where each hit sits (path, title,
-one line per ancestor), and a match under `deep_context/` is folded into its node when that
-node matches about as well (`include_background=true` lists them); `kvault_read_nodes` reads
-the hits you pick in one call under a 3,500-character budget (`total_max_chars`); writes,
-moves and deletes return ancestor paths, not documents; `kvault_check` with `codes=[...]` and
-`max_findings=0` returns one code's full list. Avoid `parents="all"` on search: it attaches
-every ancestor's full document to each hit until `total_max_chars` runs out, usually after one
-or two hits. Unknown arguments are refused, so a misspelled one fails loudly instead of
-running with defaults.
+one line per ancestor), and a match under `deep_context/` is folded into its node when that node
+matches about as well and is in the results (`include_background=true` lists them);
+`kvault_read_nodes` reads the hits you pick in one call under a 3,500-character budget
+(`total_max_chars`); writes, moves and deletes return ancestor paths, not documents;
+`kvault_check` with `codes=[...]` and `max_findings=0` returns one code's full list. Avoid
+`parents="all"` on search: it attaches every ancestor's full document to each hit until
+`total_max_chars` runs out, usually after one or two hits. Unknown arguments are refused, so a
+misspelled one fails loudly instead of running with defaults.
 
 MCP clients should use strict parent-summary tools when available:
 

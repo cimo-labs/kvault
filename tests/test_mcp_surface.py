@@ -32,6 +32,13 @@ def _run(server, name, arguments):
     return json.loads(result[0].text)
 
 
+def _mcp_at_least(major: int, minor: int) -> bool:
+    from importlib.metadata import version
+
+    parts = version("mcp").split(".")
+    return (int(parts[0]), int(parts[1])) >= (major, minor)
+
+
 def _kb(tmp_path):
     kb = tmp_path / "kb"
     (kb / ".kvault").mkdir(parents=True)
@@ -188,7 +195,7 @@ def test_results_are_one_compact_json_text_block(tmp_path):
     (block,) = result
     assert "\n" not in block.text and json.loads(block.text)["success"] is True
     tools = {t.name: t for t in asyncio.run(server.list_tools())}
-    assert tools["kvault_search"].outputSchema is None
+    assert getattr(tools["kvault_search"], "outputSchema", None) is None  # absent before mcp 1.10
 
 
 def test_compact_search_notes_carry_code_text_and_next(tmp_path):
@@ -206,3 +213,52 @@ def test_compact_search_notes_carry_code_text_and_next(tmp_path):
     assert result["notes"] and all(set(n) <= {"code", "text", "next"} for n in result["notes"])
     full = _run(server, "kvault_search", {"query": "zebra", "compact": False})
     assert any("detail" in n for n in full["notes"])
+
+
+def test_review_fixes_on_the_mcp_surface(tmp_path):
+    kb = _kb(tmp_path)
+    (kb / "people" / "dated").mkdir()
+    (kb / "people" / "dated" / "_summary.md").write_text(
+        "---\nsource: manual\naliases: []\nhistory:\n  2026-09-30: joined as lead\n---\n# Dated\n"
+    )
+    server = create_server(kb)
+    node = _run(server, "kvault_read_node", {"path": "people/dated"})
+    assert node["success"] and node["meta"]["history"] == {"2026-09-30": "joined as lead"}
+
+    if _mcp_at_least(1, 12):  # earlier FastMCP parses every string argument as JSON
+        body = '["step 1", "step 2"]'
+        written = _run(
+            server, "kvault_write_node", {"path": "people/json", "content": body, "create": True}
+        )
+        assert written["success"], written
+        assert body in (kb / "people" / "json" / "_summary.md").read_text()
+
+    tools = {t.name: t for t in asyncio.run(server.list_tools())}
+    assert all("$ref" not in json.dumps(t.inputSchema) for t in tools.values())
+    assert "max_chars" in _run(server, "kvault_tree", {"max_chars": 10})["error"]
+    for name, args, fragment in [
+        ("kvault_events", {"action": "resolve", "event_id": "x", "outcome": "promoted"}, "outcome"),
+        ("kvault_events", {"status": "open"}, "status"),
+    ]:
+        with pytest.raises(Exception, match=fragment):
+            asyncio.run(server.call_tool(name, args))
+
+
+def test_tree_budget_counts_the_text_as_sent(tmp_path):
+    kb = _kb(tmp_path)
+    for i in range(40):
+        ops.write_node(
+            kb,
+            f"people/p{i:02d}",
+            f'# «Größe» "quoted" title {i}\n\nx.\n',
+            meta=dict(META),
+            create=True,
+        )
+    server = create_server(kb)
+    raw = asyncio.run(server.call_tool("kvault_tree", {"max_chars": 600, "gist": True}))
+    result = json.loads(raw[0].text)
+    sent = len(json.dumps(result["outline"], ensure_ascii=False)) - 2
+    assert sent <= 600
+    as_json = _run(server, "kvault_tree", {"max_chars": 100, "format": "json"})
+    note = next(n for n in as_json["notes"] if n["code"] == "truncated")
+    assert note["detail"]["shown_chars"] > 100 and "still" in note["text"]  # json is not cut

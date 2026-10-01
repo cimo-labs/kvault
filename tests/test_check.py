@@ -211,3 +211,14 @@ def test_get_updated_date_returns_none_without_frontmatter(tmp_path):
 
     result = _get_updated_date(summary)
     assert result is None
+
+
+def test_a_timestamp_in_updated_is_read_as_its_day(tmp_path):
+    """`updated: 2026-10-01 09:30:00` is a datetime; comparing it with a date raised."""
+    kb = tmp_path / "kb"
+    _write_summary(kb / "_summary.md", "# Root\n", meta={"updated": "2026-02-01"})
+    (kb / "category").mkdir(parents=True, exist_ok=True)
+    (kb / "category" / "_summary.md").write_text(
+        "---\nupdated: 2026-02-02 09:30:00\n---\n# Category\n"
+    )
+    assert check_propagation(kb, threshold_minutes=5)  # a finding, not a TypeError

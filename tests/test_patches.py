@@ -152,8 +152,9 @@ def test_mcp_patches_and_typed_updates(tmp_path):
     kb = _kb(tmp_path)
     server = create_server(kb)
     tools = {t.name: t for t in asyncio.run(server.list_tools())}
-    item = tools["kvault_update_summaries"].inputSchema["$defs"]["SummaryUpdate"]
+    item = tools["kvault_update_summaries"].inputSchema["properties"]["updates"]["items"]
     assert item["required"] == ["path"] and item["additionalProperties"] is False
+    assert item["properties"]["patches"]["anyOf"][0]["items"]["required"] == ["old_str", "new_str"]
     assert tools["kvault_write_node"].inputSchema["required"] == ["path"]
 
     asyncio.run(
@@ -175,3 +176,11 @@ def test_mcp_patches_and_typed_updates(tmp_path):
                 "kvault_update_summaries", {"updates": [{"path": "hub", "summary": "# Hub\n"}]}
             )
         )
+
+
+def test_overlapping_matches_count(tmp_path):
+    """str.count sees "00" once in "1000"; it starts at two places."""
+    kb = _kb(tmp_path)
+    ops.write_node(kb, "hub", "# Hub\n\nBudget: 1000 USD\n")
+    result = ops.write_node(kb, "hub", patches=[_patch("00", "XX")])
+    assert not result["success"] and "matches 2 places" in result["error"]

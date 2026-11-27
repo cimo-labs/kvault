@@ -226,7 +226,7 @@ def search_nodes(
                 title=doc.title,
                 score=round(score, 3),
                 matched_fields=sorted(matched_fields),
-                snippet=_snippet(doc, query, query_tokens, max_chars=snippet_max),
+                snippet=_snippet(doc, query_tokens, max_chars=snippet_max),
                 summary_path=doc.summary_path,
                 last_updated=doc.last_updated,
                 content=content,
@@ -651,39 +651,52 @@ def _idf(documents: Sequence[SearchDocument], query_tokens: Sequence[str]) -> Di
 
 def _snippet(
     doc: SearchDocument,
-    query: str,
     query_tokens: Sequence[str],
     max_chars: int = _SNIPPET_MAX_CHARS,
 ) -> str:
-    text = re.sub(r"\s+", " ", doc.content).strip()
     if max_chars <= 0:
         return ""
-    if not text:
-        return doc.title[:max_chars]
-    haystack = text.lower()
-    needle = query.lower().strip()
-    idx = haystack.find(needle) if needle else -1
-    if idx < 0:
-        token_positions = [
-            haystack.find(token) for token in query_tokens if haystack.find(token) >= 0
-        ]
-        idx = min(token_positions) if token_positions else 0
-
+    text = re.sub(r"\s+", " ", doc.content.strip() or doc.title).strip()
     if len(text) <= max_chars:
         return text
-    if max_chars < 8:
-        return text[:max_chars]
-    # The "..." markers count toward max_chars: a 120-character snippet is 120.
-    width = max_chars - 6
-    start = max(0, idx - width // 3)
-    end = min(len(text), start + width)
-    start = max(0, end - width)
-    snippet = text[start:end].strip()
-    if start > 0:
-        snippet = "..." + snippet
-    if end < len(text):
-        snippet += "..."
-    return snippet
+    marker = "..."
+    if max_chars <= len(marker):
+        return marker[:max_chars]
+
+    # Match the same ASCII tokens and intervening punctuation as the scorer.
+    # A raw substring would anchor "paid invoice" inside "unpaid invoice".
+    def match_tokens(pattern: str) -> Optional[re.Match[str]]:
+        return re.search(r"(?<![a-z0-9])(?:" + pattern + r")(?![a-z0-9])", text, re.I | re.ASCII)
+
+    match = match_tokens(r"[^a-z0-9]+".join(query_tokens))
+    if match is None and len(query_tokens) > 1:
+        match = match_tokens("|".join(query_tokens))
+    first, last = match.span() if match else (0, 0)
+    if match:
+        # Keep punctuation attached to the final matching word in the budget.
+        after_word = text.find(" ", last)
+        last = len(text) if after_word < 0 else after_word
+
+    # Start around a third of a window before the match. Keep whole source
+    # words, including a hyphen or sign attached to them, at both cut edges.
+    width = max(1, max_chars - 2 * len(marker))
+    preferred = max(0, min(first - width // 3, len(text) - width))
+    start = text.rfind(" ", 0, preferred + 1) + 1
+    # A long preceding word or phrase may otherwise push the match offscreen.
+    earliest = max(0, min(first, last - width))
+    if start < earliest:
+        boundary = text.find(" ", earliest - 1, first)
+        if boundary >= 0:
+            start = boundary + 1
+    prefix = marker if start else ""
+    end = start + max_chars - len(prefix)
+    if end >= len(text):
+        return prefix + text[start:]
+    end -= len(marker)
+    end = text.rfind(" ", start, end + 1)
+    if end <= start:
+        return marker
+    return prefix + text[start:end] + marker
 
 
 def _truncate(text: str, max_chars: int) -> Tuple[str, bool]:

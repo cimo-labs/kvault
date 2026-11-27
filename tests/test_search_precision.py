@@ -11,6 +11,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from kvault.core import operations as ops
 
 
@@ -42,6 +44,55 @@ def test_short_queries_match_whole_words_only(tmp_path):
     assert _paths(result)[0] == "projects/ai_strategy"
     email = [r for r in result["results"] if r["path"] == "projects/email_templates"]
     assert not email or not {"title", "path"} & set(email[0]["matched_fields"])
+
+
+def test_compact_snippet_keeps_the_source_invoice_status(tmp_path):
+    kb = _kb(tmp_path)
+    _node(
+        kb,
+        "accounts",
+        "# Accounts\n\nThe handoff contains one outstanding item for accounting. "
+        "The unpaid invoice still requires approval. Follow-up is scheduled for next Thursday "
+        "after the review committee meets to review the supporting details and attachments. "
+        "Keep the original note with the ledger.",
+    )
+    hit = ops.search_nodes(kb, "follow-up", compact=True)["results"][0]
+    assert hit["snippet"].startswith("...unpaid invoice still requires approval. Follow-up")
+    assert len(hit["snippet"]) <= 120
+
+
+def test_snippet_ends_before_a_partial_approval_status(tmp_path):
+    kb = _kb(tmp_path)
+    _node(
+        kb,
+        "reviews",
+        "# Desk\n\nLaunch notice: release is approved-pending-review and awaits signoff.",
+    )
+    budget = len("# Desk Launch notice: release is approved") + 6
+    hit = ops.search_nodes(kb, "launch", snippet_chars=budget)["results"][0]
+    assert hit["snippet"] == "# Desk Launch notice: release is..."
+
+
+@pytest.mark.parametrize(
+    ("query", "opening", "evidence"),
+    [
+        ("paid invoice", "That unpaid invoice remains open.", "The PAID / invoice is separate."),
+        ("AI decision", "Read the email with the details.", "The AI review starts tomorrow."),
+    ],
+)
+def test_snippet_anchors_the_same_whole_tokens_as_ranking(tmp_path, query, opening, evidence):
+    kb = _kb(tmp_path)
+    _node(kb, "reviews", "# Desk\n\n" + opening + " Some background." * 20 + " " + evidence)
+    hit = ops.search_nodes(kb, query, compact=True)["results"][0]
+    assert evidence in hit["snippet"]
+
+
+def test_snippet_omits_an_overlong_word_instead_of_making_a_new_label(tmp_path):
+    kb = _kb(tmp_path)
+    _node(kb, "approvals", "unapproved")
+    for budget in range(10):
+        hit = ops.search_nodes(kb, "unapproved", snippet_chars=budget)["results"][0]
+        assert hit["snippet"] == "..."[:budget]
 
 
 def test_parked_copies_are_background(tmp_path):

@@ -8,7 +8,8 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # The last hosted CPython 3.9 build targets Ubuntu 24.04.
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     strategy:
       matrix:
         python-version: ['3.9', '3.11', '3.12']

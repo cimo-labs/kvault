@@ -2,6 +2,15 @@
 
 All notable changes to `knowledgevault` are documented in this file.
 
+## 0.17.3 - 2026-11-26
+
+### Fixed
+
+- Managed-node search previews preserve whole words within the requested character
+  budget. For example, a compact preview could previously clip the start of “unpaid
+  invoice” and display “paid invoice”. Previews now use the same whole-word matches
+  as search ranking when choosing which part of a note to show.
+
 ## 0.17.1 - 2026-10-01
 
 The agent that reported 0.16.1 ran 0.17.0 for a day and sent back what it
